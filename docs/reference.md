@@ -5,10 +5,10 @@ protocol's.
 
 ## DuckDB store
 
-The DuckDB adapter uses a transaction against the published table, with the incoming file held in a
+The DuckDB reference implementation uses a transaction against the published table, with the incoming file held in a
 temporary candidate table first. DuckDB isolation hides uncommitted changes and permits atomic rows,
 ledger JSON and receipt JSON without a second mutable copy. Immutable publication tables support
-`read(..., publication_id=...)`; these copies deliberately trade storage for a small reference adapter.
+`read(..., publication_id=...)`; these copies deliberately trade storage for a small reference implementation.
 Contracts cannot change within a table's history. One store instance serializes deliveries.
 The DuckDB extra includes `pytz`, required by its Python client when returning timezone-aware columns.
 The internal `__dogana_` namespace is reserved regardless of letter case. DuckDB refuses a spelling
@@ -18,7 +18,7 @@ table identities preserve spelling.
 
 ## File drop
 
-The file-drop adapter accepts CSV or Parquet paths. `<file>.json` is the optional sidecar. Without it,
+The file-drop reference implementation accepts CSV or Parquet paths. `<file>.json` is the optional sidecar. Without it,
 an explicit full-match filename regular expression supplies named groups `shape`, `produced_at`,
 `rows`, and optional `low`, `high`, `since`, `generation`. Bounds use the contract column's logical type;
 `schema_hash` defaults to the declared schema hash and is checked against the actual file. File arrival

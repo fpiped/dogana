@@ -41,7 +41,7 @@ def test_a_manifest_cannot_be_decoded_as_a_contract():
         Contract.from_json(Manifest("stock", "full", at(18)).to_json())
 
 
-def test_the_core_has_no_adapter_or_third_party_imports():
+def test_the_core_has_no_reference_or_third_party_imports():
     import sys
 
     core = Path(__file__).parents[1] / "src" / "dogana"
@@ -51,7 +51,7 @@ def test_the_core_has_no_adapter_or_third_party_imports():
                 names = [a.name.split(".")[0] for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 if node.level:
-                    assert not node.module.startswith("adapters")
+                    assert not node.module.startswith("reference")
                     continue
                 names = [node.module.split(".")[0]]
             else:
@@ -74,7 +74,7 @@ def test_manifest_wire_types_are_checked_before_any_accounting(change):
         Manifest.from_dict(value)
 
 
-def test_the_core_runs_in_an_isolated_package_with_every_adapter_removed(tmp_path):
+def test_the_core_runs_in_an_isolated_package_with_reference_package_removed(tmp_path):
     import subprocess
     import sys
 
@@ -96,7 +96,7 @@ receipt = Gate.evaluate(Ledger(c), m, checks)
 assert receipt.accepted
 assert receipt.claims.state is State.COMPLETE
 assert Ledger.from_json(receipt.ledger.to_json()) == receipt.ledger
-assert 'dogana.adapters' not in sys.modules
+assert 'dogana.reference' not in sys.modules
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
 

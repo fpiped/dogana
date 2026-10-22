@@ -11,7 +11,7 @@ EXAMPLES = Path(__file__).parents[2] / "docs" / "examples"
 
 def test_the_documented_wire_receipt_is_reproduced_by_a_real_publication(tmp_path):
     pytest.importorskip("duckdb")
-    from dogana.adapters.duckdb import DuckDBStore
+    from dogana.reference.duckdb import DuckDBStore
 
     c = Contract.from_json((EXAMPLES / "contract.json").read_text())
     m = Manifest.from_json((EXAMPLES / "manifest.json").read_text())

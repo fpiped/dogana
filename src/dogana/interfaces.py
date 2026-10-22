@@ -1,4 +1,4 @@
-"""I/O boundaries implemented by optional adapters."""
+"""I/O boundaries implemented by reference implementations."""
 
 from typing import Protocol
 

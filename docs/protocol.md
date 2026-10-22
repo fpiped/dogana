@@ -128,7 +128,7 @@ inserts the candidate. Upsert matches the contract key against candidate rows; n
 verifies the manifest's enumeration. Tombstones delete exactly their named keys. Append inserts without
 matching. The core never reads rows or executes a plan.
 
-`Gate.requirements` returns named row checks. An adapter returns one `Check(name, passed, detail)` for
+`Gate.requirements` returns named row checks. A store returns one `Check(name, passed, detail)` for
 each requirement. Missing, duplicate or unexpected outcomes reject the delivery. Core checks validate
 manifest structure, replay identity, base coverage, timestamp continuity, generation continuity and
 monotonic time. Row checks verify exact row count, schema hash against both manifest and contract,
@@ -138,7 +138,7 @@ shrink tolerance. A window tombstone may not delete a published key outside its 
 window deliveries also check the immutable window-column guarantee for keys already published.
 Checks verify the delivered rows, not whether the source told the truth.
 
-`Gate.evaluate` combines core checks and adapter outcomes into a `Receipt`: manifest, checks, acceptance,
+`Gate.evaluate` combines core checks and store outcomes into a `Receipt`: manifest, checks, acceptance,
 transition (before/after regions and plan), resulting ledger and claims, receipt identity and publication
 identity. A rejected receipt references the existing publication. Receipt indexing uses the receiver
 contract table, even when the rejected manifest names a different table. A successful publication identity is
@@ -256,4 +256,4 @@ reconstructs ledger evidence; reconstructing historical rows still needs the sto
 The protocol declares, verifies, accounts and answers claims. Extraction belongs to dlt, Airbyte,
 Spark or an existing script; scheduling to an orchestrator; business row rules to a quality tool; rows
 to a store or table format. The core imports only the Python standard library and works with every
-adapter removed. Adapters perform all I/O behind optional extras.
+reference implementation removed. Reference implementations perform all I/O behind optional extras.

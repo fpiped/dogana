@@ -26,7 +26,7 @@ def test_a_failed_required_check_never_changes_the_published_ledger(failure):
 
 
 @pytest.mark.parametrize("kind", ["missing", "duplicate", "unexpected"])
-def test_an_adapter_cannot_authorize_publication_with_an_incomplete_or_ambiguous_check_set(kind):
+def test_a_store_cannot_authorize_publication_with_an_incomplete_or_ambiguous_check_set(kind):
     c = contract()
     m = Manifest(c.table, "full", at(18))
     checks = outcomes(c, m)

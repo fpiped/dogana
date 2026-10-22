@@ -116,6 +116,6 @@ Python. No runtime dependencies means the core can be vendored and audited in an
 - No second rule language. Row rules belong to Soda, Great Expectations or SQL.
 - No parallel contract schema. The delivery contract complements a data contract; it does not
   restate it.
-- No adapter catalogue. A store is written by the team that owns the warehouse and proved by the
+- Reference implementations only. A store is written by the team that owns the warehouse and proved by the
   conformance suite.
 - No platform. If a feature needs a server to exist, it belongs in another project.

@@ -6,8 +6,8 @@ import pytest
 pytest.importorskip("duckdb")
 
 from dogana import Claims, Column, Contract, Ledger, Manifest, Receipt, State, next_extraction
-from dogana.adapters.duckdb import DuckDBStore
-from dogana.adapters.files import FileDrop, FilePattern
+from dogana.reference.duckdb import DuckDBStore
+from dogana.reference.files import FileDrop, FilePattern
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import FEED, FULL, SINCE, at, contract
 

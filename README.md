@@ -46,8 +46,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dogana import Column, Contract, Manifest, Shape
-from dogana.adapters.duckdb import DuckDBStore
-from dogana.adapters.files import FileDrop
+from dogana.reference.duckdb import DuckDBStore
+from dogana.reference.files import FileDrop
 
 contract = Contract(
     "orders",
@@ -170,7 +170,7 @@ follows it.
 - Not a quality monitor. Soda or Great Expectations test row values; dogana tracks what a delivery proved.
 - Not a store. Rows live in DuckDB, Postgres, Iceberg or DuckLake. The store executes plans the core emits as values.
 
-The reference adapters (DuckDB store, file drop) exist to prove the interfaces, not to be the
+The reference implementations (DuckDB store, file drop) exist to prove the interfaces, not to be the
 product. [Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg,
 DuckLake, Dagster and the observability tools. [Architecture](docs/architecture.md) explains the
 design and what it borrows from projects that got these questions right.
