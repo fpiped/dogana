@@ -8,7 +8,7 @@ below do not imply that production adapters are shipped.
 
 A dlt adapter belongs on the store side. `hold` identifies the normalized load package; checks read
 that candidate; `publish` lets dlt write the accepted rows once and commits the ledger and receipt
-with them. `execute` may defer to `publish`. Loading the destination first and writing dogana's
+with them. Loading the destination first and writing dogana's
 ledger afterward violates atomic publication. A destination integration must supply one transaction
 or one table-format commit; `pipeline.load()` alone is not evidence that both records commit together.
 
@@ -103,7 +103,7 @@ retain the publication identity used by the run. See [SQLMesh snapshots](https:/
 ## Iceberg, Delta and DuckLake
 
 A table-format store can map a plan onto its row operations and publish through an atomic commit.
-`execute(candidate, plan)` may only prepare changes; `publish(candidate, receipt)` has the evidence
+`publish(candidate, receipt)` executes the accepted plan and has the evidence
 needed for the commit. Its metadata must carry the full receipt or reference an already durable
 copy, the expected parent and the resulting publication identity. A receipt hash alone is not a
 recovery record. Large key lists usually favor a durable referenced receipt.

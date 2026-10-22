@@ -2,11 +2,26 @@
 
 ## Unreleased
 
+- Store regional evidence as sorted boundary cuts and expose Known or Unknown evidence internally.
+- Parse manifests into shape-specific deliveries and separate guards, date transitions, cursor rules and publication chaining.
+- Replace receipt flags with accepted, rejected or replayed outcomes, retaining derived compatibility properties.
+- Require keyword arguments for shape properties and optional contract and manifest fields.
+- Add shape factories, contract manifest construction and shared rolling-window and logical-type metadata.
+- Reduce the store port to seven methods; execute plans inside publication and compare rejected bases too.
+- Make stamped recovery an optional conformance tier using shared LedgerAhead and StampAhead diagnosis.
+- Refuse undecodable rejected receipts and unexpected destination column order before publication.
+- Split reference row checks by requirement and share their SQL predicates.
+- Canonicalize identities with RFC 8785, exact binary64 inputs, UTF-8 output and UTF-16 key ordering.
+- Publish JSON Schema 2020-12 for all sixteen wire kinds and validate suite serialization against them.
+- Replace seeded loops with Hypothesis properties, an independent boundary oracle and crash/replay state machines.
+- Print and test regional evidence, a refused file and replay in the README example.
+- Considered: a DuckLake reference store as the executable table-format publication mechanism; deferred for the owner.
+
 - Define source declarations, store checks and atomic publication as separate trust boundaries.
 - Require receiver time for gate decisions and delivery; reject future source boundaries.
-- Record receipt arrival time, source, checked base and an explicit replay marker.
+- Record receipt arrival time, source, checked base and an explicit outcome.
 - Preserve original receipt identity and arrival time when replay returns an acceptance.
-- Move delivery orchestration into the core over storage primitives, including receipt lookup and publication stamps.
+- Move delivery orchestration into the core over storage primitives, including receipt lookup.
 - Remove accepted identities from embedded ledgers; keep replay history in the store's receipt index.
 - Limit atomic publication to transactions or table-format commits carrying durable receipts and expected-parent checks.
 - Bind candidate checks and publication to the same base; refuse stale cached plans and automatic rebase.
@@ -14,7 +29,7 @@
 - Fail closed on missing publication evidence and repair ledgers only against a matching row stamp.
 - Treat publication stamps as association labels, not content checksums.
 - Normalize canonical identity defaults, numeric spelling, UTC times and key ordering; publish fixed identity vectors.
-- Exclude the replay marker from receipt identity and distinguish wire compatibility from identity compatibility.
+- Normalize replay outcome to acceptance for receipt identity and distinguish wire compatibility from identity compatibility.
 - Add optional manifest content hashes so corrected payloads cannot masquerade as accepted replays.
 - Raise shrink protection to a default of one half, with explicit disabling and per-delivery limits.
 - Permit compatible contract changes while preserving table, key and window bindings in history.

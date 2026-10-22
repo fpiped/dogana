@@ -34,7 +34,7 @@ not detectable by stamp comparison.
 to read its version. Pair that version with the receipt's ledger, recomputing claims with today's
 `now`. Loading current rows and current claims separately can cross a publication boundary.
 `receipts(table=None)` returns persisted decisions in order, including rejections. A returned replay
-is marked `replayed=True` and preserves original identity and `received_at`; it is not another commit.
+has `outcome="replayed"` and preserves original identity and `received_at`; it is not another commit.
 This is a decision history, not a journal of every call or operational exception.
 
 ## Internal tables and ledger JSON
@@ -158,15 +158,19 @@ an atomic publication mechanism gives no guarantee that the evidence describes t
 ## Check a store
 
 Install the `dev` extra and run `dogana.conformance.StoreConformance` against a `StoreFactory`.
-The suite depends on pytest, not DuckDB. A factory supplies `make_store()`, `write_source(rows, schema)`
-and `read_table(store, table)`, with fault hooks `fail_after_rows(store)`, `set_ledger(store, ledger)`,
-`set_stamp(store, table, id)`, `remove_ledger(store, table)` and `pause_after_rows(store)`.
-`read_publication(store, contract)` supplies rows and ledger from one publication for read-isolation
-checks. Tests exercise both transaction and table-format commit mechanisms.
-Ordered writes are not a conforming alternative.
+The suite depends on pytest, not DuckDB. Required factory hooks are `make_store`, `write_source`,
+`read_table`, `read_publication`, `fail_after_rows` and `pause_after_rows`. The latter two exercise
+one `_publication_point()` hook inside publication after provisional row changes and before commit.
 
-Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale bases,
-atomic failures, publication mismatches and reconstruction. Passing provides evidence for these
-cases; it does not prove a store implementation under every failure or establish source truth.
-The core `Store` protocol requires storage primitives, not a `deliver` or `read` method. A factory
-can adapt its store's transport and read API to the suite.
+Stores exposing both `publication_stamp` and `repair` can also inherit `StampedLedgerConformance`;
+its `StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger` for recovery scenarios.
+Stores without that tier still run every required publication scenario. Diagnosis matches
+`LedgerAhead` and `StampAhead`, never exception text.
+
+Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale accepted
+and rejected bases, atomic failures, malformed receipt persistence and reconstruction. A refusal
+whose receipt cannot round-trip raises `SerializationError` before the log changes. The DuckDB
+reference also refuses a destination with unexpected column order or types before publication.
+Passing provides evidence for these cases, not a proof under every storage failure or of source truth.
+The core port requires seven storage primitives, not a `deliver` or `read` method; factories adapt
+transport and read APIs to the suite. Ordered writes are not a conforming alternative.
