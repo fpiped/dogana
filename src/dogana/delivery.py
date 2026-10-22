@@ -6,9 +6,9 @@ from datetime import datetime
 from os import PathLike, fsdecode
 from typing import ParamSpec, TypeVar
 
-from .contract import Contract, Coverage, Manifest
-from .errors import InconsistentPublication, InvalidContract, RejectedDelivery, StoreError
-from .gate import Check, Gate, Receipt
+from .contract import Contract, FullDelivery, Manifest
+from .errors import InvalidContract, LedgerAhead, RejectedDelivery, StoreError
+from .gate import Check, Gate, Outcome, Receipt
 from .interfaces import Store
 from .ledger import Ledger
 from .wire import utc
@@ -29,23 +29,12 @@ def _call(operation: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs) -> _
 def _base(store: Store, contract: Contract, manifest: Manifest) -> Ledger:
     try:
         return _call(store.load_ledger, contract)
-    except InconsistentPublication:
-        shape = manifest.check(contract)
-        if not shape.complete or shape.coverage is not Coverage.ALL:
+    except LedgerAhead:
+        if not isinstance(manifest.check(contract), FullDelivery):
             raise
         if _call(store.accepted_receipt, manifest.identity) is not None:
             raise
-        receipts = _call(store.receipts, contract.table)
-        accepted = tuple(receipt for receipt in receipts if receipt.accepted)
-        if not accepted:
-            raise
-        ledger = Ledger.from_receipts(contract, accepted)
-        stamp = _call(store.publication_stamp, contract.table)
-        if stamp == ledger.publication_id or (
-            stamp is not None and stamp not in {receipt.publication_id for receipt in accepted}
-        ):
-            raise
-        return ledger
+        return Ledger.from_receipts(contract, _call(store.receipts, contract.table))
 
 
 def deliver(store: Store, contract: Contract, source: object, manifest: Manifest, now: datetime) -> Receipt:
@@ -55,7 +44,7 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
     ledger = _base(store, contract, manifest)
     previous = _call(store.accepted_receipt, manifest.identity)
     if previous is not None:
-        return replace(previous, replayed=True)
+        return replace(previous, outcome=Outcome.REPLAYED)
     if not contract.schema:
         refused = Gate.reject(
             ledger,
@@ -64,11 +53,11 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
             now=now,
             source=description,
         )
-        _call(store.save_receipt, refused)
+        _call(store.publish, None, refused)
         return refused
     if not all(check.passed for check in Gate.preflight(ledger, manifest, now=now)):
         refused = Gate.evaluate(ledger, manifest, now=now, source=description)
-        _call(store.save_receipt, refused)
+        _call(store.publish, None, refused)
         return refused
 
     candidate: str | None = None
@@ -77,14 +66,7 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
         candidate = _call(store.hold, source, manifest, contract)
         checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
         receipt = Gate.evaluate(ledger, manifest, checks, now=now, source=description)
-        if receipt.accepted:
-            assert receipt.transition is not None
-            _call(store.execute, candidate, receipt.transition.plan)
-            _call(store.publish, candidate, receipt)
-        else:
-            _call(store.abort, candidate)
-            candidate = None
-            _call(store.save_receipt, receipt)
+        _call(store.publish, candidate, receipt)
         return receipt
     except BaseException as error:
         cleanup_error: Exception | None = None
@@ -107,5 +89,5 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
         refused = Gate.reject(
             current, manifest, (*checks, Check("execution", False, str(error))), now=now, source=description
         )
-        _call(store.save_receipt, refused)
+        _call(store.publish, None, refused)
         return refused

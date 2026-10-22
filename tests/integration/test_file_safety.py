@@ -25,7 +25,12 @@ from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
 
 BOUNDARY = datetime(2026, 10, 18, tzinfo=UTC)
-FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
+FULL = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.COMPLETE,
+    deletions=Deletions.ABSENCE,
+    checkpoint=Checkpoint.NONE,
+)
 
 
 def _contract() -> Contract:
@@ -229,8 +234,19 @@ def test_directories_cannot_be_delivered_as_files_or_sidecars(tmp_path: Path, ta
 def test_every_filename_datetime_needs_an_offset_or_declared_timezone(
     field: str, declared_timezone: bool
 ) -> None:
-    shape = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.TIMESTAMP)
-    c = Contract("events", ("id",), {"recent": shape}, "at", (Column("id", "int"), Column("at", "datetime")))
+    shape = Shape(
+        coverage=Coverage.WINDOW,
+        completeness=Completeness.CHANGED_ONLY,
+        deletions=Deletions.NONE,
+        checkpoint=Checkpoint.TIMESTAMP,
+    )
+    c = Contract(
+        "events",
+        ("id",),
+        {"recent": shape},
+        window_column="at",
+        schema=(Column("id", "int"), Column("at", "datetime")),
+    )
     values = {
         "produced_at": "2026-10-19T02:00:00+02:00",
         "since": "2026-10-18T02:00:00+02:00",
@@ -264,7 +280,12 @@ def test_a_date_only_source_boundary_requires_an_explicit_timezone() -> None:
 
 
 def test_a_declared_timezone_does_not_override_an_explicit_offset_or_parse_generation_strings() -> None:
-    shape = Shape(Coverage.KEYS, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION)
+    shape = Shape(
+        coverage=Coverage.KEYS,
+        completeness=Completeness.CHANGED_ONLY,
+        deletions=Deletions.TOMBSTONE,
+        checkpoint=Checkpoint.GENERATION,
+    )
     c = Contract("files", ("id",), {"feed": shape})
     pattern = FilePattern(
         r"(?P<produced_at>[^_]+)__(?P<since>[^_]+)__(?P<generation>[^_]+)__(?P<rows>0)\.csv",
@@ -281,9 +302,16 @@ def test_date_window_bounds_remain_dates_without_a_declared_timezone() -> None:
     c = Contract(
         "files",
         ("id",),
-        {"daily": Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)},
-        "day",
-        (Column("id", "int"), Column("day", "date")),
+        {
+            "daily": Shape(
+                coverage=Coverage.WINDOW,
+                completeness=Completeness.COMPLETE,
+                deletions=Deletions.ABSENCE,
+                checkpoint=Checkpoint.NONE,
+            )
+        },
+        window_column="day",
+        schema=(Column("id", "int"), Column("day", "date")),
     )
     pattern = FilePattern(
         r"(?P<produced_at>[^_]+)__(?P<low>[^_]+)__(?P<high>[^_]+)__(?P<rows>0)\.csv", shape="daily"
@@ -307,15 +335,15 @@ def test_a_window_derived_from_local_time_uses_utc_duration_across_dst() -> None
         ("id",),
         {
             "daily": Shape(
-                Coverage.WINDOW,
-                Completeness.COMPLETE,
-                Deletions.ABSENCE,
-                Checkpoint.NONE,
+                coverage=Coverage.WINDOW,
+                completeness=Completeness.COMPLETE,
+                deletions=Deletions.ABSENCE,
+                checkpoint=Checkpoint.NONE,
                 window_size=timedelta(days=1),
             )
         },
-        "at",
-        (Column("id", "int"), Column("at", "datetime")),
+        window_column="at",
+        schema=(Column("id", "int"), Column("at", "datetime")),
     )
     pattern = FilePattern(
         r"(?P<produced_at>.*)_(?P<rows>0)\.csv", shape="daily", timezone=ZoneInfo("Europe/Rome")

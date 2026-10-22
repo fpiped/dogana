@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Ledger",
+  "title": "Ledger",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Ledger"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "contract": {
+      "$ref": "urn:dogana:wire:1:Contract"
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dogana:wire:1:Region"
+      },
+      "minItems": 1
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "publication_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "contract",
+    "regions",
+    "generation",
+    "publication_id"
+  ],
+  "additionalProperties": false
+}

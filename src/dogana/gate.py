@@ -6,7 +6,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from .contract import Checkpoint, Contract, Coverage, Manifest, Scalar, Window, bounds, identifier
+from .contract import (
+    AppendInterval,
+    Contract,
+    Coverage,
+    FullDelivery,
+    Manifest,
+    Scalar,
+    TimestampChanges,
+    Window,
+    WindowCoverage,
+    WindowDelivery,
+    bounds,
+    identifier,
+)
 from .errors import InvalidContract, RejectedDelivery
 from .ledger import Claims, Ledger, Region
 from .wire import Wire, utc
@@ -63,20 +76,19 @@ class ApplyPlan(Wire):
 
     @classmethod
     def build(cls, contract: Contract, manifest: Manifest) -> ApplyPlan:
-        shape = manifest.check(contract)
+        delivery = manifest.check(contract)
         actions: tuple[Action, ...]
-        if not shape.complete and not contract.key:
-            actions = (Action(Operation.APPEND),)
-        elif shape.complete:
-            actions = (
-                Action(Operation.REPLACE_WINDOW, manifest.window)
-                if manifest.window is not None
-                else Action(Operation.REPLACE_ALL),
-            )
-        else:
-            actions = (Action(Operation.UPSERT, keys=manifest.keys),)
-            if manifest.tombstones:
-                actions += (Action(Operation.TOMBSTONE, keys=manifest.tombstones),)
+        match delivery:
+            case AppendInterval():
+                actions = (Action(Operation.APPEND),)
+            case FullDelivery():
+                actions = (Action(Operation.REPLACE_ALL),)
+            case WindowDelivery(window=window):
+                actions = (Action(Operation.REPLACE_WINDOW, window),)
+            case _:
+                actions = (Action(Operation.UPSERT, keys=manifest.keys),)
+                if manifest.tombstones:
+                    actions += (Action(Operation.TOMBSTONE, keys=manifest.tombstones),)
         return cls(contract.table, contract.key, contract.window_column, actions)
 
 
@@ -114,17 +126,22 @@ class Transition(Wire):
             raise InvalidContract("a transition needs preceding and resulting regions")
 
 
+class Outcome(StrEnum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    REPLAYED = "replayed"
+
+
 @dataclass(frozen=True)
 class Receipt(Wire):
     manifest: Manifest
     checks: tuple[Check, ...]
-    accepted: bool
+    outcome: Outcome
     transition: Transition | None
     ledger: Ledger
     claims: Claims
     publication_id: str | None
     received_at: datetime
-    replayed: bool = False
     source: str | None = None
     base_publication_id: str | None = None
 
@@ -136,28 +153,39 @@ class Receipt(Wire):
             raise InvalidContract("accepted receipts require passing checks")
         if self.publication_id != self.ledger.publication_id:
             raise InvalidContract("receipt publication must identify its ledger")
-        if self.replayed and not self.accepted:
-            raise InvalidContract("only accepted receipts can be replayed")
-        if self.transition is not None and self.transition.after != self.ledger.regions:
+        if self.transition is not None and (
+            Ledger(self.ledger.contract, self.transition.after).regions != self.ledger.regions
+        ):
             raise InvalidContract("receipt transition must establish its ledger regions")
         if self.accepted and self.manifest.produced_at > self.received_at:
             raise InvalidContract("accepted receipts cannot attest a future source boundary")
         if not self.accepted and self.base_publication_id != self.publication_id:
             raise InvalidContract("rejected receipts retain their base publication")
 
+    @property
+    def accepted(self) -> bool:
+        return self.outcome is not Outcome.REJECTED
+
+    @property
+    def replayed(self) -> bool:
+        return self.outcome is Outcome.REPLAYED
+
 
 class Gate:
     @staticmethod
     def requirements(contract: Contract, manifest: Manifest) -> tuple[CheckRequirement, ...]:
-        shape = manifest.check(contract)
+        delivery = manifest.check(contract)
+        shape = delivery.shape
         names = ["row_count"]
         if contract.schema:
             names.append("schema_hash")
-        if manifest.window is not None:
+        if isinstance(delivery, WindowDelivery) or (
+            isinstance(delivery, TimestampChanges) and isinstance(delivery.coverage, WindowCoverage)
+        ):
             names.append("rows_in_window")
         if contract.window_column is not None:
             names.append("window_stability")
-        if contract.cursor_column is not None and shape.checkpoint is Checkpoint.TIMESTAMP:
+        if contract.cursor_column is not None and isinstance(delivery, (TimestampChanges, AppendInterval)):
             names.append("rows_in_interval")
         if contract.key:
             names.append("key_integrity")
@@ -200,7 +228,7 @@ class Gate:
         return Receipt(
             manifest,
             checks,
-            False,
+            Outcome.REJECTED,
             None,
             ledger,
             ledger.claims(now),
@@ -243,7 +271,7 @@ class Gate:
         return Receipt(
             manifest,
             checks,
-            True,
+            Outcome.ACCEPTED,
             transition,
             after,
             after.claims(now),

@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from threading import Event
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import pytest
 
@@ -20,6 +20,7 @@ from dogana import (
     InconsistentPublication,
     Ledger,
     Manifest,
+    Outcome,
     Receipt,
     Shape,
     State,
@@ -30,11 +31,32 @@ from dogana import (
 from dogana import (
     deliver as _core_deliver,
 )
+from dogana.errors import LedgerAhead, SerializationError, StampAhead
 
-FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
-WINDOW = Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
-SINCE = Shape(Coverage.ALL, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.TIMESTAMP)
-FEED = Shape(Coverage.KEYS, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION)
+FULL = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.COMPLETE,
+    deletions=Deletions.ABSENCE,
+    checkpoint=Checkpoint.NONE,
+)
+WINDOW = Shape(
+    coverage=Coverage.WINDOW,
+    completeness=Completeness.COMPLETE,
+    deletions=Deletions.ABSENCE,
+    checkpoint=Checkpoint.NONE,
+)
+SINCE = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.NONE,
+    checkpoint=Checkpoint.TIMESTAMP,
+)
+FEED = Shape(
+    coverage=Coverage.KEYS,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.TOMBSTONE,
+    checkpoint=Checkpoint.GENERATION,
+)
 SCHEMA = (Column("id", "int"), Column("day", "date"), Column("value", "str"))
 
 
@@ -45,11 +67,25 @@ class StoreFactory(Protocol):
     def write_source(self, rows: Sequence[Mapping[str, Any]], schema: tuple[Column, ...]) -> object: ...
     def read_table(self, store: Store, table: str) -> list[dict[str, Any]]: ...
     def fail_after_rows(self, store: Store) -> AbstractContextManager[None]: ...
+    def read_publication(self, store: Store, contract: Contract) -> tuple[list[dict[str, Any]], Ledger]: ...
+    def pause_after_rows(self, store: Store) -> AbstractContextManager[tuple[Event, Event]]: ...
+
+
+class StampedStore(Store, Protocol):
+    def publication_stamp(self, table: str) -> str | None: ...
+    def repair(self, contract: Contract) -> Ledger: ...
+
+
+class StampedStoreFactory(StoreFactory, Protocol):
     def set_ledger(self, store: Store, ledger: Ledger) -> None: ...
     def set_stamp(self, store: Store, table: str, publication_id: str | None) -> None: ...
     def remove_ledger(self, store: Store, table: str) -> None: ...
-    def read_publication(self, store: Store, contract: Contract) -> tuple[list[dict[str, Any]], Ledger]: ...
-    def pause_after_rows(self, store: Store) -> AbstractContextManager[tuple[Event, Event]]: ...
+
+
+def _stamped(store: Store) -> StampedStore:
+    if not all(callable(getattr(store, name, None)) for name in ("publication_stamp", "repair")):
+        pytest.skip("store does not expose both stamped-ledger operations")
+    return cast(StampedStore, store)
 
 
 def _at(day: int) -> datetime:
@@ -60,7 +96,9 @@ def _contract(table: str = "moves", shapes: dict[str, Shape] | None = None, **kw
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "feed": FEED}
     window_column = "day" if any(s.coverage == "window" for s in shapes.values()) else None
     kwargs.setdefault("max_shrink_fraction", None)
-    return Contract(table, ("id",), shapes, window_column, SCHEMA, **kwargs)
+    return Contract(
+        table=table, key=("id",), shapes=shapes, window_column=window_column, schema=SCHEMA, **kwargs
+    )
 
 
 def _submit(store: Store, contract: Contract, source: object, manifest: Manifest) -> Receipt:
@@ -71,8 +109,8 @@ def _row(key: int, day: int = 18, value: str = "current") -> dict[str, Any]:
     return {"id": key, "day": _at(day).date(), "value": value}
 
 
-class StoreConformance:
-    """Publication, replay and recovery obligations for atomic stores."""
+class _StoreScenarios:
+    """Shared publication fixtures and assertions."""
 
     @pytest.fixture
     def store(self, factory: StoreFactory) -> Iterator[Store]:
@@ -93,7 +131,12 @@ class StoreConformance:
         **kwargs: Any,
     ) -> Receipt:
         manifest = Manifest(
-            contract.table, shape, _at(day), rows=len(rows), schema_hash=contract.schema_hash, **kwargs
+            table=contract.table,
+            shape=shape,
+            produced_at=_at(day),
+            rows=len(rows),
+            schema_hash=contract.schema_hash,
+            **kwargs,
         )
         receipt = _submit(store, contract, factory.write_source(rows, contract.schema), manifest)
         self._fold(store, contract)
@@ -106,6 +149,10 @@ class StoreConformance:
 
     def _rows(self, factory: StoreFactory, store: Store, table: str) -> list[dict[str, Any]]:
         return sorted(factory.read_table(store, table), key=lambda r: tuple(r.values()))
+
+
+class StoreConformance(_StoreScenarios):
+    """Required publication, replay and atomicity obligations."""
 
     def test_a_week_of_erp_deliveries_proves_three_tables_rows_dates_receipts_and_claims(
         self, factory: StoreFactory, store: Store
@@ -183,7 +230,9 @@ class StoreConformance:
                         _at(18),
                     )
                 audit_before = store.receipts(c.table)
-                assert _submit(store, c, object(), receipt.manifest) == replace(receipt, replayed=True)
+                assert _submit(store, c, object(), receipt.manifest) == replace(
+                    receipt, outcome=Outcome.REPLAYED
+                )
                 assert store.receipts(c.table) == audit_before
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             surface = Claims.combine(*(store.load_ledger(c).claims(_at(day)) for c in contracts))
@@ -230,9 +279,9 @@ class StoreConformance:
         elif problem == "shape":
             shape = "not_admitted"
         manifest = Manifest(
-            c.table,
-            shape,
-            _at(17) if problem == "time_backwards" else _at(19),
+            table=c.table,
+            shape=shape,
+            produced_at=_at(17) if problem == "time_backwards" else _at(19),
             rows=len(rows) + (problem == "count"),
             schema_hash="wrong" if problem == "schema" else c.schema_hash,
             **kwargs,
@@ -247,7 +296,7 @@ class StoreConformance:
         self._fold(store, c)
 
     @pytest.mark.parametrize("shape", ["full", "daily", "since", "feed"])
-    def test_failure_after_rows_rolls_back_or_converges_on_the_same_idempotent_delivery(
+    def test_failure_after_rows_rolls_back_before_retry_and_replay(
         self, factory: StoreFactory, store: Store, shape: str
     ) -> None:
         c = _contract()
@@ -260,21 +309,20 @@ class StoreConformance:
         }
         kwargs = choices[shape]
         rows = [_row(2, value="new")]
-        manifest = Manifest(c.table, shape, _at(19), rows=1, schema_hash=c.schema_hash, **kwargs)
+        manifest = Manifest(
+            table=c.table, shape=shape, produced_at=_at(19), rows=1, schema_hash=c.schema_hash, **kwargs
+        )
         source = factory.write_source(rows, c.schema)
         with factory.fail_after_rows(store):
-            try:
-                failed = _submit(store, c, source, manifest)
-                assert not failed.accepted
-            except StoreError:
-                pass
+            with pytest.raises(StoreError):
+                _submit(store, c, source, manifest)
         assert store.load_ledger(c) == first.ledger
         assert self._rows(factory, store, c.table) == [_row(1), _row(2)]
         assert not any(r.accepted and r.manifest == manifest for r in store.receipts(c.table))
         retried = _submit(store, c, source, manifest)
         assert retried.accepted, retried.checks
         assert self._rows(factory, store, c.table) == ([_row(1), *rows] if shape == "since" else rows)
-        assert _submit(store, c, object(), manifest) == replace(retried, replayed=True)
+        assert _submit(store, c, object(), manifest) == replace(retried, outcome=Outcome.REPLAYED)
         self._fold(store, c)
 
     def test_replay_after_a_newer_delivery_returns_the_original_receipt_once(
@@ -283,7 +331,7 @@ class StoreConformance:
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
         second = self._deliver(factory, store, c, [_row(2)], day=19)
-        assert _submit(store, c, object(), first.manifest) == replace(first, replayed=True)
+        assert _submit(store, c, object(), first.manifest) == replace(first, outcome=Outcome.REPLAYED)
         assert store.load_ledger(c) == second.ledger
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, second)
@@ -306,64 +354,33 @@ class StoreConformance:
     def test_append_requires_an_atomic_commit_and_replay_never_duplicates_events(
         self, factory: StoreFactory, store: Store
     ) -> None:
-        c = Contract("events", (), {"log": SINCE}, schema=(Column("event", "str"),), start_at=_at(1))
+        c = Contract(
+            table="events", key=(), shapes={"log": SINCE}, schema=(Column("event", "str"),), start_at=_at(1)
+        )
         source = factory.write_source([{"event": "one"}], c.schema)
-        manifest = Manifest(c.table, "log", _at(18), since=_at(1), rows=1, schema_hash=c.schema_hash)
+        manifest = Manifest(
+            table=c.table, shape="log", produced_at=_at(18), since=_at(1), rows=1, schema_hash=c.schema_hash
+        )
         first = _submit(store, c, source, manifest)
         assert first.accepted
-        assert _submit(store, c, source, manifest) == replace(first, replayed=True)
+        assert _submit(store, c, source, manifest) == replace(first, outcome=Outcome.REPLAYED)
         assert factory.read_table(store, c.table) == [{"event": "one"}]
         self._fold(store, c)
         source = factory.write_source([{"event": "two"}], c.schema)
         second_manifest = replace(manifest, produced_at=_at(19), since=_at(18))
         with factory.fail_after_rows(store):
-            try:
-                failed = _submit(store, c, source, second_manifest)
-                assert not failed.accepted
-            except StoreError:
-                pass
+            with pytest.raises(StoreError):
+                _submit(store, c, source, second_manifest)
         assert store.load_ledger(c) == first.ledger
         assert factory.read_table(store, c.table) == [{"event": "one"}]
         self._fold(store, c)
         second = _submit(store, c, source, second_manifest)
         assert second.accepted
-        assert _submit(store, c, object(), second_manifest) == replace(second, replayed=True)
+        assert _submit(store, c, object(), second_manifest) == replace(second, outcome=Outcome.REPLAYED)
         gap = _submit(store, c, source, replace(second_manifest, produced_at=_at(20), since=_at(17)))
         assert not gap.accepted
         assert factory.read_table(store, c.table) == [{"event": "one"}, {"event": "two"}]
         self._fold(store, c)
-
-    def test_stamp_ahead_refuses_until_receipts_repair_the_lost_ledger(
-        self, factory: StoreFactory, store: Store
-    ) -> None:
-        c = _contract()
-        first = self._deliver(factory, store, c, [_row(1)])
-        second = self._deliver(factory, store, c, [_row(2)], day=19)
-        factory.set_ledger(store, first.ledger)
-        with pytest.raises(InconsistentPublication, match="stamp ahead"):
-            store.load_ledger(c)
-        with pytest.raises(InconsistentPublication):
-            _submit(store, c, object(), second.manifest)
-        assert store.repair(c) == second.ledger
-        assert _submit(store, c, object(), second.manifest) == replace(second, replayed=True)
-        assert self._rows(factory, store, c.table) == [_row(2)]
-        self._fold(store, c)
-
-    def test_ledger_ahead_requires_a_new_complete_delivery(self, factory: StoreFactory, store: Store) -> None:
-        c = _contract()
-        first = self._deliver(factory, store, c, [_row(1)])
-        second = self._deliver(factory, store, c, [_row(2)], day=19)
-        factory.set_stamp(store, c.table, first.publication_id)
-        with pytest.raises(InconsistentPublication, match="ledger ahead"):
-            store.load_ledger(c)
-        with pytest.raises(InconsistentPublication):
-            store.repair(c)
-        with pytest.raises(InconsistentPublication):
-            _submit(store, c, object(), second.manifest)
-        with pytest.raises(InconsistentPublication):
-            self._deliver(factory, store, c, [_row(2)], "daily", 20, window=(_at(18).date(), _at(19).date()))
-        assert self._deliver(factory, store, c, [_row(3)], day=20).accepted
-        assert self._rows(factory, store, c.table) == [_row(3)]
 
     def test_a_generation_break_needs_a_full_export_before_the_feed_can_continue(
         self, factory: StoreFactory, store: Store
@@ -404,7 +421,12 @@ class StoreConformance:
     def test_a_window_tombstone_cannot_delete_a_key_outside_its_coverage(
         self, factory: StoreFactory, store: Store
     ) -> None:
-        feed = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.TIMESTAMP)
+        feed = Shape(
+            coverage=Coverage.WINDOW,
+            completeness=Completeness.CHANGED_ONLY,
+            deletions=Deletions.TOMBSTONE,
+            checkpoint=Checkpoint.TIMESTAMP,
+        )
         c = _contract(shapes={"full": FULL, "feed_window": feed})
         first = self._deliver(factory, store, c, [_row(1), _row(2, 19)], generation="g1")
         refused = self._deliver(
@@ -462,7 +484,9 @@ class StoreConformance:
         self, factory: StoreFactory, store: Store
     ) -> None:
         c = _contract()
-        manifest = Manifest("other", "full", _at(18), rows=0, schema_hash=c.schema_hash)
+        manifest = Manifest(
+            table="other", shape="full", produced_at=_at(18), rows=0, schema_hash=c.schema_hash
+        )
         receipt = _submit(store, c, object(), manifest)
         assert not receipt.accepted
         assert store.receipts(c.table) == (receipt,)
@@ -483,11 +507,11 @@ class StoreConformance:
         self, factory: StoreFactory, store: Store
     ) -> None:
         c = Contract(
-            "plants",
-            ("id",),
-            {"plant": WINDOW},
-            "plant",
-            (Column("id", "int"), Column("plant", "str")),
+            table="plants",
+            key=("id",),
+            shapes={"plant": WINDOW},
+            window_column="plant",
+            schema=(Column("id", "int"), Column("plant", "str")),
             max_shrink_fraction=None,
         )
         for day, name, rows in (
@@ -511,9 +535,9 @@ class StoreConformance:
                 pushed = self._deliver(factory, store, c, rows, shape, day, since=since)
                 request = next_extraction(pull.load_ledger(c), shape, _at(day))
                 manifest = Manifest(
-                    c.table,
-                    request.shape,
-                    request.until,
+                    table=c.table,
+                    shape=request.shape,
+                    produced_at=request.until,
                     since=request.since,
                     rows=len(rows),
                     schema_hash=c.schema_hash,
@@ -533,9 +557,9 @@ class StoreConformance:
         self, factory: StoreFactory, store: Store
     ) -> None:
         c = Contract(
-            "updates",
-            ("id",),
-            {"full": FULL, "since": SINCE},
+            table="updates",
+            key=("id",),
+            shapes={"full": FULL, "since": SINCE},
             schema=(Column("id", "int"), Column("updated_at", "datetime"), Column("value", "str")),
         )
         source: list[dict[str, Any]] = [
@@ -574,7 +598,12 @@ class StoreConformance:
         prepared = []
         for key in (2, 3):
             manifest = Manifest(
-                c.table, "full", _at(19), rows=1, schema_hash=c.schema_hash, content_hash=str(key)
+                table=c.table,
+                shape="full",
+                produced_at=_at(19),
+                rows=1,
+                schema_hash=c.schema_hash,
+                content_hash=str(key),
             )
             candidate = store.hold(factory.write_source([_row(key)], c.schema), manifest, c)
             checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
@@ -584,10 +613,8 @@ class StoreConformance:
         loser, stale = prepared[1]
         try:
             assert receipt.transition is not None and stale.transition is not None
-            store.execute(winner, receipt.transition.plan)
             store.publish(winner, receipt)
-            with pytest.raises(StoreError, match="base|publication|changed"):
-                store.execute(loser, stale.transition.plan)
+            with pytest.raises(StoreError):
                 store.publish(loser, stale)
         finally:
             store.abort(winner)
@@ -595,17 +622,6 @@ class StoreConformance:
         assert store.load_ledger(c) == receipt.ledger
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, receipt)
-
-    def test_lost_ledger_with_retained_receipts_requires_repair(
-        self, factory: StoreFactory, store: Store
-    ) -> None:
-        c = _contract()
-        receipt = self._deliver(factory, store, c, [_row(1)])
-        factory.remove_ledger(store, c.table)
-        with pytest.raises(InconsistentPublication):
-            _submit(store, c, object(), receipt.manifest)
-        assert store.repair(c) == receipt.ledger
-        assert _submit(store, c, object(), receipt.manifest) == replace(receipt, replayed=True)
 
     def test_corrected_content_hash_is_a_new_delivery_subject_to_time_admission(
         self, factory: StoreFactory, store: Store
@@ -690,3 +706,94 @@ class StoreConformance:
             ([_row(1)], first.publication_id),
             ([_row(2)], second.publication_id),
         )
+
+    def test_a_rejected_manifest_that_cannot_round_trip_leaves_the_audit_readable(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        manifest = replace(first.manifest, produced_at=_at(19), keys=((1,),))
+        object.__setattr__(manifest, "tombstones", ((1,),))
+        with pytest.raises(SerializationError):
+            _submit(store, c, object(), manifest)
+        assert store.receipts(c.table) == (first,)
+        assert store.load_ledger(c) == first.ledger
+        self._fold(store, c)
+
+    def test_a_rejection_cannot_be_persisted_against_a_newer_publication(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        from dogana import Gate
+
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        refused = Gate.evaluate(first.ledger, replace(first.manifest, shape="missing"), now=_at(30))
+        second = self._deliver(factory, store, c, [_row(2)], day=19)
+        with pytest.raises(StoreError):
+            store.publish(None, refused)
+        assert store.receipts(c.table) == (first, second)
+        assert store.load_ledger(c) == second.ledger
+
+    def test_checks_require_a_candidate_held_by_the_store(self, factory: StoreFactory, store: Store) -> None:
+        from dogana import Gate
+
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        manifest = replace(first.manifest, produced_at=_at(19))
+        with pytest.raises(StoreError):
+            store.check("not_held", c, manifest, Gate.requirements(c, manifest))
+        assert store.receipts(c.table) == (first,)
+        assert store.load_ledger(c) == first.ledger
+        assert self._rows(factory, store, c.table) == [_row(1)]
+
+
+class StampedLedgerConformance(_StoreScenarios):
+    """Optional recovery tests for stores exposing both stamp and repair."""
+
+    def test_stamp_ahead_refuses_until_receipts_repair_the_lost_ledger(
+        self, factory: StampedStoreFactory, store: Store
+    ) -> None:
+        stamped = _stamped(store)
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        second = self._deliver(factory, store, c, [_row(2)], day=19)
+        factory.set_ledger(store, first.ledger)
+        with pytest.raises(StampAhead):
+            store.load_ledger(c)
+        with pytest.raises(InconsistentPublication):
+            _submit(store, c, object(), second.manifest)
+        assert stamped.repair(c) == second.ledger
+        assert _submit(store, c, object(), second.manifest) == replace(second, outcome=Outcome.REPLAYED)
+        assert self._rows(factory, store, c.table) == [_row(2)]
+        self._fold(store, c)
+
+    def test_ledger_ahead_requires_a_new_complete_delivery(
+        self, factory: StampedStoreFactory, store: Store
+    ) -> None:
+        stamped = _stamped(store)
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        second = self._deliver(factory, store, c, [_row(2)], day=19)
+        factory.set_stamp(store, c.table, first.publication_id)
+        with pytest.raises(LedgerAhead):
+            store.load_ledger(c)
+        with pytest.raises(InconsistentPublication):
+            stamped.repair(c)
+        with pytest.raises(InconsistentPublication):
+            _submit(store, c, object(), second.manifest)
+        with pytest.raises(InconsistentPublication):
+            self._deliver(factory, store, c, [_row(2)], "daily", 20, window=(_at(18).date(), _at(19).date()))
+        assert self._deliver(factory, store, c, [_row(3)], day=20).accepted
+        assert self._rows(factory, store, c.table) == [_row(3)]
+
+    def test_lost_ledger_with_retained_receipts_requires_repair(
+        self, factory: StampedStoreFactory, store: Store
+    ) -> None:
+        stamped = _stamped(store)
+        c = _contract()
+        receipt = self._deliver(factory, store, c, [_row(1)])
+        factory.remove_ledger(store, c.table)
+        with pytest.raises(InconsistentPublication):
+            _submit(store, c, object(), receipt.manifest)
+        assert stamped.repair(c) == receipt.ledger
+        assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)

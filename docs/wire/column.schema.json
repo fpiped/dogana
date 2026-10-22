@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Column",
+  "title": "Column",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Column"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+    },
+    "type": {
+      "enum": [
+        "int",
+        "float",
+        "str",
+        "bool",
+        "date",
+        "datetime"
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "name",
+    "type"
+  ],
+  "additionalProperties": false
+}

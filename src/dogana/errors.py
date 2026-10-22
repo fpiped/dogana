@@ -27,3 +27,11 @@ class StoreError(DoganaError):
 
 class InconsistentPublication(StoreError):
     """Published rows and their persisted evidence disagree."""
+
+
+class LedgerAhead(InconsistentPublication):
+    """Recorded evidence is newer than the publication carried by the rows."""
+
+
+class StampAhead(InconsistentPublication):
+    """The row publication lacks matching cached evidence or retained history."""

@@ -4,7 +4,7 @@ from tests.support import at
 
 pytest.importorskip("duckdb")
 
-from dogana import Ledger
+from dogana import Column, Contract, Ledger, Manifest, Shape
 from dogana.errors import StoreError
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
@@ -82,3 +82,38 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 assert not connection.execute(
                     "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '__dogana_candidate_%'"
                 ).fetchone()[0], (index, sql)
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt])
+def test_reopening_after_an_interrupted_append_retains_one_publication_and_retry_preserves_duplicates(
+    tmp_path, monkeypatch, error_type
+):
+    c = Contract("events", (), {"log": Shape.append()}, schema=(Column("event", "str"),), start_at=at(18))
+    path = tmp_path / "landing.duckdb"
+    first_manifest = Manifest(c.table, "log", at(19), since=at(18), rows=1, schema_hash=c.schema_hash)
+    manifest = Manifest(c.table, "log", at(20), since=at(19), rows=2, schema_hash=c.schema_hash)
+    rows = [{"event": "same"}]
+    with DuckDBStore(path) as store:
+        first = store.deliver(c, rows, first_manifest, now=at(30))
+        assert first.accepted
+
+        def fail():
+            raise error_type("publication interrupted")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "_publication_point", fail)
+            with pytest.raises(KeyboardInterrupt if error_type is KeyboardInterrupt else StoreError):
+                store.deliver(c, rows * 2, manifest, now=at(30))
+    with DuckDBStore(path) as reopened:
+        assert reopened.read_publication(c) == (rows, first.ledger)
+        assert reopened.publication_stamp(c.table) == first.publication_id
+        assert reopened.receipts(c.table) == (first,)
+        assert reopened.accepted_receipt(manifest.identity) is None
+        retried = reopened.deliver(c, rows * 2, manifest, now=at(30))
+        assert retried.accepted
+        assert reopened.read_publication(c) == (rows * 3, retried.ledger)
+        assert reopened.read(c.table, first.publication_id) == rows
+        replayed = reopened.deliver(c, object(), manifest, now=at(30))
+        assert replayed.replayed and replayed.identity == retried.identity
+        assert reopened.receipts(c.table) == (first, retried)
+        assert reopened.read(c.table) == rows * 3

@@ -101,7 +101,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                         at(18),
                     )
                 assert store.deliver(c, tmp_path / "already_removed.csv", manifest, now=at(30)) == replace(
-                    receipt, replayed=True
+                    receipt, outcome="replayed"
                 )
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             assert len(store.receipts()) == receipt_count
@@ -229,13 +229,18 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
 ):
     from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
 
-    plant = Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
+    plant = Shape(
+        coverage=Coverage.WINDOW,
+        completeness=Completeness.COMPLETE,
+        deletions=Deletions.ABSENCE,
+        checkpoint=Checkpoint.NONE,
+    )
     c = Contract(
         "plants",
         ("id",),
         {"plant": plant},
-        "plant",
-        (Column("id", "int"), Column("plant", "str")),
+        window_column="plant",
+        schema=(Column("id", "int"), Column("plant", "str")),
         max_shrink_fraction=None,
     )
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
@@ -260,14 +265,11 @@ def test_a_failure_after_row_changes_rolls_back_rows_ledger_and_receipt_together
         m = sidecar(path, c, "full", 18, 1)
         first = store.deliver(c, path, m, now=at(30))
         assert first.accepted
-        original = store.save_receipt
 
-        def fail_accepted(receipt):
-            if receipt.accepted:
-                raise ValueError("publication storage failed")
-            original(receipt)
+        def fail():
+            raise ValueError("publication storage failed")
 
-        monkeypatch.setattr(store, "save_receipt", fail_accepted)
+        monkeypatch.setattr(store, "_publication_point", fail)
         path = csv_file(tmp_path, "new.csv", [row(2)])
         m = sidecar(path, c, "full", 19, 1)
         from dogana.errors import StoreError
@@ -327,7 +329,7 @@ def test_an_append_only_log_has_no_keys_and_replay_does_not_duplicate_events(tmp
             receipt = store.deliver(c, path, m, now=at(30))
             assert receipt.accepted
             assert receipt.transition.plan.actions[0].operation.value == "append"
-            assert store.deliver(c, path, m, now=at(30)) == replace(receipt, replayed=True)
+            assert store.deliver(c, path, m, now=at(30)) == replace(receipt, outcome="replayed")
         assert store.read(c.table) == [{"event": "event18"}, {"event": "event19"}]
         assert len(store.receipts()) == 2
 
@@ -372,7 +374,12 @@ def test_a_window_that_moves_a_published_key_into_coverage_removes_its_old_copy(
 def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):
     from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
 
-    feed = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.TIMESTAMP)
+    feed = Shape(
+        coverage=Coverage.WINDOW,
+        completeness=Completeness.CHANGED_ONLY,
+        deletions=Deletions.TOMBSTONE,
+        checkpoint=Checkpoint.TIMESTAMP,
+    )
     c = contract(shapes={"full": FULL, "feed_window": feed})
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1, 18), row(2, 19)])

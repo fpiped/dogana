@@ -11,18 +11,20 @@ EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 @pytest.mark.parametrize(
     "name,cls", [("contract", Contract), ("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)]
 )
-def test_protocol_wire_examples_are_complete_versioned_round_trips(name, cls):
+def test_protocol_wire_examples_are_complete_versioned_round_trips(name, cls, validate_wire):
     raw = (EXAMPLES / f"{name}.json").read_text()
+    validate_wire(json.loads(raw))
     value = cls.from_json(raw)
     assert cls.from_json(value.to_json()) == value
     assert json.loads(raw) == value.to_dict()
 
 
-def test_the_protocol_inline_json_examples_are_valid_public_wire_values():
+def test_the_protocol_inline_json_examples_are_valid_public_wire_values(validate_wire):
     import re
 
     text = (EXAMPLES.parent / "protocol.md").read_text()
     for raw in re.findall(r"```json\n(.*?)\n```", text, re.DOTALL):
+        validate_wire(json.loads(raw))
         cls = {"Shape": Shape, "Manifest": Manifest}[json.loads(raw)["kind"]]
         assert cls.from_json(raw).to_dict() == json.loads(raw)
 
@@ -38,7 +40,7 @@ def test_the_protocol_receipt_replays_to_the_documented_ledger():
 
 def test_example_identities_match_fixed_independently_specified_hashes():
     expected = json.loads((EXAMPLES / "identity-vectors.json").read_text())["examples"]
-    assert {path.stem for path in EXAMPLES.glob("*.json")} == {*expected, "identity-vectors"}
+    assert {path.stem for path in EXAMPLES.glob("*.json")} == {*expected, "identity-vectors", "jcs-vectors"}
     for name, cls in (
         ("contract", Contract),
         ("manifest", Manifest),
@@ -49,17 +51,93 @@ def test_example_identities_match_fixed_independently_specified_hashes():
         assert value.identity == expected[name] == (EXAMPLES / f"{name}.identity").read_text().strip()
 
 
-def test_identity_vectors_fix_canonical_bytes_and_hashes():
+def test_identity_vectors_fix_canonical_bytes_and_hashes(validate_wire):
     from hashlib import sha256
 
     from dogana.wire import Wire
 
     vectors = json.loads((EXAMPLES / "identity-vectors.json").read_text())["vectors"]
     for vector in vectors:
+        validate_wire(vector["wire"])
         value = Wire.from_dict(vector["wire"])
         assert value.identity_json() == vector["canonical"], vector["name"]
         assert value.identity == vector["sha256"], vector["name"]
         assert sha256(vector["canonical"].encode("utf-8")).hexdigest() == vector["sha256"]
+
+
+@pytest.mark.parametrize("name", ["contract", "manifest", "ledger", "receipt"])
+def test_wire_schemas_refuse_missing_unknown_and_invalid_version_fields(name, validate_wire):
+    from jsonschema import ValidationError
+
+    value = json.loads((EXAMPLES / f"{name}.json").read_text())
+    for field in value:
+        missing = {key: item for key, item in value.items() if key != field}
+        with pytest.raises(ValidationError):
+            validate_wire(missing)
+    for change in ({"unknown": None}, {"version": True}, {"version": 2}):
+        with pytest.raises(ValidationError):
+            validate_wire(value | change)
+
+
+def test_receipt_schema_distinguishes_all_outcomes_and_rejects_the_removed_booleans(validate_wire):
+    from dataclasses import replace
+
+    from jsonschema import ValidationError
+
+    from dogana import Check, Claims, Region, RegionClaim, State
+
+    accepted = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
+    rejected = replace(
+        accepted,
+        outcome="rejected",
+        checks=(Check("row_count", False, "row count differs"),),
+        transition=None,
+        ledger=Ledger(accepted.ledger.contract),
+        claims=Claims((RegionClaim(accepted.manifest.table, Region(), State.UNKNOWN),)),
+        publication_id=None,
+    )
+    replayed = replace(accepted, outcome="replayed")
+    for value in (accepted, rejected, replayed):
+        raw = value.to_dict()
+        validate_wire(raw)
+        assert Receipt.from_dict(raw) == value
+        for change in ({"accepted": value.accepted}, {"replayed": value.replayed}, {"outcome": "unknown"}):
+            with pytest.raises(ValidationError):
+                validate_wire(raw | change)
+    assert accepted.identity == replayed.identity != rejected.identity
+    with pytest.raises(ValidationError):
+        validate_wire(accepted.to_dict() | {"transition": None})
+    with pytest.raises(ValidationError):
+        validate_wire(rejected.to_dict() | {"transition": accepted.transition.to_dict()})
+
+
+def test_rfc8785_binary64_vectors_fix_ecmascript_number_spelling():
+    import struct
+
+    from dogana import SerializationError
+    from dogana.wire import canonical_json
+
+    vectors = json.loads((EXAMPLES / "jcs-vectors.json").read_text())
+    for vector in vectors["numbers"]:
+        value = struct.unpack(">d", bytes.fromhex(vector["binary64"]))[0]
+        assert canonical_json(value) == vector["canonical"], vector["binary64"]
+        if value.is_integer():
+            assert canonical_json(int(value)) == vector["canonical"]
+    for bits in vectors["invalid_numbers"]:
+        with pytest.raises(SerializationError, match="finite"):
+            canonical_json(struct.unpack(">d", bytes.fromhex(bits))[0])
+
+
+def test_jcs_vectors_fix_utf8_bytes_utf16_order_and_string_escapes():
+    from hashlib import sha256
+
+    from dogana.wire import canonical_json
+
+    vectors = json.loads((EXAMPLES / "jcs-vectors.json").read_text())["values"]
+    for vector in vectors:
+        encoded = canonical_json(vector["value"])
+        assert encoded == vector["canonical"], vector["name"]
+        assert sha256(encoded.encode("utf-8")).hexdigest() == vector["sha256"]
 
 
 def test_the_protocol_receipt_matches_the_gate_decision_at_receiver_time():

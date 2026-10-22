@@ -22,7 +22,13 @@ def test_the_twelve_semantic_shapes_and_no_other_are_admitted():
     valid = []
     for properties in product(Coverage, Completeness, Deletions, Checkpoint):
         try:
-            valid.append(Shape(*properties))
+            valid.append(
+                Shape(
+                    **dict(
+                        zip(("coverage", "completeness", "deletions", "checkpoint"), properties, strict=True)
+                    )
+                )
+            )
         except InvalidContract:
             pass
     assert len(valid) == 12
@@ -43,7 +49,7 @@ def test_the_twelve_semantic_shapes_and_no_other_are_admitted():
 )
 def test_a_source_cannot_declare_a_contradictory_shape(properties):
     with pytest.raises(InvalidContract):
-        Shape(*properties)
+        Shape(**dict(zip(("coverage", "completeness", "deletions", "checkpoint"), properties, strict=True)))
 
 
 @pytest.mark.parametrize(
@@ -133,8 +139,8 @@ def test_append_only_history_has_an_explicit_start_and_a_keyless_full_export_nee
 
 
 def test_unrecognized_shape_properties_use_the_public_contract_error():
-    with pytest.raises(InvalidContract, match="invalid type for Shape.coverage"):
-        Shape("sometimes", "complete", "absence", "none")
+    with pytest.raises(InvalidContract, match="invalid value for Shape.coverage"):
+        Shape(coverage="sometimes", completeness="complete", deletions="absence", checkpoint="none")
 
 
 def test_date_windows_cannot_request_fractional_calendar_days():
@@ -335,3 +341,59 @@ def test_lone_surrogates_cannot_enter_window_or_key_domains(value):
     ):
         with pytest.raises(InvalidContract, match="Unicode scalar"):
             build()
+
+
+@pytest.mark.parametrize(
+    "shape,kwargs,kind",
+    [
+        ("full", {}, "FullDelivery"),
+        ("daily", {"window": (at(17).date(), at(18).date())}, "WindowDelivery"),
+        ("since", {"since": at(17)}, "TimestampChanges"),
+        ("recent", {"since": at(17), "window": (at(17).date(), at(18).date())}, "TimestampChanges"),
+        ("feed", {"since": "g0", "generation": "g1"}, "GenerationChanges"),
+    ],
+)
+def test_each_keyed_delivery_pattern_parses_its_required_fields_once(shape, kwargs, kind):
+    c = contract()
+    m = c.manifest(shape, at(18), **kwargs)
+    parsed = m.check(c)
+    assert type(parsed).__name__ == kind
+    assert parsed.manifest == m and parsed.shape == c.shape(shape)
+    assert m.table == c.table and m.schema_hash == c.schema_hash
+
+
+def test_keyless_append_parses_a_timestamp_without_optional_fields():
+    from dogana.contract import AppendInterval
+
+    c = Contract("events", (), {"append": Shape.append()}, start_at=at(17))
+    parsed = c.manifest("append", at(18), since=at(17)).check(c)
+    assert isinstance(parsed, AppendInterval)
+    assert parsed.since == at(17)
+
+
+def test_shape_helpers_preserve_the_four_wire_properties():
+    assert Shape.full() == replace(FULL, cost=1)
+    assert Shape.window(size=timedelta(days=30)) == replace(WINDOW, cost=1)
+    assert Shape.changes() == replace(SINCE, cost=1)
+    assert Shape.feed() == FEED
+    assert Shape.append() == Shape.changes()
+    assert Shape.window(size=timedelta(days=30)).window_ending_at(at(19), "date") == (
+        (at(19) - timedelta(days=29)).date(),
+        at(19).date(),
+    )
+
+
+def test_optional_declaration_fields_require_keywords():
+    with pytest.raises(TypeError):
+        Shape("all", "complete", "absence", "none")
+    with pytest.raises(TypeError):
+        Contract("stock", ("id",), {"full": FULL}, None)
+    with pytest.raises(TypeError):
+        Manifest("stock", "full", at(18), None)
+
+
+@pytest.mark.parametrize("property,value", [("coverage", "sometimes"), ("checkpoint", "hourly")])
+def test_invalid_shape_vocabulary_identifies_the_property_and_value(property, value):
+    with pytest.raises(InvalidContract) as error:
+        replace(FULL, **{property: value})
+    assert f"Shape.{property}" in str(error.value) and repr(value) in str(error.value)

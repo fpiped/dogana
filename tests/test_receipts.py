@@ -54,7 +54,7 @@ def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
 
 def test_replayed_full_delivery_receipt_retains_its_original_identity_and_receiving_time():
     first = publication(Ledger(contract()), 18)
-    replay = replace(first, replayed=True)
+    replay = replace(first, outcome="replayed")
     assert replay.identity == first.identity
     assert replay.received_at == first.received_at
     assert replay != first

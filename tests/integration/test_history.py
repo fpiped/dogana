@@ -54,7 +54,7 @@ def test_history_equality_retains_null_values_without_copying_a_complete_table(t
     c = Contract(
         "nullable",
         ("id",),
-        {"full": Shape("all", "complete", "absence", "none")},
+        {"full": Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none")},
         schema=(Column("id", "int"), Column("value", "int")),
     )
     source = csv_file(
@@ -72,7 +72,7 @@ def test_history_equality_retains_null_values_without_copying_a_complete_table(t
 
 
 def test_legacy_snapshot_tables_stay_readable_after_new_publications_use_row_versions(tmp_path):
-    from dogana import InconsistentPublication
+    from dogana.errors import LedgerAhead
 
     c = contract(max_shrink_fraction=None)
     with DuckDBStore(":memory:") as store:
@@ -83,7 +83,7 @@ def test_legacy_snapshot_tables_stay_readable_after_new_publications_use_row_ver
         store.connection.execute("DROP TABLE __dogana_history_moves")
         store.connection.execute("DELETE FROM __dogana_publications")
         store.connection.execute("UPDATE __dogana_receipts SET document=?", [first.to_json()])
-        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+        with pytest.raises(LedgerAhead):
             store.load_ledger(c)
         assert store.read(c.table, first.publication_id) == [row(1)]
         source = csv_file(tmp_path, "next.csv", [row(2)])

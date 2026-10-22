@@ -3,7 +3,7 @@
     "contract": "56ede4a996efc04319d5e0a1b84e68916bc62ea6f780b48d82fec361eb311831",
     "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
     "ledger": "86320694e3ff2128f83f9a86666dafa0871c0414ca6b7f754455d85190f97d03",
-    "receipt": "a5c960d23d0d6bf6d7a892ea994c03a054af1242d46640f4eb2f179df2934dda"
+    "receipt": "6f8f75f34e266056c740c298b77d49b9bd669662d7e17adae672270fb627e360"
   },
   "vectors": [
     {
@@ -101,8 +101,8 @@
         ],
         "content_hash": "sha256:changed"
       },
-      "canonical": "{\"content_hash\":\"sha256:changed\",\"keys\":[[10,\"e\\u0301\"],[2,\"\\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
-      "sha256": "e0b7b27ae9f5e689fad431684096ac94ed4c33420bebe642aff9a8315ed4dd84"
+      "canonical": "{\"content_hash\":\"sha256:changed\",\"keys\":[[10,\"e\u0301\"],[2,\"\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
+      "sha256": "0ffb40ba8260274efbbe80bfbaf9ee18a0dc7665e4b6ca32205d94fa3419ea0f"
     },
     {
       "name": "explicit-disabled-shrink",
@@ -137,6 +137,144 @@
       },
       "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\"}",
       "sha256": "1e14b29a2dd7707cec46fd42b94cfbe4409795d855487810bda82ced3803475e"
+    },
+    {
+      "name": "shape-small-cost",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "all",
+        "completeness": "complete",
+        "deletions": "absence",
+        "checkpoint": "none",
+        "cost": 1e-07,
+        "window_size": null,
+        "lookback": null
+      },
+      "canonical": "{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"cost\":1e-7,\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}",
+      "sha256": "da5c759cb3fb4a62e69889101322dd877902365a6135461a662a843dc25e4019"
+    },
+    {
+      "name": "shape-fixed-cost",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "all",
+        "completeness": "complete",
+        "deletions": "absence",
+        "checkpoint": "none",
+        "cost": 1e+20,
+        "window_size": null,
+        "lookback": null
+      },
+      "canonical": "{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"cost\":100000000000000000000,\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}",
+      "sha256": "5aa78f6135c9a04a210ef30b948347aba126a015870941965dc89d8e46d9eeff"
+    },
+    {
+      "name": "shape-exponent-cost",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "all",
+        "completeness": "complete",
+        "deletions": "absence",
+        "checkpoint": "none",
+        "cost": 1e+21,
+        "window_size": null,
+        "lookback": null
+      },
+      "canonical": "{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"cost\":1e+21,\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}",
+      "sha256": "2dd5c504fbba4992b7c67f6f837bb0324c420a1a78f5bed9d48411426e3d7472"
+    },
+    {
+      "name": "shape-negative-zero",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "all",
+        "completeness": "complete",
+        "deletions": "absence",
+        "checkpoint": "none",
+        "cost": -0.0,
+        "window_size": null,
+        "lookback": null
+      },
+      "canonical": "{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"cost\":0,\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}",
+      "sha256": "75c0db0915178c730be2a37b49d99f2522c5598e5a9c6212c78df2181e4f0f80"
+    },
+    {
+      "name": "utf16-shape-name-order",
+      "wire": {
+        "kind": "Contract",
+        "version": 1,
+        "table": "stock",
+        "key": [
+          "id"
+        ],
+        "shapes": {
+          "\ufffd": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          },
+          "\ud83d\ude00": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          }
+        },
+        "window_column": null,
+        "schema": [],
+        "max_shrink_fraction": 0.5,
+        "freshness": {
+          "$seconds": 604800
+        },
+        "start_at": null,
+        "cursor_column": null
+      },
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"\ud83d\ude00\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"\ufffd\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\"}",
+      "sha256": "b8aaa9fdacb2ef61667403824aa745175fa5ac6c73dc0a18eee6058030e71c4f"
+    },
+    {
+      "name": "utf16-key-set-order",
+      "wire": {
+        "kind": "Manifest",
+        "version": 1,
+        "table": "stock",
+        "shape": "full",
+        "produced_at": {
+          "$datetime": "2026-10-18T00:00:00+00:00"
+        },
+        "window": null,
+        "since": null,
+        "generation": null,
+        "rows": null,
+        "schema_hash": null,
+        "keys": [
+          [
+            "\ufffd"
+          ],
+          [
+            "\ud83d\ude00"
+          ]
+        ],
+        "tombstones": [],
+        "content_hash": null
+      },
+      "canonical": "{\"keys\":[[\"\ud83d\ude00\"],[\"\ufffd\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
+      "sha256": "4325c0ae311a45f3695a113ced129a874bb19f63a1e48f85f85785f523b0c762"
     }
   ]
 }

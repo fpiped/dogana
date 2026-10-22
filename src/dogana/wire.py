@@ -22,29 +22,35 @@ JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dic
 class Wire:
     version: ClassVar[int] = 1
 
+    @classmethod
+    def _wire_schema(cls) -> type[Wire]:
+        return cls
+
     def __post_init__(self) -> None:
-        if not is_dataclass(self):
+        schema = self._wire_schema()
+        if not is_dataclass(schema):
             raise InvalidContract("wire values must be dataclasses")
         hints = _hints(type(self))
-        for field in fields(self):
+        for field in fields(schema):
             value = getattr(self, field.name)
             annotation = hints[field.name]
             if not _matches(value, annotation, lists=True):
-                raise InvalidContract(f"invalid type for {type(self).__name__}.{field.name}")
+                raise InvalidContract(f"invalid value for {type(self).__name__}.{field.name}={value!r}")
             object.__setattr__(self, field.name, _normalize(value, annotation))
 
     def _document(self, *, identity: bool) -> dict[str, JSONValue]:
         kind = type(self).__name__
-        if not is_dataclass(self) or _registry().get(kind) is not type(self):
+        schema = self._wire_schema()
+        if not is_dataclass(schema) or _registry().get(kind) is not type(self):
             raise SerializationError("unknown wire kind")
         result: dict[str, JSONValue] = {"kind": kind}
         if not identity:
             result["version"] = self.version
-        for field in fields(self):
+        for field in fields(schema):
             value = getattr(self, field.name)
             if identity:
-                if kind == "Receipt" and field.name == "replayed":
-                    continue
+                if kind == "Receipt" and field.name == "outcome" and value == "replayed":
+                    value = "accepted"
                 default = field.default
                 if field.default_factory is not MISSING:
                     default = field.default_factory()
@@ -52,7 +58,7 @@ class Wire:
                     continue
             encoded = _encode(value, identity=identity)
             if identity and field.name in ("keys", "tombstones") and isinstance(encoded, list):
-                encoded = sorted(encoded, key=_canonical)
+                encoded = sorted(encoded, key=lambda item: canonical_json(item).encode("utf-16-be"))
             result[field.name] = encoded
         return result
 
@@ -60,13 +66,20 @@ class Wire:
         return self._document(identity=False)
 
     def to_json(self, *, indent: int | None = None) -> str:
-        return _canonical(self.to_dict(), indent=indent)
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            indent=indent,
+            allow_nan=False,
+        )
 
     def identity_dict(self) -> dict[str, JSONValue]:
         return self._document(identity=True)
 
     def identity_json(self) -> str:
-        return _canonical(self.identity_dict())
+        return canonical_json(self.identity_dict())
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> Self:
@@ -106,10 +119,59 @@ def utc(value: datetime) -> datetime:
         raise InvalidContract("timestamp is outside the UTC datetime range") from exc
 
 
-def _canonical(value: JSONValue, *, indent: int | None = None) -> str:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, indent=indent, allow_nan=False
-    )
+def canonical_json(value: JSONValue) -> str:
+    """RFC 8785 JSON, rejecting integers that would lose precision in binary64."""
+    try:
+        if value is None:
+            return "null"
+        if type(value) is bool:
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return _number(value)
+        if isinstance(value, str):
+            value.encode("utf-8")
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list):
+            return "[" + ",".join(canonical_json(item) for item in value) + "]"
+        if isinstance(value, dict):
+            if any(type(key) is not str for key in value):
+                raise SerializationError("mapping keys must be strings")
+            keys = sorted(value, key=lambda key: key.encode("utf-16-be"))
+            properties = (canonical_json(key) + ":" + canonical_json(value[key]) for key in keys)
+            return "{" + ",".join(properties) + "}"
+        raise SerializationError(f"unsupported JSON value: {type(value).__name__}")
+    except UnicodeError as exc:
+        raise SerializationError("strings must contain only Unicode scalar values") from exc
+    except RecursionError as exc:
+        raise SerializationError("JSON containers are recursive or too deeply nested") from exc
+
+
+def _number(value: int | float) -> str:
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise SerializationError("number is outside the binary64 range") from exc
+    if not math.isfinite(number):
+        raise SerializationError("numbers must be finite")
+    if number != value:
+        raise SerializationError("integer cannot be represented exactly as binary64")
+    if not number:
+        return "0"
+    sign = "-" if number < 0 else ""
+    mantissa, _, exponent = repr(abs(number)).partition("e")
+    whole, _, fraction = mantissa.partition(".")
+    digits = whole + fraction
+    leading = len(digits) - len(digits.lstrip("0"))
+    point = len(whole) + int(exponent or "0") - leading
+    digits = digits.lstrip("0").rstrip("0")
+    if 0 < point <= 21:
+        if point >= len(digits):
+            return sign + digits + "0" * (point - len(digits))
+        return sign + digits[:point] + "." + digits[point:]
+    if -6 < point <= 0:
+        return sign + "0." + "0" * -point + digits
+    coefficient = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+    return sign + coefficient + "e" + ("+" if point > 0 else "") + str(point - 1)
 
 
 def encode(value: object) -> JSONValue:
@@ -168,9 +230,12 @@ def decode(value: object) -> object:
             raise SerializationError("unsupported wire version")
         kind = value.get("kind")
         cls = _registry().get(kind) if isinstance(kind, str) else None
-        if cls is None or not is_dataclass(cls):
+        if cls is None:
             raise SerializationError("unknown wire kind")
-        names = {field.name for field in fields(cls)}
+        schema = cls._wire_schema()
+        if not is_dataclass(schema):
+            raise SerializationError("wire values must be dataclasses")
+        names = {field.name for field in fields(schema)}
         missing = names - set(value)
         extra = set(value) - names - {"kind", "version"}
         if missing:
@@ -178,10 +243,10 @@ def decode(value: object) -> object:
         if extra:
             raise SerializationError(f"unknown fields for {kind}: {', '.join(sorted(extra))}")
         decoded = {name: decode(value[name]) for name in names}
-        hints = _hints(cls)
+        hints = _hints(schema)
         for name, item in decoded.items():
             if not _matches(item, hints[name]):
-                raise SerializationError(f"invalid type for {kind}.{name}")
+                raise SerializationError(f"invalid value for {kind}.{name}={item!r}")
         return cast(_Constructor, cls)(**decoded)
     return {key: decode(item) for key, item in value.items()}
 
@@ -216,7 +281,7 @@ def _registry() -> Mapping[str, type[Wire]]:
 
 @cache
 def _hints(cls: type[Wire]) -> dict[str, object]:
-    return get_type_hints(cls)
+    return get_type_hints(cls._wire_schema())
 
 
 def _matches(value: object, annotation: object, *, lists: bool = False) -> bool:
@@ -275,6 +340,8 @@ def _normalize(value: object, annotation: object) -> object:
         if normalized != value:
             raise InvalidContract("number cannot be represented exactly as a float")
         return normalized
+    if type(value) is int:
+        _number(value)
     if isinstance(value, timedelta):
         _seconds(value)
     if isinstance(value, datetime):

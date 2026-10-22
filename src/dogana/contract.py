@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
+from types import MappingProxyType
+from typing import Literal, TypeAlias
 
-from .wire import InvalidContract, Wire, utc
+from .wire import InvalidContract, Wire, canonical_json, utc
 
 Scalar = str | int | date | datetime
 Window = tuple[Scalar, Scalar]
@@ -89,11 +90,41 @@ class Column(Wire):
     def __post_init__(self) -> None:
         super().__post_init__()
         identifier(self.name)
-        if self.type not in ("int", "float", "str", "bool", "date", "datetime"):
-            raise InvalidContract("unsupported logical column type")
+        if self.type not in LOGICAL_TYPES:
+            raise InvalidContract(f"Column.type={self.type!r} is unsupported")
 
 
 @dataclass(frozen=True)
+class LogicalType:
+    python_type: type
+    ordered: bool
+
+
+LOGICAL_TYPES = MappingProxyType(
+    {
+        "int": LogicalType(int, True),
+        "float": LogicalType(float, False),
+        "str": LogicalType(str, True),
+        "bool": LogicalType(bool, False),
+        "date": LogicalType(date, True),
+        "datetime": LogicalType(datetime, True),
+    }
+)
+
+
+@dataclass(frozen=True)
+class Complete:
+    coverage: Literal[Coverage.ALL, Coverage.WINDOW]
+
+
+@dataclass(frozen=True)
+class Changed:
+    coverage: Coverage
+    checkpoint: Literal[Checkpoint.TIMESTAMP, Checkpoint.GENERATION]
+    deletions: Literal[Deletions.TOMBSTONE, Deletions.NONE]
+
+
+@dataclass(frozen=True, kw_only=True)
 class Shape(Wire):
     coverage: Coverage
     completeness: Completeness
@@ -105,14 +136,7 @@ class Shape(Wire):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.complete != (self.checkpoint is Checkpoint.NONE):
-            raise InvalidContract("complete deliveries have no checkpoint; changed-only deliveries have one")
-        if self.complete != (self.deletions is Deletions.ABSENCE):
-            raise InvalidContract("only complete deliveries signal deletions by absence")
-        if self.coverage is Coverage.KEYS and self.complete:
-            raise InvalidContract("named-key coverage describes a change stream")
-        if self.coverage is Coverage.WINDOW and self.checkpoint is Checkpoint.GENERATION:
-            raise InvalidContract("a generation checkpoint covers the whole table")
+        _ = self.semantics
         if self.cost < 0:
             raise InvalidContract("cost must be finite and nonnegative")
         if self.window_size is not None and (
@@ -125,8 +149,91 @@ class Shape(Wire):
             raise InvalidContract("a nonnegative lookback belongs to a timestamp shape")
 
     @property
+    def semantics(self) -> Complete | Changed:
+        match self.completeness, self.coverage, self.checkpoint, self.deletions:
+            case Completeness.COMPLETE, (
+                Coverage.ALL | Coverage.WINDOW
+            ) as coverage, Checkpoint.NONE, Deletions.ABSENCE:
+                return Complete(coverage)
+            case Completeness.CHANGED_ONLY, coverage, (
+                Checkpoint.TIMESTAMP | Checkpoint.GENERATION
+            ) as checkpoint, (Deletions.TOMBSTONE | Deletions.NONE) as deletions if (
+                coverage is not Coverage.WINDOW or checkpoint is Checkpoint.TIMESTAMP
+            ):
+                return Changed(coverage, checkpoint, deletions)
+        raise InvalidContract(
+            f"invalid shape: completeness={self.completeness!r}, coverage={self.coverage!r}, "
+            f"checkpoint={self.checkpoint!r}, deletions={self.deletions!r}"
+        )
+
+    @property
     def complete(self) -> bool:
-        return self.completeness is Completeness.COMPLETE
+        return isinstance(self.semantics, Complete)
+
+    @classmethod
+    def full(cls, *, cost: float = 1) -> Shape:
+        return cls(
+            coverage=Coverage.ALL,
+            completeness=Completeness.COMPLETE,
+            deletions=Deletions.ABSENCE,
+            checkpoint=Checkpoint.NONE,
+            cost=cost,
+        )
+
+    @classmethod
+    def window(cls, *, size: timedelta | None = None, cost: float = 1) -> Shape:
+        return cls(
+            coverage=Coverage.WINDOW,
+            completeness=Completeness.COMPLETE,
+            deletions=Deletions.ABSENCE,
+            checkpoint=Checkpoint.NONE,
+            window_size=size,
+            cost=cost,
+        )
+
+    @classmethod
+    def changes(
+        cls,
+        *,
+        checkpoint: Checkpoint = Checkpoint.TIMESTAMP,
+        deletions: Deletions = Deletions.NONE,
+        coverage: Coverage = Coverage.ALL,
+        cost: float = 1,
+        lookback: timedelta | None = None,
+        window_size: timedelta | None = None,
+    ) -> Shape:
+        return cls(
+            coverage=coverage,
+            completeness=Completeness.CHANGED_ONLY,
+            deletions=deletions,
+            checkpoint=checkpoint,
+            cost=cost,
+            lookback=lookback,
+            window_size=window_size,
+        )
+
+    @classmethod
+    def feed(cls, *, cost: float = 1) -> Shape:
+        return cls.changes(
+            coverage=Coverage.KEYS, checkpoint=Checkpoint.GENERATION, deletions=Deletions.TOMBSTONE, cost=cost
+        )
+
+    @classmethod
+    def append(cls, *, cost: float = 1) -> Shape:
+        return cls.changes(cost=cost)
+
+    def window_ending_at(self, until: datetime, logical_type: str = "datetime") -> Window:
+        until = utc(until)
+        if self.window_size is None or logical_type not in ("date", "datetime"):
+            raise InvalidContract(
+                f"window_size={self.window_size!r} needs a date or datetime domain: {logical_type!r}"
+            )
+        if logical_type == "date":
+            if self.window_size % timedelta(days=1):
+                raise InvalidContract(f"DATE window_size={self.window_size!r} must contain whole days")
+            end = until.date()
+            return end - (self.window_size - timedelta(days=1)), end
+        return until - self.window_size, until
 
 
 @dataclass(frozen=True)
@@ -134,6 +241,7 @@ class Contract(Wire):
     table: str
     key: tuple[str, ...]
     shapes: Mapping[str, Shape]
+    _: KW_ONLY
     window_column: str | None = None
     schema: tuple[Column, ...] = ()
     max_shrink_fraction: float | None = 0.5
@@ -168,7 +276,7 @@ class Contract(Wire):
             if not any(c.name == self.cursor_column and c.type == "datetime" for c in self.schema):
                 raise InvalidContract("cursor_column must name a datetime schema column")
         if any(
-            c.type not in ("int", "str", "date", "datetime")
+            not LOGICAL_TYPES[c.type].ordered
             for c in self.schema
             if c.name in self.key or c.name == self.window_column
         ):
@@ -241,9 +349,41 @@ class Contract(Wire):
         )
 
     @property
+    def columns(self) -> Mapping[str, Column]:
+        return MappingProxyType({column.name: column for column in self.schema})
+
+    def manifest(
+        self,
+        shape: str,
+        produced_at: datetime,
+        *,
+        window: Window | None = None,
+        since: str | datetime | None = None,
+        generation: str | None = None,
+        rows: int | None = None,
+        keys: tuple[tuple[Scalar, ...], ...] = (),
+        tombstones: tuple[tuple[Scalar, ...], ...] = (),
+        content_hash: str | None = None,
+    ) -> Manifest:
+        manifest = Manifest(
+            self.table,
+            shape,
+            produced_at,
+            window=window,
+            since=since,
+            generation=generation,
+            rows=rows,
+            schema_hash=self.schema_hash,
+            keys=keys,
+            tombstones=tombstones,
+            content_hash=content_hash,
+        )
+        manifest.check(self)
+        return manifest
+
+    @property
     def schema_hash(self) -> str:
-        value = [(c.name, c.type) for c in self.schema]
-        return sha256(json.dumps(value, separators=(",", ":")).encode()).hexdigest()
+        return sha256(canonical_json([[c.name, c.type] for c in self.schema]).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -251,6 +391,7 @@ class Manifest(Wire):
     table: str
     shape: str
     produced_at: datetime
+    _: KW_ONLY
     window: Window | None = None
     since: str | datetime | None = None
     generation: str | None = None
@@ -280,7 +421,7 @@ class Manifest(Wire):
         if set(self.keys) & set(self.tombstones):
             raise InvalidContract("a key cannot be both live and deleted")
 
-    def check(self, contract: Contract) -> Shape:
+    def check(self, contract: Contract) -> ParsedDelivery:
         if not isinstance(contract, Contract):
             raise InvalidContract("manifest validation requires a Contract")
         if self.table != contract.table:
@@ -305,19 +446,94 @@ class Manifest(Wire):
         for group in (self.keys, self.tombstones):
             if any(len(key) != len(contract.key) for key in group):
                 raise InvalidContract("named keys must have the contract's width")
-        types = {"int": int, "str": str, "date": date, "datetime": datetime}
-        declared = {c.name: c.type for c in contract.schema}
+        declared = contract.columns
         if (
             self.window is not None
             and contract.window_column is not None
             and contract.window_column in declared
         ):
-            if type(self.window[0]) is not types[declared[contract.window_column]]:
+            if type(self.window[0]) is not LOGICAL_TYPES[declared[contract.window_column].type].python_type:
                 raise InvalidContract("window bound types differ from the contract schema")
         for key in (*self.keys, *self.tombstones):
             if declared and any(
-                type(value) is not types[declared[name]]
+                type(value) is not LOGICAL_TYPES[declared[name].type].python_type
                 for name, value in zip(contract.key, key, strict=True)
             ):
                 raise InvalidContract("named key types differ from the contract schema")
-        return shape
+        if shape.complete:
+            return (
+                FullDelivery(self, shape) if self.window is None else WindowDelivery(self, shape, self.window)
+            )
+        if isinstance(self.since, str):
+            assert self.generation is not None
+            return GenerationChanges(self, shape, self.since, self.generation)
+        assert isinstance(self.since, datetime)
+        if not contract.key:
+            return AppendInterval(self, shape, self.since)
+        coverage: DeliveryCoverage = (
+            WindowCoverage(self.window)
+            if self.window is not None
+            else KeyCoverage(self.keys)
+            if shape.coverage is Coverage.KEYS
+            else AllCoverage()
+        )
+        return TimestampChanges(self, shape, self.since, coverage)
+
+
+@dataclass(frozen=True)
+class AllCoverage:
+    pass
+
+
+@dataclass(frozen=True)
+class WindowCoverage:
+    window: Window
+
+
+@dataclass(frozen=True)
+class KeyCoverage:
+    keys: tuple[tuple[Scalar, ...], ...]
+
+
+DeliveryCoverage: TypeAlias = AllCoverage | WindowCoverage | KeyCoverage
+
+
+@dataclass(frozen=True)
+class FullDelivery:
+    manifest: Manifest
+    shape: Shape
+
+
+@dataclass(frozen=True)
+class WindowDelivery:
+    manifest: Manifest
+    shape: Shape
+    window: Window
+
+
+@dataclass(frozen=True)
+class TimestampChanges:
+    manifest: Manifest
+    shape: Shape
+    since: datetime
+    coverage: DeliveryCoverage
+
+
+@dataclass(frozen=True)
+class GenerationChanges:
+    manifest: Manifest
+    shape: Shape
+    since: str
+    generation: str
+
+
+@dataclass(frozen=True)
+class AppendInterval:
+    manifest: Manifest
+    shape: Shape
+    since: datetime
+
+
+ParsedDelivery: TypeAlias = (
+    FullDelivery | WindowDelivery | TimestampChanges | GenerationChanges | AppendInterval
+)

@@ -10,6 +10,7 @@ from dogana import (
     PlanningError,
     RejectedDelivery,
     SerializationError,
+    StampAhead,
     StoreError,
     deliver,
 )
@@ -41,7 +42,7 @@ def test_a_protocol_refusal_persists_one_attempt_without_a_publication(monkeypat
     assert store.read(c.table) == [row(1)]
 
 
-@pytest.mark.parametrize("operation", ["hold", "check", "execute", "publish"])
+@pytest.mark.parametrize("operation", ["hold", "check", "_publication_point", "publish"])
 @pytest.mark.parametrize("error", [OSError("disk"), ValueError("bug"), TypeError("bug"), StoreError("store")])
 def test_an_operational_failure_aborts_without_recording_a_refused_delivery(monkeypatch, operation, error):
     store = MemoryStore()
@@ -80,7 +81,7 @@ def test_a_replayed_delivery_retains_its_receipt_and_original_receiver_clock():
     store = MemoryStore()
     c, first = seed(store)
     replay = deliver(store, c, object(), first.manifest, at(25))
-    assert replay == replace(first, replayed=True)
+    assert replay == replace(first, outcome="replayed")
     assert replay.identity == first.identity
     assert replay.received_at == first.received_at
     assert store.receipts(c.table) == (first,)
@@ -106,7 +107,7 @@ def test_a_lost_accepted_receipt_cannot_be_replaced_by_another_acceptance():
     store = MemoryStore()
     c, first = seed(store)
     store.state[2].clear()
-    with pytest.raises(InconsistentPublication, match="receipt is missing"):
+    with pytest.raises(StampAhead):
         deliver(store, c, [row(2)], first.manifest, at(20))
     assert not store.receipts(c.table)
     assert store.read(c.table) == [row(1)]
@@ -119,7 +120,7 @@ def test_an_interrupted_delivery_aborts_before_propagating(monkeypatch):
     def interrupt(*args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(store, "execute", interrupt)
+    monkeypatch.setattr(store, "_publication_point", interrupt)
     with pytest.raises(KeyboardInterrupt):
         deliver(store, c, [row(2)], replace(first.manifest, produced_at=at(19)), at(20))
     assert not store.candidates

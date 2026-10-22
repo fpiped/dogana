@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:ApplyPlan",
+  "title": "ApplyPlan",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "ApplyPlan"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "table": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+    },
+    "key": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+      },
+      "uniqueItems": true
+    },
+    "window_column": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dogana:wire:1:Action"
+      }
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "table",
+    "key",
+    "window_column",
+    "actions"
+  ],
+  "additionalProperties": false
+}

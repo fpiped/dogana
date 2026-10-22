@@ -8,7 +8,7 @@ from tests.support import WINDOW, at, contract
 
 
 @pytest.mark.parametrize(
-    "low,unit", [(10**100, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
+    "low,unit", [(2**52, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
 )
 @pytest.mark.parametrize("low_open,high_open", [(False, False), (False, True), (True, False), (True, True)])
 def test_open_and_closed_discrete_windows_clip_only_their_exact_points(low, unit, low_open, high_open):
@@ -20,7 +20,7 @@ def test_open_and_closed_discrete_windows_clip_only_their_exact_points(low, unit
 
 
 @pytest.mark.parametrize(
-    "low,unit", [(10**100, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
+    "low,unit", [(2**52, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
 )
 def test_equal_adjacent_and_exactly_touching_windows_have_no_phantom_gap(low, unit):
     c = contract(shapes={"daily": WINDOW}, schema=())
@@ -54,7 +54,11 @@ def test_distinct_fall_back_datetime_keys_are_not_mistaken_for_duplicates():
     c = Contract(
         "events",
         ("time",),
-        {"feed": Shape("keys", "changed_only", "none", "timestamp")},
+        {
+            "feed": Shape(
+                coverage="keys", completeness="changed_only", deletions="none", checkpoint="timestamp"
+            )
+        },
         schema=(Column("time", "datetime"),),
     )
     manifest = Manifest(c.table, "feed", at(26), since=at(25), keys=keys)
@@ -119,3 +123,27 @@ def test_delivery_regions_only_touch_their_ordered_successor():
     left, right = Region(1, 9), Region(10, 20)
     assert left.touches(right)
     assert not right.touches(left)
+
+
+@pytest.mark.parametrize("value", [2**53, 2**100, -(2**100)])
+def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value):
+    c = contract(shapes={"daily": WINDOW}, schema=())
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(value, value)))
+    assert ledger.claims(at(19), window=(value, value)).complete_as_of == at(19)
+    assert ledger.claims(at(19)).complete_as_of is None
+    assert len(ledger.regions) == 3
+    assert Ledger.from_json(ledger.to_json()) == ledger
+    known = ledger.regions[1]
+    assert known.high == value and not known.high_open
+    assert ledger.regions[2].low == value and ledger.regions[2].low_open
+
+
+@pytest.mark.parametrize("maximum", [date.max, datetime.max.replace(tzinfo=UTC)])
+def test_delivery_at_the_last_scalar_preserves_the_preceding_unknown_domain(maximum):
+    c = contract(shapes={"daily": WINDOW}, schema=())
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(maximum, maximum)))
+    assert len(ledger.regions) == 2
+    assert ledger.regions[0].complete_as_of is None
+    assert ledger.regions[1].complete_as_of == at(19)
+    assert ledger.claims(at(19), window=(maximum, maximum)).complete_as_of == at(19)
+    assert Ledger.from_json(ledger.to_json()) == ledger

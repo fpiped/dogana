@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Region",
+  "title": "Region",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Region"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "low": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/scalar"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "high": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/scalar"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "complete_as_of": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "valid_as_of": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "low_open": {
+      "type": "boolean"
+    },
+    "high_open": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "low",
+    "high",
+    "complete_as_of",
+    "valid_as_of",
+    "low_open",
+    "high_open"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "low": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/text"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "high": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/text"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "low": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "high": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "low": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/date"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "high": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/date"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "low": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "high": {
+              "anyOf": [
+                {
+                  "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "complete_as_of": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "valid_as_of": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "valid_as_of": {
+            "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "low": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "low_open": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "high": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "high_open": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
+}

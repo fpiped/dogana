@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
@@ -98,7 +98,7 @@ class FilePattern:
         shape = contract.shape(shape_name)
         produced_at = _instant(groups["produced_at"], self.timezone)
         window: Window | None = None
-        column = next((c for c in contract.schema if c.name == contract.window_column), None)
+        column = contract.columns.get(contract.window_column) if contract.window_column else None
         if "low" in groups:
             if groups.get("low") is None or groups.get("high") is None:
                 raise InvalidContract("filename needs both window bounds")
@@ -112,19 +112,15 @@ class FilePattern:
                 raise InvalidContract("a window feed needs bounds or window_size")
             if column is None or column.type not in ("date", "datetime"):
                 raise InvalidContract("derived windows need a date or datetime column")
-            low = produced_at - shape.window_size
-            window = (
-                ((low + timedelta(days=1)).date(), produced_at.date())
-                if column.type == "date"
-                else (low, produced_at)
-            )
+            window = shape.window_ending_at(produced_at, column.type)
+
         since: str | datetime | None = groups.get("since")
         if isinstance(since, str) and shape.checkpoint == "timestamp":
             since = _instant(since, self.timezone)
         return Manifest(
-            contract.table,
-            shape_name,
-            produced_at,
+            table=contract.table,
+            shape=shape_name,
+            produced_at=produced_at,
             window=window,
             since=since,
             generation=groups.get("generation"),

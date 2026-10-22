@@ -1,5 +1,4 @@
 {
-  "accepted":true,
   "base_publication_id":null,
   "checks":[
     {
@@ -167,11 +166,11 @@
     "version":1,
     "window":null
   },
+  "outcome":"accepted",
   "publication_id":"7410632d3dbbd92b420536b24b2c96da2aebd428a177270e53d1f8a2bd1a385d",
   "received_at":{
     "$datetime":"2026-10-18T01:00:00+00:00"
   },
-  "replayed":false,
   "source":"stock_20261018.csv",
   "transition":{
     "after":[

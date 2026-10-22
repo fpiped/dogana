@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Receipt",
+  "title": "Receipt",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Receipt"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "manifest": {
+      "$ref": "urn:dogana:wire:1:Manifest"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:dogana:wire:1:Check"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "replayed"
+      ]
+    },
+    "transition": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:Transition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ledger": {
+      "$ref": "urn:dogana:wire:1:Ledger"
+    },
+    "claims": {
+      "$ref": "urn:dogana:wire:1:Claims"
+    },
+    "publication_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "received_at": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "base_publication_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "manifest",
+    "checks",
+    "outcome",
+    "transition",
+    "ledger",
+    "claims",
+    "publication_id",
+    "received_at",
+    "source",
+    "base_publication_id"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "rejected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "transition": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "transition": {
+            "$ref": "urn:dogana:wire:1:Transition"
+          },
+          "checks": {
+            "items": {
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -190,7 +190,9 @@ def test_an_explicit_window_keeps_its_bounds_and_must_match_the_declared_domain(
 
 
 def test_a_partial_complete_keyless_window_prevents_an_overlapping_append_request():
-    c = Contract("events", (), {"full": FULL, "daily": WINDOW, "append": SINCE}, "day", start_at=at(17))
+    c = Contract(
+        "events", (), {"full": FULL, "daily": WINDOW, "append": SINCE}, window_column="day", start_at=at(17)
+    )
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
     ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
     with pytest.raises(PlanningError, match="contiguous"):

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Manifest",
+  "title": "Manifest",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Manifest"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "table": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+    },
+    "shape": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+    },
+    "produced_at": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/window"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "since": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/checkpoint"
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_hash": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keys": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/keys"
+    },
+    "tombstones": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/keys"
+    },
+    "content_hash": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "table",
+    "shape",
+    "produced_at",
+    "window",
+    "since",
+    "generation",
+    "rows",
+    "schema_hash",
+    "keys",
+    "tombstones",
+    "content_hash"
+  ],
+  "additionalProperties": false
+}

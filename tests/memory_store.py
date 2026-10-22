@@ -1,20 +1,32 @@
 """Atomic transaction and table-format commit models."""
 
-from datetime import date, datetime
 from threading import RLock
 from uuid import uuid4
 
-from dogana import Check, Gate, InconsistentPublication, InvalidContract, Ledger, Operation, StoreError
+from dogana import (
+    Check,
+    Gate,
+    InconsistentPublication,
+    InvalidContract,
+    Ledger,
+    Operation,
+    Receipt,
+    StoreError,
+)
+from dogana.contract import LOGICAL_TYPES, FullDelivery
+from dogana.errors import LedgerAhead, SerializationError
 
 
 def check_rows(contract, manifest, rows, previous):
     names = tuple(c.name for c in contract.schema)
-    types = {"int": int, "str": str, "float": float, "bool": bool, "date": date, "datetime": datetime}
     schema_ok = not names or (
         manifest.schema_hash == contract.schema_hash
         and all(
             tuple(row) == names
-            and all(row[c.name] is None or type(row[c.name]) is types[c.type] for c in contract.schema)
+            and all(
+                row[c.name] is None or type(row[c.name]) is LOGICAL_TYPES[c.type].python_type
+                for c in contract.schema
+            )
             for row in rows
         )
     )
@@ -116,23 +128,33 @@ class MemoryStore:
 
     def load_ledger(self, contract):
         with self.lock:
-            ledger = self._ledger(contract)
-            stamp = self.publication_stamp(contract.table)
-            receipts = tuple(r for r in self.receipts(contract.table) if r.accepted)
-            if stamp is None and ledger.publication_id is None and receipts:
-                raise InconsistentPublication("ledger and stamp missing for retained accepted receipts")
-            if stamp != ledger.publication_id:
-                ahead = ledger.publication_id is not None and (
-                    stamp is None or any(r.publication_id == stamp for r in receipts[:-1])
-                )
-                raise InconsistentPublication("ledger ahead of stamp" if ahead else "stamp ahead of ledger")
-            return ledger
+            current = self._ledger(contract)
+            return Ledger.reconcile(
+                contract,
+                self.receipts(contract.table),
+                current,
+                self.publication_stamp(contract.table),
+                repair=False,
+            )
+
+    def _base(self, contract, manifest):
+        try:
+            return self.load_ledger(contract)
+        except LedgerAhead:
+            if not isinstance(manifest.check(contract), FullDelivery):
+                raise
+            if self.accepted_receipt(manifest.identity) is not None:
+                raise
+            return Ledger.from_receipts(contract, self.receipts(contract.table))
 
     def repair(self, contract):
         with self.lock:
-            ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
-            if ledger.publication_id != self.publication_stamp(contract.table):
-                raise InconsistentPublication("ledger ahead of stamp; complete delivery required")
+            ledger = Ledger.reconcile(
+                contract,
+                self.receipts(contract.table),
+                self._ledger(contract),
+                self.publication_stamp(contract.table),
+            )
             self.state[1][contract.table] = ledger
             return ledger
 
@@ -146,21 +168,24 @@ class MemoryStore:
         with self.lock:
             if not contract.schema:
                 raise InvalidContract("publication requires a declared schema")
-            held_contract, held_manifest, rows = self.candidates[candidate]
+            held = self.candidates.get(candidate)
+            if held is None:
+                raise StoreError("checks require a candidate held by this store")
+            held_contract, held_manifest, rows = held
             if (held_contract, held_manifest) != (contract, manifest):
                 raise InvalidContract("candidate belongs to another delivery")
             if requirements != Gate.requirements(contract, manifest):
                 raise InvalidContract("checks must come from the gate")
-            base = self._ledger(contract)
+            base = self._base(contract, manifest)
             previous = self.state[0].get(contract.table, ([], None))[0]
             checks = check_rows(contract, manifest, rows, previous)
-            self.checked[candidate] = base.publication_id, checks
+            self.checked[candidate] = base, self.publication_stamp(contract.table), checks
             return checks
 
     def _plan(self, candidate, plan):
         contract, manifest, incoming = self.candidates[candidate]
-        base, checks = self.checked[candidate]
-        if base != self._ledger(contract).publication_id:
+        base, stamp, checks = self.checked[candidate]
+        if base != self._base(contract, manifest) or stamp != self.publication_stamp(contract.table):
             raise StoreError("base publication moved")
         from dogana import ApplyPlan
 
@@ -168,44 +193,72 @@ class MemoryStore:
             raise InvalidContract("candidate requires passing checks and the prescribed plan")
         return apply_rows(self.state[0].get(contract.table, ([], None))[0], incoming, plan)
 
-    def execute(self, candidate, plan):
+    def _execute(self, candidate, plan):
         with self.lock:
             self.executed[candidate] = self._plan(candidate, plan)
-            self._after_rows()
 
-    def _after_rows(self):
+    def _publication_point(self):
         pass
 
     def publish(self, candidate, receipt):
         with self.lock:
-            contract, manifest, _ = self.candidates[candidate]
-            current = self._ledger(contract)
-            if current.publication_id != receipt.base_publication_id:
-                raise StoreError("base publication moved")
-            expected = Gate.evaluate(
-                current, manifest, self.checked[candidate][1], now=receipt.received_at, source=receipt.source
-            )
-            if receipt != expected or not receipt.accepted:
-                raise InvalidContract("receipt does not authorize the candidate")
-            rows = self.executed[candidate]
-            tables, ledgers, receipts = (dict(part) for part in self.state)
-            tables[contract.table] = rows, receipt.publication_id
-            ledgers[contract.table] = receipt.ledger
-            receipts[uuid4().hex] = receipt
-            self.publications[manifest.identity] = receipt.publication_id
-            self.snapshots[receipt.publication_id] = rows
-            self.state = tables, ledgers, receipts
-            self.abort(candidate)
+            try:
+                if receipt.replayed:
+                    raise StoreError("replay responses cannot create publications")
+                if candidate is not None:
+                    contract, manifest, _ = self.candidates[candidate]
+                    if contract != receipt.ledger.contract or manifest != receipt.manifest:
+                        raise StoreError("receipt belongs to another candidate")
+                else:
+                    contract, manifest = receipt.ledger.contract, receipt.manifest
+                current = self._base(contract, manifest)
+                if current.publication_id != receipt.base_publication_id:
+                    raise StoreError("base publication moved")
+                if not receipt.accepted:
+                    if current != receipt.ledger:
+                        raise StoreError("rejection evidence differs from the current ledger")
+                    self._save_receipt(receipt)
+                    return
+                if candidate is None or candidate not in self.checked:
+                    raise StoreError("publication requires a checked candidate")
+                expected = Gate.evaluate(
+                    current,
+                    manifest,
+                    self.checked[candidate][2],
+                    now=receipt.received_at,
+                    source=receipt.source,
+                )
+                if receipt != expected:
+                    raise InvalidContract("receipt does not authorize the candidate")
+                self._validate_receipt(receipt)
+                self._execute(candidate, receipt.transition.plan)
+                rows = self.executed[candidate]
+                self._publication_point()
+                tables, ledgers, receipts = (dict(part) for part in self.state)
+                tables[contract.table] = rows, receipt.publication_id
+                ledgers[contract.table] = receipt.ledger
+                receipts[uuid4().hex] = receipt
+                self.publications[manifest.identity] = receipt.publication_id
+                self.snapshots[receipt.publication_id] = rows
+                self.state = tables, ledgers, receipts
+            finally:
+                if candidate is not None:
+                    self.abort(candidate)
 
     def abort(self, candidate):
         self.candidates.pop(candidate, None)
         self.checked.pop(candidate, None)
         self.executed.pop(candidate, None)
 
-    def save_receipt(self, receipt):
+    def _validate_receipt(self, receipt):
+        if Receipt.from_json(receipt.to_json()) != receipt:
+            raise SerializationError("receipt cannot round-trip through its wire representation")
+
+    def _save_receipt(self, receipt):
         with self.lock:
             if receipt.accepted:
                 raise StoreError("accepted receipts belong to atomic publication")
+            self._validate_receipt(receipt)
             self.state[2][uuid4().hex] = receipt
 
     def read(self, table, publication_id=None):
@@ -215,12 +268,7 @@ class MemoryStore:
 
 
 class CommitMemoryStore(MemoryStore):
-    def execute(self, candidate, plan):
-        self._plan(candidate, plan)
-        self.executed[candidate] = plan
+    """Materialize the planned rows at the atomic publication boundary."""
 
-    def publish(self, candidate, receipt):
-        with self.lock:
-            self.executed[candidate] = self._plan(candidate, self.executed[candidate])
-            self._after_rows()
-            super().publish(candidate, receipt)
+    def _execute(self, candidate, plan):
+        self.executed[candidate] = self._plan(candidate, plan)

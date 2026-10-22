@@ -90,6 +90,24 @@ def test_paths_and_row_iterators_publish_identical_values(tmp_path):
         assert store.accepted_receipt(m.identity) == receipt
 
 
+def test_a_held_csv_can_be_checked_twice_and_published_once(tmp_path):
+    c, rows = contract(), [row(1), row(2)]
+    path = csv_file(tmp_path, "incoming.csv", rows)
+    manifest = sidecar(path, c, "full", 18, len(rows))
+    with DuckDBStore(":memory:") as store:
+        candidate = store.hold(path, manifest, c)
+        requirements = Gate.requirements(c, manifest)
+        first = store.check(candidate, c, manifest, requirements)
+        repeated = store.check(candidate, c, manifest, requirements)
+        assert repeated == first and all(check.passed for check in repeated)
+        receipt = Gate.evaluate(store.load_ledger(c), manifest, repeated, now=at(20))
+        assert receipt.accepted
+        store.publish(candidate, receipt)
+        assert store.read_publication(c) == (rows, receipt.ledger)
+        assert store.receipts(c.table) == (receipt,)
+        assert not store._candidates and store._transaction is None
+
+
 def test_arrow_tables_publish_through_the_same_checks():
     pa = pytest.importorskip("pyarrow")
     c, rows = contract(), [row(1), row(2)]
@@ -132,19 +150,20 @@ def test_lost_accepted_receipts_are_never_replaced_by_replay(tmp_path, older):
         assert len(store.receipts()) == int(older)
 
 
-def test_cached_checks_cannot_be_reused_after_the_base_moves(tmp_path):
+@pytest.mark.parametrize("rebase", [False, True])
+def test_cached_checks_cannot_be_reused_after_the_base_moves(tmp_path, rebase):
     c = contract()
     with DuckDBStore(":memory:") as store:
-        publish(store, tmp_path, [row(1), row(2)])
+        first = publish(store, tmp_path, [row(1), row(2)])
         path = csv_file(tmp_path, "held.csv", [row(1)])
         manifest = sidecar(path, c, "full", 20, 1)
         candidate = store.hold(path, manifest, c)
         checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
         assert all(check.passed for check in checks)
         latest = publish(store, tmp_path, [row(i) for i in range(10)], day=19)
-        stale = Gate.evaluate(latest.ledger, manifest, checks, now=at(30))
-        with pytest.raises(StoreError, match="changed after"):
-            store.execute(candidate, stale.transition.plan)
+        stale = Gate.evaluate(latest.ledger if rebase else first.ledger, manifest, checks, now=at(30))
+        with pytest.raises(StoreError, match="different base" if rebase else "changed after"):
+            store.publish(candidate, stale)
         assert store.read(c.table) == [row(i) for i in range(10)]
         assert store.load_ledger(c) == latest.ledger
         assert not store._candidates
@@ -158,7 +177,6 @@ def test_publication_rejects_a_receipt_bound_to_another_base(tmp_path):
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
         receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
-        store.execute(held, receipt.transition.plan)
         with pytest.raises(StoreError, match="different base"):
             store.publish(held, replace(receipt, base_publication_id="wrong"))
         assert store.read_publication(c) == ([row(1)], first.ledger)
@@ -170,14 +188,12 @@ def test_same_connection_readers_wait_for_the_whole_publication(tmp_path, monkey
     with DuckDBStore(":memory:") as store:
         first = publish(store, tmp_path, [row(1)])
         staged, release, reader_started = Event(), Event(), Event()
-        original = store.publish
 
-        def paused(candidate, receipt):
+        def paused():
             staged.set()
             assert release.wait(5)
-            original(candidate, receipt)
 
-        monkeypatch.setattr(store, "publish", paused)
+        monkeypatch.setattr(store, "_publication_point", paused)
         m = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
 
         def writer():
@@ -186,7 +202,6 @@ def test_same_connection_readers_wait_for_the_whole_publication(tmp_path, monkey
             held = store.hold([row(2)], m, c)
             checks = store.check(held, c, m, Gate.requirements(c, m))
             receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
-            store.execute(held, receipt.transition.plan)
             store.publish(held, receipt)
             return receipt
 
@@ -299,16 +314,60 @@ def test_row_mappings_without_a_declared_schema_cannot_be_published():
         assert not store._candidates
 
 
-def test_adopting_a_table_with_reordered_columns_never_swaps_values():
+def test_adopting_a_table_with_reordered_columns_refuses_publication():
     c = Contract("pairs", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("amount", "int")))
     manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:", adopt=True) as store:
         store.connection.execute("CREATE TABLE pairs(amount BIGINT, id BIGINT)")
         store.connection.execute("INSERT INTO pairs VALUES (99, 1)")
-        receipt = deliver(store, c, [{"id": 2, "amount": 80}], manifest, at(20))
-        assert receipt.accepted
-        assert store.read_publication(c) == ([{"id": 2, "amount": 80}], receipt.ledger)
-        assert store.read(c.table, receipt.publication_id) == [{"id": 2, "amount": 80}]
+        with pytest.raises(StoreError, match="published column order or types differ"):
+            deliver(store, c, [{"id": 2, "amount": 80}], manifest, at(20))
+        assert store.read_publication(c) == ([{"id": 1, "amount": 99}], Ledger(c))
+        assert store.receipts(c.table) == ()
+        assert store.publication_stamp(c.table) is None
+        assert not store._candidates and store._transaction is None
+
+
+@pytest.mark.parametrize("shape", ["full", "since"])
+@pytest.mark.parametrize("after_check", [False, True])
+def test_reordering_published_columns_refuses_publication_without_swapping_values(shape, after_check):
+    c = Contract(
+        "pairs",
+        ("id",),
+        {"full": FULL, "since": SINCE},
+        schema=(Column("id", "int"), Column("amount", "int")),
+        max_shrink_fraction=None,
+    )
+    original = [{"id": 1, "amount": 99}, {"id": 2, "amount": 70}]
+    with DuckDBStore(":memory:") as store:
+        first_manifest = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
+        first = deliver(store, c, original, first_manifest, at(20))
+        manifest = Manifest(
+            c.table,
+            shape,
+            at(19),
+            since=at(18) if shape == "since" else None,
+            rows=1,
+            schema_hash=c.schema_hash,
+        )
+        incoming = [{"id": 3, "amount": 80}]
+        candidate = None
+        if after_check:
+            candidate = store.hold(incoming, manifest, c)
+            checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+            checked = Gate.evaluate(first.ledger, manifest, checks, now=at(20))
+            assert checked.accepted
+        store.connection.execute("CREATE OR REPLACE TABLE pairs AS SELECT amount, id FROM pairs")
+        with pytest.raises(StoreError, match="published column order or types differ"):
+            if after_check:
+                store.publish(candidate, checked)
+            else:
+                deliver(store, c, incoming, manifest, at(20))
+        assert store.read_publication(c) == (original, first.ledger)
+        assert store.read(c.table, first.publication_id) == original
+        assert store.receipts(c.table) == (first,)
+        assert store.publication_stamp(c.table) == first.publication_id
+        assert not store._candidates and store._transaction is None
 
 
 def test_timezone_less_csv_datetime_values_use_utc(tmp_path):
@@ -394,7 +453,8 @@ def test_a_lost_rollback_response_is_resolved_before_unlocking(tmp_path, after):
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
         receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
-        store.execute(held, receipt.transition.plan)
+        assert receipt.transition is not None
+        store._execute(held, receipt.transition.plan)
         connection = store.connection
 
         class RollbackFault:
@@ -427,7 +487,8 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
         receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
-        store.execute(held, receipt.transition.plan)
+        assert receipt.transition is not None
+        store._execute(held, receipt.transition.plan)
         connection = store.connection
 
         class RollbackFault:

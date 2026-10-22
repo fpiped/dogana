@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:CheckRequirement",
+  "title": "CheckRequirement",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "CheckRequirement"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "name"
+  ],
+  "additionalProperties": false
+}

@@ -6,12 +6,14 @@ from .errors import (
     DoganaError,
     InconsistentPublication,
     InvalidContract,
+    LedgerAhead,
     PlanningError,
     RejectedDelivery,
     SerializationError,
+    StampAhead,
     StoreError,
 )
-from .gate import Action, ApplyPlan, Check, CheckRequirement, Gate, Operation, Receipt, Transition
+from .gate import Action, ApplyPlan, Check, CheckRequirement, Gate, Operation, Outcome, Receipt, Transition
 from .interfaces import Extractor, Store
 from .ledger import Claims, Ledger, Region, RegionClaim, State
 from .planner import ExtractionRequest, Requirement, next_extraction, plan_delivery
@@ -35,8 +37,10 @@ __all__ = [
     "InconsistentPublication",
     "InvalidContract",
     "Ledger",
+    "LedgerAhead",
     "Manifest",
     "Operation",
+    "Outcome",
     "PlanningError",
     "Receipt",
     "Region",
@@ -46,6 +50,7 @@ __all__ = [
     "SerializationError",
     "Shape",
     "State",
+    "StampAhead",
     "Store",
     "StoreError",
     "Transition",

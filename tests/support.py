@@ -2,18 +2,42 @@ from datetime import UTC, datetime, timedelta
 
 from dogana import Checkpoint, Column, Completeness, Contract, Coverage, Deletions, Shape
 
-FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE, cost=100)
+FULL = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.COMPLETE,
+    deletions=Deletions.ABSENCE,
+    checkpoint=Checkpoint.NONE,
+    cost=100,
+)
 WINDOW = Shape(
-    Coverage.WINDOW,
-    Completeness.COMPLETE,
-    Deletions.ABSENCE,
-    Checkpoint.NONE,
+    coverage=Coverage.WINDOW,
+    completeness=Completeness.COMPLETE,
+    deletions=Deletions.ABSENCE,
+    checkpoint=Checkpoint.NONE,
     cost=10,
     window_size=timedelta(days=30),
 )
-SINCE = Shape(Coverage.ALL, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.TIMESTAMP, cost=2)
-RECENT = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.TIMESTAMP, cost=2)
-FEED = Shape(Coverage.KEYS, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION, cost=1)
+SINCE = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.NONE,
+    checkpoint=Checkpoint.TIMESTAMP,
+    cost=2,
+)
+RECENT = Shape(
+    coverage=Coverage.WINDOW,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.NONE,
+    checkpoint=Checkpoint.TIMESTAMP,
+    cost=2,
+)
+FEED = Shape(
+    coverage=Coverage.KEYS,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.TOMBSTONE,
+    checkpoint=Checkpoint.GENERATION,
+    cost=1,
+)
 SCHEMA = (Column("id", "int"), Column("day", "date"), Column("value", "str"))
 
 
@@ -24,4 +48,6 @@ def at(day: int, hour: int = 0) -> datetime:
 def contract(table="moves", *, shapes=None, schema=SCHEMA, **kwargs):
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "recent": RECENT, "feed": FEED}
     windowed = any(s.coverage is Coverage.WINDOW for s in shapes.values())
-    return Contract(table, ("id",), shapes, "day" if windowed else None, schema, **kwargs)
+    return Contract(
+        table, ("id",), shapes, window_column="day" if windowed else None, schema=schema, **kwargs
+    )

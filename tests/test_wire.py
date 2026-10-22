@@ -92,7 +92,7 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from datetime import datetime, timezone
 from dogana import Column, Contract, Shape, Manifest, Ledger, Gate, Check, State
-shape = Shape('all', 'complete', 'absence', 'none')
+shape = Shape(coverage='all', completeness='complete', deletions='absence', checkpoint='none')
 c = Contract('stock', ('id',), {'full': shape}, schema=(Column('id', 'int'),))
 m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
 checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
@@ -209,7 +209,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
         with pytest.raises(SerializationError, match="unknown wire kind"):
             Wire.from_dict({"version": 1, "kind": kind})
     with pytest.raises(SerializationError, match="unknown wire kind"):
-        Shape("all", "complete", "absence", "none").to_dict()
+        Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
 
 def test_numeric_spellings_and_default_values_do_not_fork_identity():
@@ -218,7 +218,7 @@ def test_numeric_spellings_and_default_values_do_not_fork_identity():
 
     from dogana import Shape
 
-    integer = Shape("all", "complete", "absence", "none", cost=2)
+    integer = Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none", cost=2)
     decimal = replace(integer, cost=2.0)
     assert integer == decimal
     assert hash(integer) == hash(decimal)
@@ -239,8 +239,8 @@ def test_identity_excludes_versions_recursively(monkeypatch):
     value = Ledger(contract())
     identity = value.identity
     monkeypatch.setattr(Wire, "version", 2)
-    assert value.to_dict()["version"] == 2
-    assert value.to_dict()["contract"]["version"] == 2
+    assert value._document(identity=False)["version"] == 2
+    assert value._document(identity=False)["contract"]["version"] == 2
     assert value.identity == identity
 
 
@@ -261,7 +261,7 @@ def test_key_set_order_and_timestamp_offsets_do_not_change_manifest_identity():
     assert m.identity_dict()["produced_at"] == {"$datetime": "2026-10-18T00:00:00+00:00"}
 
 
-def test_replay_marker_preserves_the_original_receipt_identity_and_clock():
+def test_replay_outcome_preserves_the_original_receipt_identity_and_clock():
     from dataclasses import replace
 
     from dogana import Check, Gate, Receipt
@@ -270,11 +270,13 @@ def test_replay_marker_preserves_the_original_receipt_identity_and_clock():
     m = Manifest(c.table, "full", at(18))
     checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
     original = Gate.evaluate(Ledger(c), m, checks, now=at(19), source="stock.csv")
-    replay = replace(original, replayed=True)
+    replay = replace(original, outcome="replayed")
     assert replay.identity == original.identity
     assert replay.received_at == original.received_at
-    assert replay.to_dict()["replayed"] is True
-    assert "replayed" not in replay.identity_dict()
+    assert replay.to_dict()["outcome"] == "replayed"
+    assert replay.identity_dict()["outcome"] == "accepted"
+    assert "accepted" not in replay.to_dict()
+    assert "replayed" not in replay.to_dict()
     assert Receipt.from_json(replay.to_json()) == replay
     assert replace(original, source="corrected.csv").identity != original.identity
     assert replace(original, received_at=at(20)).identity != original.identity
@@ -296,9 +298,45 @@ def test_new_default_fields_remain_required_on_the_wire():
     for value, field in (
         (contract(), "cursor_column"),
         (Manifest("stock", "full", at(18)), "content_hash"),
-        (Shape("all", "complete", "absence", "none"), "lookback"),
+        (Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none"), "lookback"),
     ):
         raw = value.to_dict()
         del raw[field]
         with pytest.raises(SerializationError, match=f"missing fields.*{field}"):
             type(value).from_dict(raw)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("coverage", "sometimes"), ("completeness", "partial"), ("deletions", "delete"), ("checkpoint", "date")],
+)
+def test_invalid_vocabulary_names_the_property_and_value(field, value):
+    import re
+
+    from dogana import InvalidContract, Shape
+
+    arguments = dict(coverage="all", completeness="complete", deletions="absence", checkpoint="none")
+    original = Shape(**arguments).to_dict()
+    arguments[field] = value
+    message = re.escape(f"Shape.{field}={value!r}")
+    with pytest.raises(InvalidContract, match=message):
+        Shape(**arguments)
+    original[field] = value
+    with pytest.raises(SerializationError, match=message):
+        Shape.from_dict(original)
+
+
+@pytest.mark.parametrize("value", [10**400, 2**53 + 1, -(2**53 + 1)])
+def test_integer_identity_rejects_lossy_or_overflowing_binary64_values(value):
+    from dogana.wire import canonical_json
+
+    with pytest.raises(SerializationError, match="binary64"):
+        canonical_json(value)
+
+
+def test_wire_json_preserves_integer_values_while_identity_uses_ecmascript_numbers():
+    value = Manifest("stock", "full", at(18), keys=((2**68,),))
+    assert value.to_dict()["keys"] == [[2**68]]
+    assert Manifest.from_json(value.to_json()) == value
+    assert value.identity_dict()["keys"] == [[2**68]]
+    assert '"keys":[[295147905179352830000]]' in value.identity_json()

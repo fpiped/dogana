@@ -12,8 +12,8 @@ pytest.importorskip("duckdb")
 from dogana import Column, Contract, Ledger, Manifest, Shape
 from dogana.reference.duckdb import DuckDBStore
 
-FULL = Shape("all", "complete", "absence", "none")
-SINCE = Shape("all", "changed_only", "none", "timestamp")
+FULL = Shape.full()
+SINCE = Shape.append()
 
 
 def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp_path):
@@ -33,7 +33,7 @@ def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp
         assert receipt.accepted, receipt.checks
         assert elapsed < 30, elapsed
         assert store.connection.execute("SELECT count(*) FROM bulk").fetchone()[0] == 200_000
-        assert store.deliver(c, object(), manifest, now=at(30)) == replace(receipt, replayed=True)
+        assert store.deliver(c, object(), manifest, now=at(30)) == replace(receipt, outcome="replayed")
         assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
 
 

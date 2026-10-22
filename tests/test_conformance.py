@@ -1,11 +1,12 @@
 import csv
 from contextlib import contextmanager
 from threading import Event
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from dogana.conformance import StoreConformance
+from dogana.conformance import StampedLedgerConformance, StoreConformance
 from tests.memory_store import CommitMemoryStore, MemoryStore
 
 
@@ -28,7 +29,7 @@ class MemoryFactory:
             raise OSError("interrupted after rows")
 
         with self.monkeypatch.context() as patch:
-            patch.setattr(store, "_after_rows", fail)
+            patch.setattr(store, "_publication_point", fail)
             yield
 
     def set_ledger(self, store, ledger):
@@ -50,11 +51,30 @@ class MemoryFactory:
             assert resume.wait(5)
 
         with self.monkeypatch.context() as patch:
-            patch.setattr(store, "_after_rows", pause)
+            patch.setattr(store, "_publication_point", pause)
             yield written, resume
 
     def set_stamp(self, store, table, publication_id):
         store.state[0][table] = store.state[0][table][0], publication_id
+
+
+class MinimalMemoryFactory(MemoryFactory):
+    def make_store(self):
+        storage = MemoryStore()
+        operations = ("hold", "check", "publish", "abort", "load_ledger", "receipts", "accepted_receipt")
+        return SimpleNamespace(_storage=storage, **{name: getattr(storage, name) for name in operations})
+
+    def read_table(self, store, table):
+        return super().read_table(store._storage, table)
+
+    def fail_after_rows(self, store):
+        return super().fail_after_rows(store._storage)
+
+    def pause_after_rows(self, store):
+        return super().pause_after_rows(store._storage)
+
+    def read_publication(self, store, contract):
+        return super().read_publication(store._storage, contract)
 
 
 class DuckDBFactory:
@@ -79,14 +99,11 @@ class DuckDBFactory:
 
     @contextmanager
     def fail_after_rows(self, store):
-        original = store.execute
-
-        def fail(candidate, plan):
-            original(candidate, plan)
+        def fail():
             raise OSError("interrupted after rows")
 
         with self.monkeypatch.context() as patch:
-            patch.setattr(store, "execute", fail)
+            patch.setattr(store, "_publication_point", fail)
             yield
 
     def set_ledger(self, store, ledger):
@@ -104,15 +121,13 @@ class DuckDBFactory:
     @contextmanager
     def pause_after_rows(self, store):
         written, resume = Event(), Event()
-        original = store.execute
 
-        def pause(candidate, plan):
-            original(candidate, plan)
+        def pause():
             written.set()
             assert resume.wait(5)
 
         with self.monkeypatch.context() as patch:
-            patch.setattr(store, "execute", pause)
+            patch.setattr(store, "_publication_point", pause)
             yield written, resume
 
     def set_stamp(self, store, table, publication_id):
@@ -124,19 +139,25 @@ class DuckDBFactory:
         )
 
 
-class TestAtomicMemory(StoreConformance):
+class TestMinimalMemory(StoreConformance):
+    @pytest.fixture
+    def factory(self, monkeypatch):
+        return MinimalMemoryFactory(MemoryStore, monkeypatch)
+
+
+class TestAtomicMemory(StoreConformance, StampedLedgerConformance):
     @pytest.fixture
     def factory(self, monkeypatch):
         return MemoryFactory(MemoryStore, monkeypatch)
 
 
-class TestCommitMemory(StoreConformance):
+class TestCommitMemory(StoreConformance, StampedLedgerConformance):
     @pytest.fixture
     def factory(self, monkeypatch):
         return MemoryFactory(CommitMemoryStore, monkeypatch)
 
 
-class TestDuckDB(StoreConformance):
+class TestDuckDB(StoreConformance, StampedLedgerConformance):
     @pytest.fixture
     def factory(self, tmp_path, monkeypatch):
         pytest.importorskip("duckdb")
@@ -150,15 +171,19 @@ def test_a_commit_failure_before_publication_leaves_no_receipt_or_rows(monkeypat
 
     c = contract()
     store = CommitMemoryStore()
-    first_manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
+    first_manifest = Manifest(
+        table=c.table, shape="full", produced_at=at(18), rows=1, schema_hash=c.schema_hash
+    )
     first = deliver(store, c, [row(1)], first_manifest, at(20))
 
     def fail():
         raise OSError("interrupted before commit")
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "_after_rows", fail)
-        manifest = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
+        patch.setattr(store, "_publication_point", fail)
+        manifest = Manifest(
+            table=c.table, shape="full", produced_at=at(19), rows=1, schema_hash=c.schema_hash
+        )
         with pytest.raises(StoreError, match="interrupted before commit"):
             deliver(store, c, [row(2)], manifest, at(20))
     assert store.load_ledger(c) == first.ledger

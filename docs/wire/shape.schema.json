@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Shape",
+  "title": "Shape",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Shape"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "coverage": {
+      "enum": [
+        "all",
+        "window",
+        "keys"
+      ]
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "changed_only"
+      ]
+    },
+    "deletions": {
+      "enum": [
+        "absence",
+        "tombstone",
+        "none"
+      ]
+    },
+    "checkpoint": {
+      "enum": [
+        "generation",
+        "timestamp",
+        "none"
+      ]
+    },
+    "cost": {
+      "type": "number",
+      "minimum": 0
+    },
+    "window_size": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/positiveDuration"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lookback": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/nonnegativeDuration"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "coverage",
+    "completeness",
+    "deletions",
+    "checkpoint",
+    "cost",
+    "window_size",
+    "lookback"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "completeness": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "enum": [
+              "all",
+              "window"
+            ]
+          },
+          "deletions": {
+            "const": "absence"
+          },
+          "checkpoint": {
+            "const": "none"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "deletions": {
+            "enum": [
+              "tombstone",
+              "none"
+            ]
+          },
+          "checkpoint": {
+            "enum": [
+              "generation",
+              "timestamp"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "const": "window"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "checkpoint": {
+            "enum": [
+              "timestamp",
+              "none"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "window_size": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "checkpoint": {
+            "not": {
+              "const": "timestamp"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "lookback": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

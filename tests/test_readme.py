@@ -13,7 +13,7 @@ BLOCKS = re.findall(r"^```([^\n]*)\n(.*?)^```", (ROOT / "README.md").read_text()
 
 def test_every_readme_block_runs_from_its_documented_directory(tmp_path):
     pytest.importorskip("duckdb")
-    assert BLOCKS and all(language in ("sh", "python") for language, _ in BLOCKS)
+    assert BLOCKS and all(language in ("sh", "python", "text") for language, _ in BLOCKS)
     environment = dict(
         os.environ,
         VIRTUAL_ENV=str(Path(sys.executable).parent.parent),
@@ -25,7 +25,7 @@ def test_every_readme_block_runs_from_its_documented_directory(tmp_path):
             subprocess.run(
                 shlex.split(code), cwd=ROOT, env=environment, check=True, capture_output=True, text=True
             )
-        else:
+        elif language == "python":
             scripts.append(code)
     example = tmp_path / "empty directory"
     example.mkdir()
@@ -38,4 +38,4 @@ def test_every_readme_block_runs_from_its_documented_directory(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert result.stdout.count("Success:") == len(scripts)
+    assert result.stdout == "".join(code for language, code in BLOCKS if language == "text")

@@ -2,7 +2,8 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from dogana import InconsistentPublication, Ledger, Manifest
+from dogana import Ledger, Manifest
+from dogana.errors import LedgerAhead, StampAhead
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import at, contract
@@ -34,9 +35,9 @@ def test_rows_and_stamp_ahead_of_the_ledger_refuse_until_receipts_restore_eviden
             store.deliver(c, path, manifest, now=at(30))
         store.connection = connection
         store._transaction = None
-        with pytest.raises(InconsistentPublication, match="stamp ahead of ledger"):
+        with pytest.raises(StampAhead):
             store.load_ledger(c)
-        with pytest.raises(InconsistentPublication):
+        with pytest.raises(StampAhead):
             store.deliver(c, path, manifest, now=at(30))
         repaired = store.repair(c)
         receipt = store.deliver(c, path, manifest, now=at(30))
@@ -62,11 +63,11 @@ def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery
             "UPDATE __dogana_publications SET publication_id=? WHERE table_name=?",
             [receipt.publication_id, c.table],
         )
-        with pytest.raises(InconsistentPublication, match="ledger ahead of stamp"):
+        with pytest.raises(LedgerAhead):
             store.load_ledger(c)
-        with pytest.raises(InconsistentPublication, match="complete delivery"):
+        with pytest.raises(LedgerAhead):
             store.repair(c)
-        with pytest.raises(InconsistentPublication):
+        with pytest.raises(LedgerAhead):
             store.deliver(c, path, second, now=at(30))
         partial = Manifest(
             c.table,
@@ -76,7 +77,7 @@ def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery
             rows=1,
             schema_hash=c.schema_hash,
         )
-        with pytest.raises(InconsistentPublication):
+        with pytest.raises(LedgerAhead):
             store.deliver(c, path, partial, now=at(30))
         recovered = store.deliver(c, path, sidecar(path, c, "full", 20, 1), now=at(30))
         assert recovered.accepted
@@ -84,7 +85,7 @@ def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery
         assert store.read(c.table) == [row(2)]
 
 
-def test_repair_cannot_rewind_a_ledger_that_is_ahead_of_the_last_retained_receipt(tmp_path):
+def test_repair_cannot_rewind_a_ledger_with_an_unrecorded_advancement(tmp_path):
     c = contract()
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
@@ -93,9 +94,9 @@ def test_repair_cannot_rewind_a_ledger_that_is_ahead_of_the_last_retained_receip
         store.connection.execute(
             "UPDATE __dogana_ledgers SET document=? WHERE table_name=?", [ahead.to_json(), c.table]
         )
-        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+        with pytest.raises(StampAhead):
             store.repair(c)
-        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+        with pytest.raises(StampAhead):
             store.load_ledger(c)
 
 
@@ -120,11 +121,11 @@ def test_retained_receipts_prevent_missing_ledger_and_stamp_from_looking_like_a_
         store.connection.execute("DELETE FROM __dogana_ledgers")
         store.connection.execute("DELETE FROM __dogana_publications")
         store.connection.execute('DELETE FROM "moves"')
-        with pytest.raises(InconsistentPublication, match="missing"):
+        with pytest.raises(LedgerAhead):
             store.load_ledger(c)
-        with pytest.raises(InconsistentPublication):
+        with pytest.raises(LedgerAhead):
             store.deliver(c, object(), first.manifest, now=at(30))
-        with pytest.raises(InconsistentPublication, match="complete delivery"):
+        with pytest.raises(LedgerAhead):
             store.repair(c)
         path = csv_file(tmp_path, "recovered.csv", [row(2)])
         recovered = store.deliver(c, path, sidecar(path, c, "full", 19, 1), now=at(30))

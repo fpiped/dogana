@@ -1,29 +1,35 @@
-"""Exact interval accounting, including unknown parts of the domain."""
+"""Ordered boundary cuts with evidence to their right."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from functools import cmp_to_key
+from functools import total_ordering
 from hashlib import sha256
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias, assert_never
 
 from .contract import (
-    Checkpoint,
+    LOGICAL_TYPES,
+    AppendInterval,
     Contract,
-    Coverage,
     Deletions,
+    FullDelivery,
+    GenerationChanges,
     Manifest,
+    ParsedDelivery,
     Scalar,
+    TimestampChanges,
     Window,
+    WindowCoverage,
+    WindowDelivery,
     bounds,
     identifier,
     scalar_compare,
 )
 from .errors import InconsistentPublication as InconsistentPublication
-from .errors import InvalidContract
+from .errors import InvalidContract, LedgerAhead, StampAhead
 from .errors import RejectedDelivery as RejectedDelivery
 from .wire import Wire, utc
 
@@ -36,6 +42,26 @@ class State(StrEnum):
     COMPLETE = "complete"
     PATCHED = "patched"
     EXPIRED = "expired"
+
+
+@dataclass(frozen=True)
+class Unknown:
+    pass
+
+
+@dataclass(frozen=True)
+class Known:
+    complete_as_of: datetime
+    valid_as_of: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "complete_as_of", utc(self.complete_as_of))
+        object.__setattr__(self, "valid_as_of", utc(self.valid_as_of))
+        if self.valid_as_of > self.complete_as_of:
+            raise InvalidContract("validity cannot be newer than completeness")
+
+
+Evidence: TypeAlias = Unknown | Known
 
 
 def _successor(value: Scalar) -> Scalar | None:
@@ -54,34 +80,36 @@ def _minimum(value: Scalar) -> Scalar | None:
         return ""
     if isinstance(value, datetime):
         return datetime.min.replace(tzinfo=UTC)
-    if isinstance(value, date):
-        return date.min
-    return None
+    return date.min if isinstance(value, date) else None
 
 
-def _maximum(value: Scalar) -> Scalar | None:
-    if isinstance(value, datetime):
-        return datetime.max.replace(tzinfo=UTC)
-    if isinstance(value, date):
-        return date.max
-    return None
+@total_ordering
+@dataclass(frozen=True)
+class _Cut:
+    """A position before a scalar, or an end of the domain (rank -1 or 1)."""
+
+    rank: int
+    value: Scalar | None = None
+
+    def __lt__(self, other: _Cut) -> bool:
+        if self.rank != other.rank:
+            return self.rank < other.rank
+        if self.value is None or other.value is None:
+            return False
+        return scalar_compare(self.value, other.value) < 0
 
 
-def _nonempty(low: Scalar | None, high: Scalar | None, low_open: bool, high_open: bool) -> bool:
-    if low is None:
-        if high is None:
-            return True
-        low = _minimum(high)
-        if low is None:
-            return True
-        low_open = False
-    first = _successor(low) if low_open else low
-    if first is None:
-        return False
-    if high is None:
-        return True
-    comparison = scalar_compare(first, high)
-    return comparison < 0 or (comparison == 0 and not high_open)
+_START, _END = _Cut(-1), _Cut(1)
+
+
+def _cut(value: Scalar | None, *, after: bool) -> _Cut:
+    if value is None:
+        return _END if after else _START
+    if after:
+        value = _successor(value)
+        if value is None:
+            return _END
+    return _START if value == _minimum(value) else _Cut(0, value)
 
 
 @dataclass(frozen=True)
@@ -97,66 +125,124 @@ class Region(Wire):
         super().__post_init__()
         if self.low is not None and self.high is not None:
             bounds((self.low, self.high))
-        if not _nonempty(self.low, self.high, self.low_open, self.high_open):
-            raise InvalidContract("region is empty in its scalar domain")
         if self.low is None and self.low_open or self.high is None and self.high_open:
             raise InvalidContract("unbounded endpoints cannot be open")
-        if (self.complete_as_of is None) != (self.valid_as_of is None):
+        if self._bounds[0] >= self._bounds[1]:
+            raise InvalidContract("region is empty in its scalar domain")
+        _ = self.evidence
+
+    @property
+    def _bounds(self) -> tuple[_Cut, _Cut]:
+        return _cut(self.low, after=self.low_open), _cut(self.high, after=not self.high_open)
+
+    @property
+    def evidence(self) -> Evidence:
+        if self.complete_as_of is None and self.valid_as_of is None:
+            return Unknown()
+        if self.complete_as_of is None or self.valid_as_of is None:
             raise InvalidContract("region dates must be present or absent together")
-        if self.complete_as_of is not None and self.valid_as_of is not None:
-            if self.valid_as_of > self.complete_as_of:
-                raise InvalidContract("validity cannot be newer than completeness")
+        return Known(self.complete_as_of, self.valid_as_of)
 
     def state(self, now: datetime, limit: timedelta) -> State:
         now = utc(now)
         if not isinstance(limit, timedelta) or limit < timedelta(0):
             raise InvalidContract("freshness limit must be nonnegative")
-        if self.complete_as_of is None:
-            return State.UNKNOWN
-        if now - self.complete_as_of > limit:
-            return State.EXPIRED
-        return State.COMPLETE if self.complete_as_of == self.valid_as_of else State.PATCHED
+        match self.evidence:
+            case Unknown():
+                return State.UNKNOWN
+            case Known(complete, valid):
+                if now - complete > limit:
+                    return State.EXPIRED
+                return State.COMPLETE if complete == valid else State.PATCHED
+            case _ as unreachable:
+                assert_never(unreachable)
 
     def intersection(self, other: Region) -> Region | None:
-        low, lo = self.low, self.low_open
-        if low is None or (other.low is not None and scalar_compare(other.low, low) > 0):
-            low, lo = other.low, other.low_open
-        elif low == other.low:
-            lo = lo or other.low_open
-        high, hi = self.high, self.high_open
-        if high is None or (other.high is not None and scalar_compare(other.high, high) < 0):
-            high, hi = other.high, other.high_open
-        elif high == other.high:
-            hi = hi or other.high_open
-        if not _nonempty(low, high, lo, hi):
-            return None
-        return replace(self, low=low, high=high, low_open=lo, high_open=hi)
+        low, high = self._bounds
+        other_low, other_high = other._bounds
+        low, high = max(low, other_low), min(high, other_high)
+        return _region(low, high, self.evidence) if low < high else None
 
     def outside(self, inside: Region) -> tuple[Region, ...]:
-        parts = []
-        if (
-            inside.low is not None
-            and (self.low, self.low_open) != (inside.low, inside.low_open)
-            and _nonempty(self.low, inside.low, self.low_open, not inside.low_open)
-        ):
-            parts.append(replace(self, high=inside.low, high_open=not inside.low_open))
-        if (
-            inside.high is not None
-            and (self.high, self.high_open) != (inside.high, inside.high_open)
-            and _nonempty(inside.high, self.high, not inside.high_open, self.high_open)
-        ):
-            parts.append(replace(self, low=inside.high, low_open=not inside.high_open))
-        return tuple(parts)
+        low, high = self._bounds
+        start, end = inside._bounds
+        return tuple(
+            _region(a, b, self.evidence) for a, b in ((low, min(start, high)), (max(end, low), high)) if a < b
+        )
 
     def touches(self, other: Region) -> bool:
-        if (
-            self.high is None
-            or other.low is None
-            or _region_order(self, other) >= 0
-            or self.intersection(other) is not None
-        ):
-            return False
-        return not _nonempty(self.high, other.low, not self.high_open, not other.low_open)
+        return self._bounds[1] == other._bounds[0]
+
+
+_Steps: TypeAlias = tuple[tuple[_Cut, Evidence], ...]
+_INITIAL_REGIONS = (Region(),)
+
+
+def _region(low: _Cut, high: _Cut, evidence: Evidence) -> Region:
+    complete, valid = (
+        (evidence.complete_as_of, evidence.valid_as_of) if isinstance(evidence, Known) else (None, None)
+    )
+    low_value, low_after = _endpoint(low)
+    high_value, high_after = _endpoint(high)
+    return Region(
+        low_value,
+        high_value,
+        complete,
+        valid,
+        low_open=low_after,
+        high_open=high.rank == 0 and not high_after,
+    )
+
+
+def _endpoint(cut: _Cut) -> tuple[Scalar | None, bool]:
+    value = cut.value
+    # A successor cut can fall between integers representable on the wire.
+    if isinstance(value, int) and float(value) != value:
+        return value - 1, True
+    return value, False
+
+
+def _steps(regions: tuple[Region, ...]) -> _Steps:
+    result: list[tuple[_Cut, Evidence]] = []
+    end = _START
+    for region in regions:
+        low, high = region._bounds
+        if low != end:
+            raise InvalidContract("ledger regions must partition the entire ordered domain")
+        evidence = region.evidence
+        if not result or result[-1][1] != evidence:
+            result.append((low, evidence))
+        end = high
+    if end != _END:
+        raise InvalidContract("ledger regions must partition the entire ordered domain")
+    return tuple(result)
+
+
+def _segments(steps: _Steps, low: _Cut = _START, high: _Cut = _END) -> Iterator[tuple[_Cut, _Cut, Evidence]]:
+    ends = [cut for cut, _ in steps[1:]] + [_END]
+    for (start, evidence), end in zip(steps, ends, strict=True):
+        start, end = max(start, low), min(end, high)
+        if start < end:
+            yield start, end, evidence
+
+
+def _window_cuts(window: Window | None) -> tuple[_Cut, _Cut]:
+    return (_START, _END) if window is None else (_cut(window[0], after=False), _cut(window[1], after=True))
+
+
+def _apply_steps(steps: _Steps, low: _Cut, high: _Cut, delivery: ParsedDelivery) -> _Steps:
+    cuts = sorted(({cut for cut, _ in steps} | {low, high}) - {_END})
+    result: list[tuple[_Cut, Evidence]] = []
+    index = 0
+    for cut in cuts:
+        while index + 1 < len(steps) and steps[index + 1][0] <= cut:
+            index += 1
+        evidence = steps[index][1]
+        if low <= cut < high:
+            evidence = _transition(delivery, evidence)
+        if not result or result[-1][1] != evidence:
+            result.append((cut, evidence))
+    return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -207,33 +293,55 @@ class Claims(Wire):
 
 
 @dataclass(frozen=True)
-class Ledger(Wire):
+class _LedgerView(Wire):
     contract: Contract
-    regions: tuple[Region, ...] = (Region(),)
+    regions: tuple[Region, ...] = _INITIAL_REGIONS
     generation: str | None = None
     publication_id: str | None = None
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not self.regions:
-            raise InvalidContract("a ledger needs regions")
-        finite = [v for r in self.regions for v in (r.low, r.high) if v is not None]
+
+@dataclass(frozen=True, init=False)
+class Ledger(Wire):
+    contract: Contract
+    _cuts: _Steps = field(repr=False)
+    generation: str | None = None
+    publication_id: str | None = None
+
+    def __init__(
+        self,
+        contract: Contract,
+        regions: tuple[Region, ...] = _INITIAL_REGIONS,
+        generation: str | None = None,
+        publication_id: str | None = None,
+        *,
+        _cuts: _Steps | None = None,
+    ) -> None:
+        view = _LedgerView(contract, regions, generation, publication_id)
+        finite = [v for r in view.regions for v in (r.low, r.high) if v is not None]
         if len({type(v) for v in finite}) > 1:
             raise InvalidContract("ledger regions must share one scalar domain")
-        for value in finite:
-            self._check_window_type((value, value))
-        first, last = self.regions[0], self.regions[-1]
-        starts = first.low is None or (not first.low_open and first.low == _minimum(first.low))
-        ends = last.high is None or (not last.high_open and last.high == _maximum(last.high))
-        if (
-            not starts
-            or not ends
-            or not all(a.touches(b) for a, b in zip(self.regions, self.regions[1:], strict=False))
-        ):
-            raise InvalidContract("ledger regions must partition the entire ordered domain")
+        object.__setattr__(self, "contract", view.contract)
+        object.__setattr__(self, "generation", view.generation)
+        object.__setattr__(self, "publication_id", view.publication_id)
+        object.__setattr__(
+            self,
+            "_cuts",
+            _cuts if regions is _INITIAL_REGIONS and _cuts is not None else _steps(view.regions),
+        )
+        finite.extend(cut.value for cut, _ in self._cuts if cut.value is not None)
+        if finite:
+            self._check_window_type((finite[0], finite[0]))
         for token in (self.generation, self.publication_id):
             if token is not None and not token:
                 raise InvalidContract("generation and publication identities must be nonempty")
+
+    @classmethod
+    def _wire_schema(cls) -> type[Wire]:
+        return _LedgerView
+
+    @property
+    def regions(self) -> tuple[Region, ...]:
+        return tuple(_region(low, high, evidence) for low, high, evidence in _segments(self._cuts))
 
     def with_contract(self, contract: Contract) -> Ledger:
         if not self.contract.compatible_with(contract):
@@ -251,87 +359,113 @@ class Ledger(Wire):
                 if receipt.base_publication_id != ledger.publication_id:
                     raise InconsistentPublication("accepted receipt has a different parent publication")
                 after = ledger.apply(receipt.manifest)
+                if receipt.transition is None or _steps(receipt.transition.before) != ledger._cuts:
+                    raise InconsistentPublication("accepted receipt has different preceding evidence")
             except (InvalidContract, RejectedDelivery) as exc:
                 raise InconsistentPublication(f"accepted receipt breaks publication chain: {exc}") from exc
             if after.publication_id != receipt.publication_id or after != receipt.ledger:
                 raise InconsistentPublication("accepted receipt breaks publication chain or ledger evidence")
-            if receipt.transition is None or receipt.transition.before != ledger.regions:
-                raise InconsistentPublication("accepted receipt has different preceding evidence")
             ledger = after
         return ledger.with_contract(contract)
+
+    @classmethod
+    def reconcile(
+        cls,
+        contract: Contract,
+        receipts: Iterable[Receipt],
+        current: Ledger | None,
+        stamp: str | None,
+        *,
+        repair: bool = True,
+        retained_head: Receipt | None = None,
+    ) -> Ledger:
+        """Reconcile with history; a store-verified retained head can certify a consistent read."""
+        current = current.with_contract(contract) if current is not None else None
+        if (
+            not repair
+            and stamp is not None
+            and current is not None
+            and current.publication_id == stamp
+            and retained_head is not None
+        ):
+            if (
+                not retained_head.accepted
+                or retained_head.publication_id != stamp
+                or not retained_head.ledger.contract.compatible_with(contract)
+                or retained_head.ledger.with_contract(contract) != current
+                or _publication(
+                    retained_head.base_publication_id, retained_head.ledger.contract, retained_head.manifest
+                )
+                != stamp
+            ):
+                raise StampAhead("retained accepted head differs from the current publication")
+            return current
+        accepted = tuple(receipt for receipt in receipts if receipt.accepted)
+        if stamp is None and current is not None and current.publication_id is not None:
+            raise LedgerAhead("ledger ahead of missing publication stamp")
+        try:
+            rebuilt = cls.from_receipts(contract, accepted)
+        except InconsistentPublication as exc:
+            raise StampAhead(f"publication stamp lacks a valid accepted receipt chain: {exc}") from exc
+        heads = [receipt.publication_id for receipt in accepted]
+        if rebuilt.publication_id != stamp:
+            if stamp is None or stamp in heads:
+                raise LedgerAhead("accepted evidence is ahead of the publication stamp")
+            raise StampAhead("publication stamp has no matching accepted receipt")
+        if current is not None and current.publication_id == stamp:
+            if current != rebuilt:
+                raise StampAhead("current ledger evidence differs from its accepted history")
+            return current
+        if current is not None:
+            expected = next(
+                (
+                    r.ledger.with_contract(contract)
+                    for r in accepted
+                    if r.publication_id == current.publication_id
+                ),
+                cls(contract),
+            )
+            if current != expected:
+                raise StampAhead("current ledger is unrelated to the publication stamp")
+        if not repair and stamp is not None:
+            raise StampAhead("publication stamp is ahead of the ledger; repair from accepted receipts")
+        return rebuilt
 
     def _check_window_type(self, window: Window | None) -> None:
         if window is None:
             return
-        column = next((c for c in self.contract.schema if c.name == self.contract.window_column), None)
-        types = {"int": int, "str": str, "date": date, "datetime": datetime}
-        if column is not None and type(window[0]) is not types[column.type]:
+        column = self.contract.columns.get(self.contract.window_column or "")
+        if column is not None and type(window[0]) is not LOGICAL_TYPES[column.type].python_type:
             raise InvalidContract("window bound types differ from the contract schema")
+        if any(cut.value is not None and type(cut.value) is not type(window[0]) for cut, _ in self._cuts):
+            raise InvalidContract("window bound types differ from the ledger domain")
 
     def covered(self, window: Window | None = None) -> tuple[Region, ...]:
         window = bounds(window)
         self._check_window_type(window)
-        coverage = Region(*window) if window is not None else Region()
-        return tuple(part for r in self.regions if (part := r.intersection(coverage)) is not None)
+        return tuple(
+            _region(low, high, evidence)
+            for low, high, evidence in _segments(self._cuts, *_window_cuts(window))
+        )
 
     def apply(self, manifest: Manifest) -> Ledger:
-        shape = manifest.check(self.contract)
-        target = self.covered(manifest.window)
-        t = manifest.produced_at
-        if any(r.complete_as_of is not None and t <= r.complete_as_of for r in target):
-            raise RejectedDelivery("delivery time must be later than every affected region")
-        if not shape.complete:
-            bootstrap = (
-                not self.contract.key
-                and self.publication_id is None
-                and all(r.complete_as_of is None for r in self.regions)
-                and shape.coverage is Coverage.ALL
-            )
-            if any(r.complete_as_of is None for r in target) and not bootstrap:
-                raise RejectedDelivery("changed-only coverage needs a known base throughout")
-            if shape.checkpoint is Checkpoint.GENERATION:
-                if self.generation is None or manifest.since != self.generation:
-                    raise RejectedDelivery(
-                        "generation chain differs from the base; request a complete delivery"
-                    )
-            else:
-                since = manifest.since
-                if not isinstance(since, datetime):
-                    raise InvalidContract("timestamp checkpoints must be datetimes")
-                if since > t:
-                    raise RejectedDelivery("since is after the source read boundary")
-                if not self.contract.key:
-                    boundaries = {self.contract.start_at} if bootstrap else {r.complete_as_of for r in target}
-                    if boundaries != {since}:
-                        raise RejectedDelivery("append-only intervals must be contiguous without overlap")
-                elif any(r.complete_as_of is not None and since > r.complete_as_of for r in target):
-                    raise RejectedDelivery("timestamp checkpoint leaves a gap after the base")
-        coverage = Region(*manifest.window) if manifest.window is not None else Region()
-        result = []
-        for old in self.regions:
-            part = old.intersection(coverage)
-            if part is None:
-                result.append(old)
-                continue
-            result.extend(old.outside(part))
-            repairs = shape.deletions is Deletions.TOMBSTONE and (
-                part.valid_as_of is not None
-                and (
-                    part.valid_as_of >= manifest.since
-                    if isinstance(manifest.since, datetime)
-                    else part.valid_as_of == part.complete_as_of
-                )
-            )
-            valid = t if shape.complete or not self.contract.key or repairs else part.valid_as_of
-            result.append(replace(part, complete_as_of=t, valid_as_of=valid))
-        generation = self.generation
-        if shape.coverage is not Coverage.WINDOW:
-            if shape.complete or manifest.generation is not None:
-                generation = manifest.generation
-        publication = sha256(
-            f"{self.publication_id}:{self.contract.identity}:{manifest.identity}".encode()
-        ).hexdigest()
-        return Ledger(self.contract, _merge(result), generation, publication)
+        try:
+            delivery = manifest.check(self.contract)
+            window = _coverage_window(delivery)
+            self._check_window_type(window)
+        except InvalidContract as exc:
+            raise _rejection(manifest, str(exc)) from exc
+        low, high = _window_cuts(window)
+        target = tuple(evidence for _, _, evidence in _segments(self._cuts, low, high))
+        for name, passed, detail in _guards(self, delivery, target):
+            if not passed:
+                raise _rejection(manifest, f"{name}: {detail}")
+        return Ledger(
+            self.contract,
+            generation=_cursor(self.generation, delivery),
+            publication_id=_publication(self.publication_id, self.contract, manifest),
+            _cuts=_apply_steps(self._cuts, low, high, delivery),
+        )
 
     def claims(self, now: datetime, limit: timedelta | None = None, window: Window | None = None) -> Claims:
         now = utc(now)
@@ -343,26 +477,101 @@ class Ledger(Wire):
         )
 
 
-def _region_order(left: Region, right: Region) -> int:
-    if left.low is None:
-        return -int(right.low is not None)
-    if right.low is None:
-        return 1
-    comparison = scalar_compare(left.low, right.low)
-    return comparison or ((left.low_open > right.low_open) - (left.low_open < right.low_open))
+def _coverage_window(delivery: ParsedDelivery) -> Window | None:
+    match delivery:
+        case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
+            return window
+        case FullDelivery() | TimestampChanges() | GenerationChanges() | AppendInterval():
+            return None
+        case _:
+            assert_never(delivery)
 
 
-def _merge(regions: list[Region]) -> tuple[Region, ...]:
-    ordered = sorted(regions, key=cmp_to_key(_region_order))
-    result: list[Region] = []
-    for region in ordered:
-        if (
-            result
-            and result[-1].touches(region)
-            and (result[-1].complete_as_of, result[-1].valid_as_of)
-            == (region.complete_as_of, region.valid_as_of)
-        ):
-            result[-1] = replace(result[-1], high=region.high, high_open=region.high_open)
-        else:
-            result.append(region)
-    return tuple(result)
+def _guards(
+    ledger: Ledger, delivery: ParsedDelivery, target: tuple[Evidence, ...]
+) -> tuple[tuple[str, bool, str], ...]:
+    known = tuple(evidence for evidence in target if isinstance(evidence, Known))
+    bootstrap = (
+        isinstance(delivery, AppendInterval)
+        and ledger.publication_id is None
+        and all(isinstance(evidence, Unknown) for _, evidence in ledger._cuts)
+    )
+    return (
+        (
+            "monotone_time",
+            all(delivery.manifest.produced_at > e.complete_as_of for e in known),
+            "delivery time must be later than every affected region",
+        ),
+        (
+            "known_base",
+            isinstance(delivery, (FullDelivery, WindowDelivery)) or bootstrap or len(known) == len(target),
+            "changed-only coverage needs a known base throughout",
+        ),
+        (
+            "generation_chain",
+            not isinstance(delivery, GenerationChanges) or delivery.since == ledger.generation,
+            "generation chain differs from the base; request a complete delivery",
+        ),
+        (
+            "since_before_boundary",
+            not isinstance(delivery, (TimestampChanges, AppendInterval))
+            or delivery.since <= delivery.manifest.produced_at,
+            "since is after the source read boundary",
+        ),
+        (
+            "append_contiguous",
+            not isinstance(delivery, AppendInterval)
+            or ({ledger.contract.start_at} if bootstrap else {e.complete_as_of for e in known})
+            == {delivery.since},
+            "append-only intervals must be contiguous without overlap",
+        ),
+        (
+            "no_gap_after_base",
+            not isinstance(delivery, TimestampChanges)
+            or all(delivery.since <= e.complete_as_of for e in known),
+            "timestamp checkpoint leaves a gap after the base",
+        ),
+    )
+
+
+def _transition(delivery: ParsedDelivery, old: Evidence) -> Known:
+    t = delivery.manifest.produced_at
+    match delivery:
+        case FullDelivery() | WindowDelivery() | AppendInterval():
+            return Known(t, t)
+        case TimestampChanges() | GenerationChanges():
+            assert isinstance(old, Known)
+            repairs = delivery.shape.deletions is Deletions.TOMBSTONE and (
+                delivery.since <= old.valid_as_of
+                if isinstance(delivery, TimestampChanges)
+                else old.valid_as_of == old.complete_as_of
+            )
+            return Known(t, t if repairs else old.valid_as_of)
+        case _:
+            assert_never(delivery)
+
+
+def _cursor(previous: str | None, delivery: ParsedDelivery) -> str | None:
+    match delivery:
+        case FullDelivery():
+            return delivery.manifest.generation
+        case GenerationChanges():
+            return delivery.generation
+        case WindowDelivery() | TimestampChanges(coverage=WindowCoverage()):
+            return previous
+        case TimestampChanges() | AppendInterval():
+            return delivery.manifest.generation or previous
+        case _:
+            assert_never(delivery)
+
+
+def _publication(previous: str | None, contract: Contract, manifest: Manifest) -> str:
+    return sha256(f"{previous}:{contract.identity}:{manifest.identity}".encode()).hexdigest()
+
+
+def _rejection(manifest: Manifest, detail: str) -> RejectedDelivery:
+    return RejectedDelivery(
+        f"table={manifest.table!r} shape={manifest.shape!r} "
+        f"produced_at={manifest.produced_at.isoformat()} since={manifest.since} "
+        f"window={manifest.window!r}: {detail}"
+    )

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:1:Requirement",
+  "title": "Requirement",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Requirement"
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "table": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+    },
+    "complete_as_of": {
+      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+    },
+    "valid_as_of": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/window"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "table",
+    "complete_as_of",
+    "valid_as_of",
+    "window"
+  ],
+  "additionalProperties": false
+}
