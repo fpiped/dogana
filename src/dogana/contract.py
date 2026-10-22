@@ -167,16 +167,18 @@ class Contract(Wire):
         if self.start_at is not None:
             object.__setattr__(self, "start_at", utc(self.start_at))
         if not self.key:
-            if self.start_at is None or any(
-                s.complete
-                or s.deletions is not Deletions.NONE
+            changed = [s for s in self.shapes.values() if not s.complete]
+            if any(
+                s.deletions is not Deletions.NONE
                 or s.checkpoint is not Checkpoint.TIMESTAMP
                 or s.coverage is not Coverage.ALL
-                for s in self.shapes.values()
+                for s in changed
             ):
                 raise InvalidContract(
-                    "append-only history needs start_at and timestamp shapes without deletes"
+                    "without a key, changed-only shapes are append-only timestamp intervals"
                 )
+            if bool(changed) != (self.start_at is not None):
+                raise InvalidContract("start_at exists exactly when an append-only shape exists")
         elif self.start_at is not None:
             raise InvalidContract("start_at belongs to append-only history")
 

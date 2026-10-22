@@ -210,6 +210,16 @@ def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_over
             ledger.apply(Manifest(c.table, "log", at(20), since=since))
 
 
+def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_append_history():
+    c = Contract("receipts", (), {"full": FULL, "log": SINCE}, start_at=at(1))
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
+    assert ledger.claims(at(18)).valid_as_of == at(18)
+    with pytest.raises(RejectedDelivery, match="contiguous"):
+        ledger.apply(Manifest(c.table, "log", at(19), since=at(1)))
+    ledger = ledger.apply(Manifest(c.table, "log", at(19), since=at(18)))
+    assert ledger.claims(at(19)).complete_as_of == at(19)
+
+
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
     ledger = full(contract())
     ledger = ledger.apply(Manifest(ledger.contract.table, "daily", at(24), window=(10, 20)))

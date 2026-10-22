@@ -26,8 +26,10 @@ source correctness. `freshness` defaults to seven days.
 A window column exists exactly when a window shape exists. Its value must be immutable for a key.
 Moving keys between partitions or changing their window value requires a full delivery. This is a
 source guarantee, not something the gate can infer from one delivery. Keys are non-null and unique.
-An empty key means append-only; such a contract declares `start_at`, the beginning of its retained
-history, and admits only whole-domain timestamp shapes without deletions. Window bounds and key
+An empty key means the source gives rows no identity. Such a contract admits complete shapes, which
+replace their coverage wholesale, and append-only shapes: whole-domain, timestamp checkpoint, no
+deletion signal. Named keys, tombstones and generation checkpoints need a key. A contract with an
+append-only shape declares `start_at`, the beginning of its retained history. Window bounds and key
 components are strings, integers, dates or UTC datetimes; window and key schema columns use these
 logical types.
 
@@ -105,7 +107,8 @@ Adjacent regions with identical evidence merge. Regions outside coverage are unc
 - Changed-only deliveries require a known base throughout coverage. Named-key streams speak about all
   regions, including the assertion that no other key changed. They cannot bootstrap a partial base.
 - The append-only first interval is the sole exception to the base requirement because the contract
-  explicitly bounds retained history. Subsequent append intervals are contiguous.
+  explicitly bounds retained history. Subsequent append intervals are contiguous, and a complete
+  delivery on a keyless table starts a new contiguous history at its own boundary.
 - A generation feed requires `since` to equal both the table generation and every affected region's
   generation. Advancing a window's cursor cannot silently advance another window's cursor. A complete
   full delivery resets the table cursor, including clearing it when no generation is supplied.
@@ -126,7 +129,7 @@ not certify rows. Only a gate receipt with all required checks passing authorize
 `tombstone`, `append`. Replacing a window deletes published rows inside it, matches candidate keys and
 inserts the candidate. Upsert matches the contract key against candidate rows; named-key coverage also
 verifies the manifest's enumeration. Tombstones delete exactly their named keys. Append inserts without
-matching. The core never reads rows or executes a plan.
+matching. A keyless complete delivery replaces its coverage without key matching. The core never reads rows or executes a plan.
 
 `Gate.requirements` returns named row checks. An adapter returns one `Check(name, passed, detail)` for
 each requirement. Missing, duplicate or unexpected outcomes reject the delivery. Core checks validate
