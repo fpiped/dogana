@@ -1,8 +1,11 @@
 import pytest
 
+from tests.support import at
+
 pytest.importorskip("duckdb")
 
 from dogana import Ledger
+from dogana.errors import StoreError
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import contract
@@ -42,23 +45,23 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
         incoming, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),), tombstones=((1,),)
     )
     with DuckDBStore(":memory:") as store:
-        assert store.deliver(c, base, first_manifest).accepted
+        assert store.deliver(c, base, first_manifest, now=at(30)).accepted
         trace = StatementFault(store.connection)
         store.connection = trace
-        assert store.deliver(c, incoming, manifest).accepted
+        assert store.deliver(c, incoming, manifest, now=at(30)).accepted
         statements = trace.statements
     assert any(sql == "COMMIT" for sql in statements)
     assert any("__dogana_publications VALUES" in sql for sql in statements)
     for after in (False, True):
         for index, sql in enumerate(statements):
             with DuckDBStore(":memory:") as store:
-                first = store.deliver(c, base, first_manifest)
+                first = store.deliver(c, base, first_manifest, now=at(30))
                 connection = store.connection
                 fault = StatementFault(connection, index, after, error_type)
                 store.connection = fault
                 try:
-                    result = store.deliver(c, incoming, manifest)
-                except (OSError, RuntimeError, KeyboardInterrupt):
+                    result = store.deliver(c, incoming, manifest, now=at(30))
+                except (StoreError, KeyboardInterrupt):
                     result = None
                 finally:
                     store.connection = connection
@@ -70,7 +73,7 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 assert store.read(c.table) == ([row(2, value="changed")] if committed else [row(1), row(2)])
                 if result is not None and committed:
                     assert result == committed, (index, sql)
-                retry = store.deliver(c, incoming, manifest)
+                retry = store.deliver(c, incoming, manifest, now=at(30))
                 assert retry.accepted, (index, sql, retry.checks)
                 assert store.read(c.table) == [row(2, value="changed")]
                 assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)

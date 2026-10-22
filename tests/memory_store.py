@@ -144,6 +144,8 @@ class MemoryStore:
 
     def check(self, candidate, contract, manifest, requirements):
         with self.lock:
+            if not contract.schema:
+                raise InvalidContract("publication requires a declared schema")
             held_contract, held_manifest, rows = self.candidates[candidate]
             if (held_contract, held_manifest) != (contract, manifest):
                 raise InvalidContract("candidate belongs to another delivery")

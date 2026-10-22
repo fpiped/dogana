@@ -47,7 +47,7 @@ These tables are implementation details, useful for inspection and SQL consumers
 | `__dogana_receipts` | `receipt_id`, `table_name`, `manifest_id`, `accepted`, `publication_id`, `document` | Persisted decision JSON and lookup indexes. |
 | `__dogana_publications` | `table_name`, `publication_id` | Current row publication stamp. |
 | `__dogana_commits` | `publication_id`, `table_name`, `manifest_id`, `base_publication_id`, `receipt_id`, `sequence`, `history_table`, `columns` | Accepted publication order and row-version metadata. |
-| `__dogana_history_<table>` | Declared row columns, `__dogana_from`, `__dogana_until` | Row versions, with inclusive start and exclusive end publication sequences. |
+| `__dogana_history_<table>`, `__dogana_layout_<hash>` | Declared row columns, `__dogana_from`, `__dogana_until` | Row versions, with inclusive start and exclusive end publication sequences. |
 
 `document` in the ledger table contains `version`, `kind`, `contract`, `regions`, `generation` and
 `publication_id`. It has no accepted-identity array. Every region contains `low`, `high`, `low_open`,
@@ -77,7 +77,7 @@ The view reads current ledger evidence. It does not fix a publication for later 
 freshness. SQL `min` ignores nulls, so require every region's date to be non-null before aggregating.
 The [dbt recipes](integrations.md#dbt) use that rule and refuse a missing ledger too.
 
-History tables receive a schema-derived suffix when column changes require a new physical layout.
+Evolved schemas use layout tables named by a hash of the table and physical columns.
 History stores changed row versions instead of copying the whole table on every publication.
 Keyed updates compare rows with null-safe equality; unchanged rows keep their version. Equal
 keyless events retain their multiplicity. History grows with changes and has no automatic retention

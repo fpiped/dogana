@@ -59,11 +59,18 @@ from dogana.reference.duckdb import DuckDBStore
 
 full = Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none", cost=100)
 daily = Shape(
-    coverage="window", completeness="complete", deletions="absence", checkpoint="none",
-    cost=10, window_size=timedelta(days=30),
+    coverage="window",
+    completeness="complete",
+    deletions="absence",
+    checkpoint="none",
+    cost=10,
+    window_size=timedelta(days=30),
 )
 contract = Contract(
-    "orders", key=("id",), shapes={"full": full, "daily": daily}, window_column="day",
+    "orders",
+    key=("id",),
+    shapes={"full": full, "daily": daily},
+    window_column="day",
     schema=(Column("id", "int"), Column("day", "date"), Column("amount", "int")),
 )
 window = (date(2026, 9, 20), date(2026, 10, 19))
@@ -81,8 +88,13 @@ with DuckDBStore("landing.duckdb") as store:
             csv.writer(stream).writerows([("id", "day", "amount"), *rows])
         boundary = datetime(2026, 10, day, tzinfo=UTC)
         manifest = Manifest(
-            "orders", shape, boundary, window=coverage, rows=len(rows),
-            schema_hash=contract.schema_hash, content_hash=sha256(path.read_bytes()).hexdigest(),
+            "orders",
+            shape,
+            boundary,
+            window=coverage,
+            rows=len(rows),
+            schema_hash=contract.schema_hash,
+            content_hash=sha256(path.read_bytes()).hexdigest(),
         )
         receipt = deliver(store, contract, path, manifest, now=boundary)
         assert receipt.accepted and not receipt.replayed

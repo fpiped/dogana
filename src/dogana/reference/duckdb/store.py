@@ -1,11 +1,17 @@
-"""DuckDB candidates, atomic publications and JSON evidence persistence."""
+"""DuckDB candidates, atomic publications and retained row versions."""
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from functools import wraps
+from hashlib import sha256
+from os import PathLike
 from pathlib import Path
 from threading import Lock, RLock
+from types import TracebackType
+from typing import Any, Concatenate, ParamSpec, TypeVar, cast
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
@@ -18,14 +24,13 @@ from dogana import (
     Contract,
     Coverage,
     Gate,
-    InconsistentPublication,
-    InvalidContract,
     Ledger,
     Manifest,
     Operation,
     Receipt,
 )
-from dogana.contract import identifier
+from dogana.contract import Scalar, identifier
+from dogana.errors import InconsistentPublication, InvalidContract, StoreError
 
 _TYPES = {
     "int": "BIGINT",
@@ -35,6 +40,10 @@ _TYPES = {
     "date": "DATE",
     "datetime": "TIMESTAMP WITH TIME ZONE",
 }
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+_LOCKS_GUARD = Lock()
 
 
 def _quote(value: str) -> str:
@@ -42,7 +51,20 @@ def _quote(value: str) -> str:
 
 
 def _logical(value: str) -> str:
-    if "INT" in value and "INTERVAL" not in value:
+    if value.endswith("]") or value.startswith(("STRUCT(", "MAP(", "UNION(", "LIST(")):
+        return "unsupported"
+    if value in {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+    }:
         return "int"
     if value in ("DOUBLE", "FLOAT", "REAL") or value.startswith("DECIMAL"):
         return "float"
@@ -51,29 +73,51 @@ def _logical(value: str) -> str:
     return {"VARCHAR": "str", "BOOLEAN": "bool", "DATE": "date"}.get(value, "unsupported")
 
 
-_LOCKS: WeakValueDictionary = WeakValueDictionary()
-_LOCKS_GUARD = Lock()
-
-
-def _synchronized(method):
+def _synchronized(
+    method: Callable[Concatenate[DuckDBStore, _P], _R],
+) -> Callable[Concatenate[DuckDBStore, _P], _R]:
     @wraps(method)
-    def call(self, *args, **kwargs):
+    def call(self: DuckDBStore, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         with self._lock:
-            return method(self, *args, **kwargs)
+            try:
+                return method(self, *args, **kwargs)
+            except (duckdb.Error, OSError) as exc:
+                raise StoreError(str(exc)) from exc
 
     return call
 
 
+@dataclass(frozen=True)
+class _Candidate:
+    manifest: Manifest
+    csv: bool = False
+
+
+@dataclass(frozen=True)
+class _Checked:
+    contract: Contract
+    checks: tuple[Check, ...]
+    base: Ledger
+    stamp: str | None
+
+
 class DuckDBStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, adopt: bool = False) -> None:
         key = str(Path(path).resolve()) if str(path) != ":memory:" else uuid4().hex
         with _LOCKS_GUARD:
             self._lock = _LOCKS.setdefault(key, RLock())
+        self._adopt = adopt
+        self._candidates: dict[str, _Candidate] = {}
+        self._checked: dict[str, _Checked] = {}
+        self._transaction: str | None = None
         with self._lock:
-            self._initialize(path)
+            try:
+                self.connection = duckdb.connect(str(path))
+                self._initialize()
+            except (duckdb.Error, OSError) as exc:
+                raise StoreError(str(exc)) from exc
 
-    def _initialize(self, path: str | Path):
-        self.connection = duckdb.connect(str(path))
+    def _initialize(self) -> None:
         self.connection.execute("SET TimeZone='UTC'")
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_ledgers
             (table_name VARCHAR PRIMARY KEY, document VARCHAR NOT NULL)""")
@@ -81,36 +125,58 @@ class DuckDBStore:
             (receipt_id VARCHAR PRIMARY KEY, table_name VARCHAR, manifest_id VARCHAR,
              accepted BOOLEAN, publication_id VARCHAR, document VARCHAR NOT NULL)""")
         self.connection.execute("""CREATE INDEX IF NOT EXISTS __dogana_manifest_lookup
-            ON __dogana_receipts (table_name, manifest_id)""")
+            ON __dogana_receipts (manifest_id)""")
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_publications
             (table_name VARCHAR PRIMARY KEY, publication_id VARCHAR NOT NULL)""")
-        self._candidates: dict[str, tuple[Manifest, bool]] = {}
-        self._checked: dict[str, tuple[Contract, tuple[Check, ...]]] = {}
-        self._transaction: str | None = None
+        self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_commits
+            (publication_id VARCHAR PRIMARY KEY, table_name VARCHAR NOT NULL,
+             manifest_id VARCHAR UNIQUE NOT NULL, base_publication_id VARCHAR,
+             receipt_id VARCHAR NOT NULL, sequence BIGINT NOT NULL,
+             history_table VARCHAR NOT NULL, columns VARCHAR[] NOT NULL)""")
 
-    def __enter__(self):
+    def __enter__(self) -> DuckDBStore:
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
         self.close()
 
     @_synchronized
     def close(self) -> None:
-        for candidate in tuple(self._candidates):
-            self.abort(candidate)
-        self.connection.close()
+        try:
+            for candidate in tuple(self._candidates):
+                self.abort(candidate)
+        finally:
+            self.connection.close()
+
+    def _one(self, sql: str, params: object = None) -> tuple[Any, ...]:
+        row = self.connection.execute(sql, params).fetchone()
+        if row is None:
+            raise StoreError("storage query returned no result")
+        return row
 
     def _exists(self, table: str) -> bool:
-        return (
-            self.connection.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
-            ).fetchone()[0]
-            > 0
+        return bool(
+            self._one(
+                "SELECT count(*) FROM information_schema.tables WHERE lower(table_name)=lower(?)", [table]
+            )[0]
+        )
+
+    def _description(self, table: str) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (str(row[0]), str(row[1]))
+            for row in self.connection.execute(f"DESCRIBE {_quote(table)}").fetchall()
         )
 
     def _check_table_spelling(self, table: str) -> None:
         identifier(table)
-        for registry in ("__dogana_ledgers", "__dogana_publications", "__dogana_receipts"):
+        for registry in (
+            "__dogana_ledgers",
+            "__dogana_publications",
+            "__dogana_receipts",
+            "__dogana_commits",
+        ):
             row = self.connection.execute(
                 f"SELECT table_name FROM {registry} WHERE lower(table_name)=lower(?) LIMIT 1", [table]
             ).fetchone()
@@ -119,151 +185,295 @@ class DuckDBStore:
                     raise InvalidContract("DuckDB table identities must retain their registered letter case")
                 return
 
-    def _stored_ledger(self, contract: Contract) -> Ledger:
+    def _stored_ledger(self, contract: Contract, *, created: bool = False) -> Ledger:
         self._check_table_spelling(contract.table)
         row = self.connection.execute(
             "SELECT document FROM __dogana_ledgers WHERE table_name=?", [contract.table]
         ).fetchone()
-        ledger = Ledger.from_json(row[0]) if row else Ledger(contract)
-        if ledger.contract != contract:
-            raise InvalidContract("a published table's contract cannot change within its history")
+        if row is None:
+            tracked = self._one(
+                "SELECT EXISTS(SELECT 1 FROM __dogana_commits WHERE table_name=?) OR "
+                "EXISTS(SELECT 1 FROM __dogana_receipts WHERE table_name=? AND accepted) OR "
+                "EXISTS(SELECT 1 FROM __dogana_publications WHERE table_name=?)",
+                [contract.table] * 3,
+            )[0]
+            if self._exists(contract.table) and not tracked and not self._adopt and not created:
+                raise StoreError("table exists without a publication; explicit adopt=True is required")
+            return Ledger(contract)
+        try:
+            ledger = Ledger.from_json(row[0])
+        except InvalidContract as exc:
+            raise InconsistentPublication("stored ledger is invalid") from exc
+        ledger = ledger.with_contract(contract)
         return ledger
 
     def _stamp(self, table: str) -> str | None:
         row = self.connection.execute(
             "SELECT publication_id FROM __dogana_publications WHERE table_name=?", [table]
         ).fetchone()
-        return row[0] if row else None
+        return str(row[0]) if row else None
+
+    @_synchronized
+    def publication_stamp(self, table: str) -> str | None:
+        self._check_table_spelling(table)
+        return self._stamp(table)
 
     def _ledger_ahead(self, ledger: Ledger, stamp: str | None) -> bool:
         if ledger.publication_id is None:
             return False
         if stamp is None:
             return True
-        return any(
-            r.accepted and r.publication_id == stamp and r.manifest.identity in ledger.accepted
-            for r in self.receipts(ledger.contract.table)
+        receipts = self.receipts(ledger.contract.table)
+        heads = [r.publication_id for r in receipts if r.accepted]
+        return stamp in heads and (
+            ledger.publication_id not in heads or heads.index(stamp) < heads.index(ledger.publication_id)
         )
+
+    def _assert_receipts_retained(self, table: str) -> None:
+        missing = self.connection.execute(
+            "SELECT c.publication_id FROM __dogana_commits c LEFT JOIN __dogana_receipts r "
+            "ON c.receipt_id=r.receipt_id AND c.publication_id=r.publication_id AND r.accepted "
+            "WHERE c.table_name=? AND r.receipt_id IS NULL LIMIT 1",
+            [table],
+        ).fetchone()
+        if missing:
+            raise InconsistentPublication("accepted receipt missing for a retained publication")
+
+    def _require_committed_read(self) -> None:
+        if self._transaction is not None:
+            raise StoreError("publish or abort the candidate before reading a publication")
 
     @_synchronized
     def load_ledger(self, contract: Contract) -> Ledger:
+        self._require_committed_read()
         ledger = self._stored_ledger(contract)
         stamp = self._stamp(contract.table)
+        self._assert_receipts_retained(contract.table)
         if (
             stamp is None
             and ledger.publication_id is None
-            and self.connection.execute(
-                "SELECT 1 FROM __dogana_receipts WHERE table_name=? AND accepted LIMIT 1", [contract.table]
-            ).fetchone()
+            and self._one(
+                "SELECT EXISTS(SELECT 1 FROM __dogana_receipts WHERE table_name=? AND accepted)",
+                [contract.table],
+            )[0]
         ):
             raise InconsistentPublication("ledger and stamp missing for retained accepted receipts")
         if stamp != ledger.publication_id:
             side = "ledger" if self._ledger_ahead(ledger, stamp) else "stamp"
             raise InconsistentPublication(f"{side} ahead of {'stamp' if side == 'ledger' else 'ledger'}")
+        if (
+            stamp is not None
+            and not self._one(
+                "SELECT EXISTS(SELECT 1 FROM __dogana_receipts "
+                "WHERE table_name=? AND publication_id=? AND accepted)",
+                [contract.table, stamp],
+            )[0]
+        ):
+            raise InconsistentPublication("accepted receipt missing for the publication stamp")
         return ledger
 
     def _base(self, contract: Contract, manifest: Manifest) -> Ledger:
-        try:
-            return self.load_ledger(contract)
-        except InconsistentPublication:
-            ledger = self._stored_ledger(contract)
-            stamp = self._stamp(contract.table)
-            if stamp is None and ledger.publication_id is None:
-                ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
-            shape = manifest.check(contract)
-            if not (
-                self._ledger_ahead(ledger, stamp)
-                and shape.complete
-                and shape.coverage is Coverage.ALL
-                and manifest.identity not in ledger.accepted
+        self._assert_receipts_retained(contract.table)
+        ledger = self._stored_ledger(contract)
+        stamp = self._stamp(contract.table)
+        if stamp == ledger.publication_id:
+            if (
+                stamp is not None
+                or not self._one(
+                    "SELECT EXISTS(SELECT 1 FROM __dogana_receipts WHERE table_name=? AND accepted)",
+                    [contract.table],
+                )[0]
             ):
-                raise
-            return ledger
-
-    def repair(self, contract: Contract) -> Ledger:
-        with self._lock:
-            stored = self._stored_ledger(contract)
-            stamp = self._stamp(contract.table)
-            if stamp != stored.publication_id and self._ledger_ahead(stored, stamp):
-                raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
+                return ledger
+        if ledger.publication_id is None:
             ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
-            if ledger.publication_id != stamp:
-                raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
-            self.connection.execute(
-                "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
-                [contract.table, ledger.to_json()],
+        shape = manifest.check(contract)
+        if not (
+            self._ledger_ahead(ledger, stamp)
+            and shape.complete
+            and shape.coverage is Coverage.ALL
+            and self.accepted_receipt(manifest.identity) is None
+        ):
+            raise InconsistentPublication(
+                "publication evidence differs; repair or a new complete delivery is required"
             )
-            return ledger
+        return ledger
+
+    @_synchronized
+    def repair(self, contract: Contract) -> Ledger:
+        self._require_committed_read()
+        self._assert_receipts_retained(contract.table)
+        stored = self._stored_ledger(contract)
+        stamp = self._stamp(contract.table)
+        if stamp != stored.publication_id and self._ledger_ahead(stored, stamp):
+            raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
+        ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
+        if ledger.publication_id != stamp:
+            raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
+        self.connection.execute(
+            "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)", [contract.table, ledger.to_json()]
+        )
+        return ledger
+
+    def _receipt(self, document: str) -> Receipt:
+        try:
+            return Receipt.from_json(document)
+        except InvalidContract as exc:
+            raise InconsistentPublication("stored receipt is invalid") from exc
 
     @_synchronized
     def receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
-        sql = "SELECT table_name, manifest_id, accepted, document FROM __dogana_receipts"
-        params = []
+        sql, params = "SELECT document FROM __dogana_receipts", []
         if table is not None:
             sql += " WHERE table_name=?"
             params.append(table)
-        rows = self.connection.execute(sql + " ORDER BY rowid", params).fetchall()
-        prefixes: dict[str, list[str]] = {}
-        receipts = []
-        for name, manifest_id, accepted, document in rows:
-            prefix = prefixes.setdefault(name, [])
-            if accepted:
-                prefix.append(manifest_id)
-            receipts.append(self._receipt(document, name, prefix))
-        return tuple(receipts)
+        return tuple(
+            self._receipt(row[0])
+            for row in self.connection.execute(sql + " ORDER BY rowid", params).fetchall()
+        )
 
-    def _receipt(self, document: str, table: str, prefix: list[str] | None = None) -> Receipt:
-        value = json.loads(document)
-        accepted = value["ledger"]["accepted"]
-        if isinstance(accepted, dict) and set(accepted) == {"prefix"}:
-            count = accepted["prefix"]
-            if type(count) is not int or count < 0:
-                raise InconsistentPublication("invalid accepted receipt prefix")
-            if prefix is None:
-                prefix = [
-                    r[0]
-                    for r in self.connection.execute(
-                        "SELECT manifest_id FROM __dogana_receipts WHERE table_name=? AND accepted "
-                        "ORDER BY rowid LIMIT ?",
-                        [table, count],
-                    ).fetchall()
-                ]
-            if len(prefix) < count:
-                raise InconsistentPublication("accepted receipt prefix is missing")
-            value["ledger"]["accepted"] = prefix[:count]
-        return Receipt.from_dict(value)
+    @_synchronized
+    def accepted_receipt(self, identity: str) -> Receipt | None:
+        row = self.connection.execute(
+            "SELECT receipt_id, document FROM __dogana_receipts WHERE manifest_id=? AND accepted", [identity]
+        ).fetchone()
+        committed = self.connection.execute(
+            "SELECT receipt_id FROM __dogana_commits WHERE manifest_id=?", [identity]
+        ).fetchone()
+        if committed and (row is None or row[0] != committed[0]):
+            raise InconsistentPublication("accepted receipt missing for a retained publication")
+        return self._receipt(row[1]) if row else None
 
+    @_synchronized
     def save_receipt(self, receipt: Receipt) -> None:
-        document = receipt.to_dict()
-        document["ledger"]["accepted"] = {"prefix": len(receipt.ledger.accepted)}
+        if receipt.accepted and self._transaction is None:
+            raise StoreError("accepted receipts must commit with their rows")
+        receipt_key = receipt.identity if receipt.accepted else uuid4().hex
         self.connection.execute(
-            """INSERT OR IGNORE INTO __dogana_receipts VALUES (?, ?, ?, ?, ?, ?)""",
+            "INSERT INTO __dogana_receipts VALUES (?, ?, ?, ?, ?, ?)",
             [
-                receipt.identity,
+                receipt_key,
                 receipt.ledger.contract.table,
                 receipt.manifest.identity,
                 receipt.accepted,
                 receipt.publication_id,
-                json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False),
+                receipt.to_json(),
             ],
         )
 
-    def hold(self, source: object, manifest: Manifest) -> str:
+    @_synchronized
+    def hold(self, source: object, manifest: Manifest, contract: Contract | None = None) -> str:
         if self._transaction is not None:
-            raise RuntimeError("publish or abort the existing candidate first")
-        path = Path(source)
-        suffix = path.suffix.lower()
-        reader = {".csv": "read_csv_auto", ".parquet": "read_parquet"}.get(suffix)
-        if reader is None:
-            raise ValueError("only CSV and Parquet files are supported")
+            raise StoreError("publish or abort the existing candidate first")
         candidate = "__dogana_candidate_" + uuid4().hex
-        options = ", header=true, sample_size=-1" if suffix == ".csv" else ""
-        self._candidates[candidate] = (manifest, suffix == ".csv")
-        self.connection.execute(
-            f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM {reader}(?{options})", [str(path)]
-        )
-        return candidate
+        self._candidates[candidate] = _Candidate(manifest)
+        try:
+            if isinstance(source, (str, PathLike)):
+                path = Path(source)
+                if any(char in str(path) for char in "*?[]{}"):
+                    raise InvalidContract("delivered paths must be literal and contain no glob characters")
+                path = path.resolve(strict=True)
+                if any(char in str(path) for char in "*?[]{}"):
+                    raise InvalidContract("delivered paths must be literal and contain no glob characters")
+                if not path.is_file():
+                    raise StoreError("the delivered path must be a regular file")
+                suffix = path.suffix.lower()
+                if suffix == ".csv":
+                    self._candidates[candidate] = _Candidate(manifest, csv=True)
+                    self.connection.execute(
+                        f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
+                        "FROM read_csv(?, header=true, all_varchar=true, sample_size=-1)",
+                        [[str(path)]],
+                    )
+                elif suffix == ".parquet":
+                    self.connection.execute(
+                        f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM read_parquet(?)",
+                        [[str(path)]],
+                    )
+                else:
+                    raise InvalidContract("only CSV and Parquet paths are supported")
+            elif type(source).__module__.startswith("pyarrow"):
+                relation = candidate + "_input"
+                try:
+                    self.connection.register(relation, source)
+                    self.connection.execute(
+                        f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM {_quote(relation)}"
+                    )
+                finally:
+                    self.connection.unregister(relation)
+            elif isinstance(source, Iterable) and not isinstance(source, (bytes, Mapping)):
+                self._hold_rows(candidate, source, contract)
+            else:
+                raise InvalidContract("source must be a path, iterable of row mappings or Arrow table")
+            return candidate
+        except BaseException:
+            self._release(candidate)
+            raise
 
+    def _hold_rows(self, candidate: str, source: Iterable[object], contract: Contract | None) -> None:
+        if contract is None or not contract.schema:
+            raise InvalidContract("row mappings require a declared schema")
+        columns = tuple(c.name for c in contract.schema)
+        declarations = ", ".join(f"{_quote(c.name)} {_TYPES[c.type]}" for c in contract.schema)
+        self.connection.execute(f"CREATE TEMP TABLE {_quote(candidate)} ({declarations})")
+        placeholders = ", ".join("?" for _ in columns)
+        batch: list[list[object]] = []
+        for row in source:
+            if not isinstance(row, Mapping) or set(row) != set(columns):
+                raise InvalidContract("each source row must match the declared columns")
+            types: dict[str, tuple[type, ...]] = {
+                "int": (int,),
+                "float": (int, float),
+                "str": (str,),
+                "bool": (bool,),
+                "date": (date,),
+                "datetime": (datetime,),
+            }
+            for column in contract.schema:
+                value = row[column.name]
+                if value is not None and (
+                    type(value) not in types[column.type]
+                    or isinstance(value, datetime)
+                    and value.utcoffset() is None
+                ):
+                    raise InvalidContract(f"source column {column.name} does not have type {column.type}")
+            batch.append([row[c] for c in columns])
+            if len(batch) == 1000:
+                self.connection.executemany(f"INSERT INTO {_quote(candidate)} VALUES ({placeholders})", batch)
+                batch.clear()
+        if batch:
+            self.connection.executemany(f"INSERT INTO {_quote(candidate)} VALUES ({placeholders})", batch)
+
+    def _typed_csv(self, candidate: str, contract: Contract) -> bool:
+        source = _quote(candidate)
+        predicates = [
+            f"({_quote(c.name)} IS NOT NULL AND TRY_CAST({_quote(c.name)} AS {_TYPES[c.type]}) IS NULL)"
+            for c in contract.schema
+        ]
+        predicates.extend(
+            f"({_quote(c.name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(c.name)}), '[+-]?[0-9]+'))"
+            for c in contract.schema
+            if c.type == "int"
+        )
+        invalid = " OR ".join(predicates)
+        if self._one(f"SELECT count(*) FROM {source} WHERE {invalid}")[0]:
+            return False
+        casts = ", ".join(
+            f"CAST({_quote(c.name)} AS {_TYPES[c.type]}) AS {_quote(c.name)}" for c in contract.schema
+        )
+        self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {source} AS SELECT {casts} FROM {source}")
+        return True
+
+    def _key_relation(
+        self, keys: tuple[tuple[Scalar, ...], ...], columns: tuple[str, ...]
+    ) -> tuple[str, list[object]]:
+        names = ", ".join(_quote(k) for k in columns)
+        values = ", ".join("unnest(?)" for _ in columns)
+        return f"(SELECT {values}) AS deleted({names})", [
+            [key[i] for key in keys] for i in range(len(columns))
+        ]
+
+    @_synchronized
     def check(
         self,
         candidate: str,
@@ -271,89 +481,101 @@ class DuckDBStore:
         manifest: Manifest,
         requirements: tuple[CheckRequirement, ...],
     ) -> tuple[Check, ...]:
-        if self._candidates[candidate][0] != manifest:
-            raise ValueError("candidate belongs to a different manifest")
+        if self._transaction is not None:
+            raise StoreError("publish or abort the existing candidate first")
+        if not contract.schema:
+            raise InvalidContract("publishing requires a declared schema")
+        held = self._candidates.get(candidate)
+        if held is None or held.manifest != manifest:
+            raise StoreError("candidate belongs to a different manifest")
         if requirements != Gate.requirements(contract, manifest):
-            raise ValueError("row checks must come from the gate")
+            raise StoreError("row checks must come from the gate")
+        base, stamp = self._base(contract, manifest), self._stamp(contract.table)
         db, source = self.connection, _quote(candidate)
-        count = db.execute(f"SELECT count(*) FROM {source}").fetchone()[0]
-        description = db.execute(f"DESCRIBE {source}").fetchall()
-        names = tuple(r[0] for r in description)
-        if not count and self._candidates[candidate][1] and names == tuple(c.name for c in contract.schema):
-            casts = ", ".join(
-                f"CAST({_quote(c.name)} AS {_TYPES[c.type]}) AS {_quote(c.name)}" for c in contract.schema
-            )
-            db.execute(f"CREATE OR REPLACE TEMP TABLE {source} AS SELECT {casts} FROM {source}")
-            description = db.execute(f"DESCRIBE {source}").fetchall()
-        actual = tuple((r[0], _logical(r[1])) for r in description)
+        count = int(self._one(f"SELECT count(*) FROM {source}")[0])
+        description = self._description(candidate)
+        names = tuple(name for name, _ in description)
         expected = tuple((c.name, c.type) for c in contract.schema)
-        schema_ok = (
-            bool(contract.schema) and actual == expected and manifest.schema_hash == contract.schema_hash
+        converted = True
+        if held.csv and contract.schema and names == tuple(c.name for c in contract.schema):
+            converted = self._typed_csv(candidate, contract)
+            description = self._description(candidate)
+        actual = tuple((name, _logical(kind)) for name, kind in description)
+        schema_ok = not contract.schema or (
+            converted and actual == expected and manifest.schema_hash == contract.schema_hash
         )
-        if schema_ok:
+        if schema_ok and contract.schema:
             casts = ", ".join(
                 f"CAST({_quote(c.name)} AS {_TYPES[c.type]}) AS {_quote(c.name)}" for c in contract.schema
             )
             db.execute(f"CREATE OR REPLACE TEMP TABLE {source} AS SELECT {casts} FROM {source}")
         checks = {
             "row_count": Check(
-                "row_count",
-                type(manifest.rows) is int and manifest.rows == count,
-                f"declared={manifest.rows}, actual={count}",
+                "row_count", manifest.rows == count, f"declared={manifest.rows}, actual={count}"
             ),
-            "schema_hash": Check("schema_hash", schema_ok, f"expected={expected}, actual={actual}"),
+            "schema_hash": Check(
+                "schema_hash",
+                schema_ok,
+                f"expected={expected}, actual={actual}, "
+                f"declared_hash={manifest.schema_hash}, expected_hash={contract.schema_hash}",
+            ),
         }
         key_columns = ", ".join(_quote(k) for k in contract.key)
+        key_ok = schema_ok and set(contract.key).issubset(names)
         if contract.key:
-            bad = True
-            if schema_ok:
+            if key_ok:
                 nulls = " OR ".join(f"{_quote(k)} IS NULL" for k in contract.key)
-                bad = db.execute(f"SELECT count(*) FROM {source} WHERE {nulls}").fetchone()[0] > 0
+                bad = self._one(f"SELECT count(*) FROM {source} WHERE {nulls}")[0] > 0
                 bad |= (
-                    db.execute(
+                    self._one(
                         f"SELECT count(*) FROM (SELECT {key_columns} FROM {source} "
                         f"GROUP BY {key_columns} HAVING count(*) > 1)"
-                    ).fetchone()[0]
+                    )[0]
                     > 0
                 )
-            checks["key_integrity"] = Check("key_integrity", not bad, "keys must be non-null and unique")
+                checks["key_integrity"] = Check("key_integrity", not bad, "keys must be non-null and unique")
+                key_ok = not bad
+            else:
+                checks["key_integrity"] = Check("key_integrity", False, "not evaluated")
         if manifest.window is not None:
-            valid = False
-            if schema_ok:
+            if schema_ok and contract.window_column in names:
                 col = _quote(contract.window_column)
-                invalid = db.execute(
+                invalid = self._one(
                     f"SELECT count(*) FROM {source} WHERE {col} IS NULL OR {col} < ? OR {col} > ?",
                     list(manifest.window),
-                ).fetchone()[0]
-                valid = invalid == 0
-            checks["rows_in_window"] = Check(
-                "rows_in_window", valid, "all rows must be inside the closed window"
-            )
+                )[0]
+                checks["rows_in_window"] = Check(
+                    "rows_in_window", invalid == 0, "all rows must be inside the closed window"
+                )
+            else:
+                checks["rows_in_window"] = Check("rows_in_window", False, "not evaluated")
         if contract.window_column is not None:
-            stable = False
-            if schema_ok:
-                col = _quote(contract.window_column)
-                stable = db.execute(f"SELECT count(*) FROM {source} WHERE {col} IS NULL").fetchone()[0] == 0
-                shape = contract.shape(manifest.shape)
-                if (
-                    contract.key
-                    and self._exists(contract.table)
-                    and not (shape.complete and shape.coverage is Coverage.ALL)
-                ):
-                    match = " AND ".join(f"p.{_quote(k)}=c.{_quote(k)}" for k in contract.key)
-                    moved = db.execute(
-                        f"SELECT count(*) FROM {_quote(contract.table)} p JOIN {source} c ON {match} "
-                        f"WHERE p.{col} IS DISTINCT FROM c.{col}"
-                    ).fetchone()[0]
-                    stable &= moved == 0
-            checks["window_stability"] = Check(
-                "window_stability",
-                stable,
-                "window values must be non-null and stable for existing keys outside a full replacement",
-            )
+            if schema_ok and contract.window_column in names:
+                stable = (
+                    self._one(
+                        f"SELECT count(*) FROM {source} WHERE {_quote(contract.window_column)} IS NULL"
+                    )[0]
+                    == 0
+                )
+                checks["window_stability"] = Check(
+                    "window_stability", stable, "window values must be non-null"
+                )
+            else:
+                checks["window_stability"] = Check("window_stability", False, "not evaluated")
+        if any(r.name == "rows_in_interval" for r in requirements):
+            if schema_ok and contract.cursor_column in names and isinstance(manifest.since, datetime):
+                col = _quote(contract.cursor_column)
+                invalid = self._one(
+                    f"SELECT count(*) FROM {source} WHERE {col} IS NULL OR {col} <= ? OR {col} > ?",
+                    [manifest.since, manifest.produced_at],
+                )[0]
+                checks["rows_in_interval"] = Check(
+                    "rows_in_interval", invalid == 0, "row timestamps must be inside (since, produced_at]"
+                )
+            else:
+                checks["rows_in_interval"] = Check("rows_in_interval", False, "not evaluated")
         if any(r.name == "named_keys" for r in requirements):
-            matches = False
-            if schema_ok:
+            if key_ok:
                 live = set(db.execute(f"SELECT {key_columns} FROM {source}").fetchall())
                 enumerate_live = contract.shape(manifest.shape).coverage is Coverage.KEYS or bool(
                     manifest.keys
@@ -361,204 +583,299 @@ class DuckDBStore:
                 matches = (not enumerate_live or live == set(manifest.keys)) and not live.intersection(
                     manifest.tombstones
                 )
-                if manifest.window is not None and manifest.tombstones:
-                    low, high = manifest.window
-                    col = _quote(contract.window_column)
-                    for key in manifest.tombstones:
-                        where = " AND ".join(f"{_quote(k)}=?" for k in contract.key)
-                        if self._exists(contract.table):
-                            outside = db.execute(
-                                f"SELECT count(*) FROM {_quote(contract.table)} WHERE {where} "
-                                f"AND ({col} IS NULL OR {col} < ? OR {col} > ?)",
-                                [*key, low, high],
-                            ).fetchone()[0]
-                            matches &= outside == 0
-            checks["named_keys"] = Check(
-                "named_keys", matches, "live and deleted keys must agree with the manifest"
-            )
+                if manifest.window is not None and manifest.tombstones and self._exists(contract.table):
+                    relation, params = self._key_relation(manifest.tombstones, contract.key)
+                    match = " AND ".join(f"p.{_quote(k)}=deleted.{_quote(k)}" for k in contract.key)
+                    col = "p." + _quote(cast(str, contract.window_column))
+                    outside = self._one(
+                        f"SELECT count(*) FROM {_quote(contract.table)} p JOIN {relation} ON {match} "
+                        f"WHERE {col} IS NULL OR {col} < ? OR {col} > ?",
+                        [*params, *manifest.window],
+                    )[0]
+                    matches &= outside == 0
+                checks["named_keys"] = Check(
+                    "named_keys", matches, "live and deleted keys must agree with the manifest"
+                )
+            else:
+                checks["named_keys"] = Check("named_keys", False, "not evaluated")
         if any(r.name == "shrink_tolerance" for r in requirements):
-            previous = 0
-            if self._exists(contract.table):
-                sql = f"SELECT count(*) FROM {_quote(contract.table)}"
-                params = []
-                if manifest.window is not None:
-                    sql += f" WHERE {_quote(contract.window_column)} BETWEEN ? AND ?"
-                    params.extend(manifest.window)
-                previous = db.execute(sql, params).fetchone()[0]
-            checks["shrink_tolerance"] = Check(
-                "shrink_tolerance",
-                previous == 0 or (previous - count) / previous <= contract.max_shrink_fraction,
-                f"previous={previous}, candidate={count}",
-            )
+            if schema_ok and checks["row_count"].passed:
+                previous = 0
+                if self._exists(contract.table):
+                    sql, params = f"SELECT count(*) FROM {_quote(contract.table)}", []
+                    if manifest.window is not None:
+                        sql += f" WHERE {_quote(cast(str, contract.window_column))} BETWEEN ? AND ?"
+                        params.extend(manifest.window)
+                    previous = self._one(sql, params)[0]
+                limit = contract.max_shrink_fraction
+                assert limit is not None
+                checks["shrink_tolerance"] = Check(
+                    "shrink_tolerance",
+                    previous == 0 or (previous - count) / previous <= limit,
+                    f"previous={previous}, candidate={count}",
+                )
+            else:
+                checks["shrink_tolerance"] = Check("shrink_tolerance", False, "not evaluated")
         result = tuple(checks[r.name] for r in requirements)
-        self._checked[candidate] = contract, result
+        self._checked[candidate] = _Checked(contract, result, base, stamp)
         return result
 
-    def execute(self, candidate: str, plan: ApplyPlan) -> None:
-        contract, checks = self._checked[candidate]
-        if not all(c.passed for c in checks) or plan != ApplyPlan.build(
-            contract, self._candidates[candidate][0]
-        ):
-            raise ValueError("candidate must pass the gate's checks before its plan executes")
-        if self._transaction is not None:
-            raise RuntimeError("a publication transaction is already open")
+    def _assert_base(self, checked: _Checked) -> None:
+        if self._stamp(checked.contract.table) != checked.stamp:
+            raise StoreError("publication changed after the candidate was checked")
+        current = self._stored_ledger(checked.contract, created=self._transaction is not None)
+        if current.publication_id is None and checked.base.publication_id is not None:
+            current = Ledger.from_receipts(checked.contract, self.receipts(checked.contract.table))
+        if current != checked.base:
+            raise StoreError("ledger changed after the candidate was checked")
+
+    def _align_target(self, candidate: str, plan: ApplyPlan) -> None:
+        target, source = _quote(plan.table), _quote(candidate)
+        if not self._exists(plan.table):
+            self.connection.execute(f"CREATE TABLE {target} AS SELECT * FROM {source} WHERE false")
+        elif self._description(plan.table) != self._description(candidate):
+            if any(a.operation is Operation.REPLACE_ALL for a in plan.actions):
+                self.connection.execute(
+                    f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {source} WHERE false"
+                )
+            else:
+                old = dict(self._description(plan.table))
+                projections = ", ".join(
+                    f"CAST({_quote(name) if name in old else 'NULL'} AS {kind}) AS {_quote(name)}"
+                    for name, kind in self._description(candidate)
+                )
+                self.connection.execute(
+                    f"CREATE OR REPLACE TABLE {target} AS SELECT {projections} FROM {target}"
+                )
+
+    def _delete_rows(self, candidate: str, plan: ApplyPlan) -> None:
         db, target, source = self.connection, _quote(plan.table), _quote(candidate)
-        self._transaction = candidate
-        db.execute("BEGIN TRANSACTION")
-        db.execute(f"CREATE TABLE IF NOT EXISTS {target} AS SELECT * FROM {source} WHERE false")
         for action in plan.actions:
             if action.operation is Operation.REPLACE_ALL:
                 db.execute(f"DELETE FROM {target}")
             elif action.operation is Operation.REPLACE_WINDOW:
+                assert action.window is not None and plan.window_column is not None
                 db.execute(
                     f"DELETE FROM {target} WHERE {_quote(plan.window_column)} BETWEEN ? AND ?",
                     list(action.window),
                 )
             if plan.key and action.operation in (Operation.UPSERT, Operation.REPLACE_WINDOW):
-                match = " AND ".join(f"t.{_quote(k)} = c.{_quote(k)}" for k in plan.key)
+                match = " AND ".join(f"t.{_quote(k)}=c.{_quote(k)}" for k in plan.key)
                 db.execute(f"DELETE FROM {target} AS t USING {source} AS c WHERE {match}")
             if action.operation is Operation.TOMBSTONE:
-                where = " AND ".join(f"{_quote(k)}=?" for k in plan.key)
-                for key in action.keys:
-                    db.execute(f"DELETE FROM {target} WHERE {where}", list(key))
-            else:
-                db.execute(f"INSERT INTO {target} SELECT * FROM {source}")
+                relation, params = self._key_relation(action.keys, plan.key)
+                match = " AND ".join(f"t.{_quote(k)}=deleted.{_quote(k)}" for k in plan.key)
+                db.execute(f"DELETE FROM {target} AS t USING {relation} WHERE {match}", params)
 
+    @_synchronized
+    def execute(self, candidate: str, plan: ApplyPlan) -> None:
+        checked = self._checked.get(candidate)
+        if (
+            checked is None
+            or not all(c.passed for c in checked.checks)
+            or plan != ApplyPlan.build(checked.contract, self._candidates[candidate].manifest)
+        ):
+            raise StoreError("candidate must pass the gate's checks before its plan executes")
+        if self._transaction is not None:
+            raise StoreError("a publication transaction is already open")
+        self._lock.acquire()
+        self._transaction = candidate
+        try:
+            self.connection.execute("BEGIN TRANSACTION")
+            self._assert_base(checked)
+            db, target, source = self.connection, _quote(plan.table), _quote(candidate)
+            if self._exists(plan.table):
+                self._delete_rows(candidate, plan)
+            self._align_target(candidate, plan)
+            if any(action.operation is not Operation.TOMBSTONE for action in plan.actions):
+                db.execute(f"INSERT INTO {target} SELECT * FROM {source}")
+        except BaseException:
+            self.abort(candidate)
+            raise
+
+    @_synchronized
     def publish(self, candidate: str, receipt: Receipt) -> None:
         if self._transaction != candidate or not receipt.accepted:
-            raise ValueError("publication requires an accepted receipt and an executing candidate")
-        contract, checks = self._checked[candidate]
-        current = self._base(contract, self._candidates[candidate][0])
-        expected = Gate.evaluate(current, self._candidates[candidate][0], checks)
-        if receipt != expected:
-            raise ValueError("receipt does not authorize this candidate against the current publication")
-        self._record_history(candidate, receipt)
-        self.save_receipt(receipt)
-        self.connection.execute(
-            "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)",
-            [contract.table, receipt.publication_id],
-        )
-        self.connection.execute(
-            "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
-            [contract.table, receipt.ledger.to_json()],
-        )
-        self.connection.execute("COMMIT")
-        self._transaction = None
-        self._release(candidate)
+            raise StoreError("publication requires an accepted receipt and an executing candidate")
+        try:
+            checked = self._checked[candidate]
+            self._assert_base(checked)
+            if receipt.base_publication_id != checked.base.publication_id:
+                raise StoreError("receipt names a different base publication")
+            expected = Gate.evaluate(
+                checked.base,
+                self._candidates[candidate].manifest,
+                checked.checks,
+                now=receipt.received_at,
+                source=receipt.source,
+            )
+            if receipt != expected:
+                raise StoreError("receipt does not authorize this candidate against the current publication")
+            sequence = (
+                int(
+                    self._one(
+                        "SELECT count(*) FROM __dogana_commits WHERE table_name=?", [checked.contract.table]
+                    )[0]
+                )
+                + 1
+            )
+            history, columns = self._record_history(candidate, receipt, sequence)
+            self.save_receipt(receipt)
+            self.connection.execute(
+                "INSERT INTO __dogana_commits VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    receipt.publication_id,
+                    checked.contract.table,
+                    receipt.manifest.identity,
+                    receipt.base_publication_id,
+                    receipt.identity,
+                    sequence,
+                    history,
+                    list(columns),
+                ],
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)",
+                [checked.contract.table, receipt.publication_id],
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
+                [checked.contract.table, receipt.ledger.to_json()],
+            )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.abort(candidate)
+            raise
+        else:
+            self._end_transaction()
+            self._release(candidate)
 
-    def _record_history(self, candidate: str, receipt: Receipt) -> None:
-        contract = receipt.ledger.contract
-        history = _quote("__dogana_history_" + contract.table)
+    def _record_history(self, candidate: str, receipt: Receipt, sequence: int) -> tuple[str, tuple[str, ...]]:
+        contract, db = receipt.ledger.contract, self.connection
         target = _quote(contract.table)
-        sequence = len(receipt.ledger.accepted)
-        self.connection.execute(
+        description = self._description(contract.table)
+        columns = tuple(name for name, _ in description)
+        history_name = "__dogana_history_" + contract.table
+        if self._exists(history_name) and self._description(history_name)[:-2] != description:
+            history_name = (
+                "__dogana_layout_" + sha256(repr((contract.table, description)).encode()).hexdigest()
+            )
+        previous = self.connection.execute(
+            "SELECT history_table FROM __dogana_commits WHERE table_name=? ORDER BY sequence DESC LIMIT 1",
+            [contract.table],
+        ).fetchone()
+        switched = previous is not None and previous[0] != history_name
+        if switched and previous is not None and self._exists(previous[0]):
+            db.execute(
+                f"UPDATE {_quote(previous[0])} SET __dogana_until=? WHERE __dogana_until IS NULL", [sequence]
+            )
+        history = _quote(history_name)
+        db.execute(
             f"CREATE TABLE IF NOT EXISTS {history} AS SELECT *, "
             f"0::BIGINT AS __dogana_from, NULL::BIGINT AS __dogana_until FROM {target} WHERE false"
         )
         if not contract.key:
-            self.connection.execute(
-                f"INSERT INTO {history} SELECT *, ?, NULL FROM {_quote(candidate)}", [sequence]
+            assert receipt.transition is not None
+            for action in receipt.transition.plan.actions:
+                if action.operation is Operation.REPLACE_ALL or switched:
+                    db.execute(
+                        f"UPDATE {history} SET __dogana_until=? WHERE __dogana_until IS NULL", [sequence]
+                    )
+                elif action.operation is Operation.REPLACE_WINDOW:
+                    assert contract.window_column is not None and action.window is not None
+                    db.execute(
+                        f"UPDATE {history} SET __dogana_until=? WHERE __dogana_until IS NULL "
+                        f"AND {_quote(contract.window_column)} BETWEEN ? AND ?",
+                        [sequence, *action.window],
+                    )
+            inserted = target if switched else _quote(candidate)
+            db.execute(f"INSERT INTO {history} SELECT *, ?, NULL FROM {inserted}", [sequence])
+        else:
+            same = " AND ".join(f"h.{_quote(name)} IS NOT DISTINCT FROM p.{_quote(name)}" for name in columns)
+            db.execute(
+                f"UPDATE {history} AS h SET __dogana_until=? WHERE __dogana_until IS NULL "
+                f"AND NOT EXISTS (SELECT 1 FROM {target} p WHERE {same})",
+                [sequence],
             )
-            return
-        same = " AND ".join(
-            f"h.{_quote(c.name)} IS NOT DISTINCT FROM p.{_quote(c.name)}" for c in contract.schema
-        )
-        self.connection.execute(
-            f"UPDATE {history} AS h SET __dogana_until=? WHERE __dogana_until IS NULL "
-            f"AND NOT EXISTS (SELECT 1 FROM {target} p WHERE {same})",
-            [sequence],
-        )
-        self.connection.execute(
-            f"INSERT INTO {history} SELECT p.*, ?, NULL FROM {target} p WHERE NOT EXISTS "
-            f"(SELECT 1 FROM {history} h WHERE h.__dogana_until IS NULL AND {same})",
-            [sequence],
-        )
+            db.execute(
+                f"INSERT INTO {history} SELECT p.*, ?, NULL FROM {target} p WHERE NOT EXISTS "
+                f"(SELECT 1 FROM {history} h WHERE h.__dogana_until IS NULL AND {same})",
+                [sequence],
+            )
+        return history_name, columns
+
+    def _end_transaction(self) -> None:
+        if self._transaction is not None:
+            self._transaction = None
+            self._lock.release()
 
     def _release(self, candidate: str) -> None:
+        if candidate not in self._candidates:
+            return
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(candidate)}")
         self._candidates.pop(candidate, None)
         self._checked.pop(candidate, None)
 
+    @_synchronized
     def abort(self, candidate: str) -> None:
+        interruption: BaseException | None = None
         if self._transaction == candidate:
             try:
                 self.connection.execute("ROLLBACK")
-            except duckdb.TransactionException as exc:
-                if "no transaction is active" not in str(exc):
-                    raise
-            self._transaction = None
-        self._release(candidate)
-
-    def deliver(self, contract: Contract, source: object, manifest: Manifest) -> Receipt:
-        with self._lock:
-            ledger = self._base(contract, manifest)
-            old = self.connection.execute(
-                "SELECT document FROM __dogana_receipts WHERE table_name=? AND manifest_id=? AND accepted",
-                [contract.table, manifest.identity],
-            ).fetchone()
-            if old:
-                return self._receipt(old[0], contract.table)
-            if not all(c.passed for c in Gate.preflight(ledger, manifest)):
-                receipt = Gate.evaluate(ledger, manifest)
-                self.save_receipt(receipt)
-                return receipt
-            candidate = None
-            held_before = set(self._candidates)
-            checks = ()
-            try:
-                candidate = self.hold(source, manifest)
-                checks = self.check(candidate, contract, manifest, Gate.requirements(contract, manifest))
-                receipt = Gate.evaluate(ledger, manifest, checks)
-                if receipt.accepted:
-                    self.execute(candidate, receipt.transition.plan)
-                    self.publish(candidate, receipt)
-                else:
-                    self.abort(candidate)
-                    self.save_receipt(receipt)
-                return receipt
             except BaseException as exc:
-                for held in set(self._candidates) - held_before:
-                    self.abort(held)
-                if not isinstance(exc, (duckdb.Error, OSError, ValueError, TypeError)):
-                    raise
-                old = self.connection.execute(
-                    "SELECT document FROM __dogana_receipts "
-                    "WHERE table_name=? AND manifest_id=? AND accepted",
-                    [contract.table, manifest.identity],
-                ).fetchone()
-                if old:
-                    self.load_ledger(contract)
-                    return self._receipt(old[0], contract.table)
-                receipt = Gate.evaluate(ledger, manifest, checks + (Check("execution", False, str(exc)),))
-                self.save_receipt(receipt)
-                return receipt
+                if not isinstance(exc, duckdb.TransactionException) or "no transaction is active" not in str(
+                    exc
+                ):
+                    interruption = exc
+                    try:
+                        self.connection.execute("ROLLBACK")
+                    except duckdb.TransactionException as retry:
+                        if "no transaction is active" not in str(retry):
+                            raise
+            self._end_transaction()
+        self._release(candidate)
+        if interruption is not None and not isinstance(interruption, Exception):
+            raise interruption
 
     @_synchronized
-    def read(self, table: str, publication_id: str | None = None) -> list[dict]:
+    def deliver(
+        self, contract: Contract, source: object, manifest: Manifest, *, now: datetime | None = None
+    ) -> Receipt:
+        from dogana import deliver
+
+        return deliver(self, contract, source, manifest, now=now if now is not None else datetime.now(UTC))
+
+    @_synchronized
+    def read(self, table: str, publication_id: str | None = None) -> list[dict[str, object]]:
+        self._require_committed_read()
         self._check_table_spelling(table)
-        target = _quote(table)
-        query = f"SELECT * FROM {target}"
-        params = []
+        query, params = f"SELECT * FROM {_quote(table)}", []
         if publication_id is not None:
             row = self.connection.execute(
-                """SELECT document FROM __dogana_receipts
-                WHERE table_name=? AND publication_id=? AND accepted""",
+                "SELECT sequence, history_table, columns FROM __dogana_commits "
+                "WHERE table_name=? AND publication_id=?",
                 [table, publication_id],
             ).fetchone()
             if row is None:
-                raise KeyError("unknown table publication")
-            receipt = self._receipt(row[0], table)
-            columns = ", ".join(_quote(c.name) for c in receipt.ledger.contract.schema)
-            sequence = len(receipt.ledger.accepted)
+                raise StoreError("unknown table publication")
+            columns = ", ".join(_quote(c) for c in row[2])
             query = (
-                f"SELECT {columns} FROM {_quote('__dogana_history_' + table)} "
-                "WHERE __dogana_from <= ? AND (__dogana_until IS NULL OR __dogana_until > ?)"
+                f"SELECT {columns} FROM {_quote(row[1])} WHERE __dogana_from <= ? "
+                "AND (__dogana_until IS NULL OR __dogana_until > ?)"
             )
-            params = [sequence, sequence]
+            params = [row[0], row[0]]
             legacy = "__dogana_version_" + publication_id
             if self._exists(legacy):
-                query = f"SELECT {columns} FROM {_quote(legacy)}"
-                params = []
+                query, params = f"SELECT {columns} FROM {_quote(legacy)}", []
         cursor = self.connection.execute(query + " ORDER BY ALL", params)
+        assert cursor.description is not None
         names = [c[0] for c in cursor.description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+    @_synchronized
+    def read_publication(self, contract: Contract) -> tuple[list[dict[str, object]], Ledger]:
+        """Read rows and evidence under one committed publication identity."""
+        self._require_committed_read()
+        ledger = self.load_ledger(contract)
+        rows = self.read(contract.table, ledger.publication_id) if self._exists(contract.table) else []
+        return rows, ledger

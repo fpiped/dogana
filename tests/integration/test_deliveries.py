@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 import pytest
 
@@ -51,7 +51,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                         path = csv_file(tmp_path, "late.csv", bad_rows)
                         sidecar(path, c, shape, day, len(bad_rows), **kwargs)
                         before = store.load_ledger(c).to_json(), store.read(c.table)
-                        rejected = FileDrop(store, c).ingest(path)
+                        rejected = FileDrop(store, c).ingest(path, now=at(30))
                         receipt_count += 1
                         assert not rejected.accepted
                         assert any(x.name == "rows_in_window" and not x.passed for x in rejected.checks)
@@ -70,7 +70,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                     expected[c.table].update({r["id"]: r for r in incoming})
                 path = csv_file(tmp_path, f"{c.table}_{day}.csv", incoming)
                 manifest = sidecar(path, c, shape, day, len(incoming), **kwargs)
-                receipt = FileDrop(store, c).ingest(path)
+                receipt = FileDrop(store, c).ingest(path, now=at(30))
                 assert receipt.accepted, receipt.checks
                 receipt_count += 1
                 publication_ids[c.table, day] = receipt.publication_id
@@ -100,8 +100,10 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                         at(day),
                         at(18),
                     )
-                assert store.deliver(c, tmp_path / "already_removed.csv", manifest) == receipt
-                assert len(ledger.accepted) == day - 17
+                assert store.deliver(c, tmp_path / "already_removed.csv", manifest, now=at(30)) == replace(
+                    receipt, replayed=True
+                )
+                assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             assert len(store.receipts()) == receipt_count
             surface = Claims.combine(*(store.load_ledger(c).claims(at(day)) for c in contracts))
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
@@ -131,7 +133,7 @@ def test_a_contradictory_file_is_rejected_without_changing_the_publication(tmp_p
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(i) for i in range(4)])
         sidecar(path, c, "full", 18, 4)
-        first = FileDrop(store, c).ingest(path)
+        first = FileDrop(store, c).ingest(path, now=at(30))
         assert first.accepted
         incoming, shape, kwargs, columns = [row(i) for i in range(4)], "full", {}, ("id", "day", "value")
         if problem == "late":
@@ -161,7 +163,7 @@ def test_a_contradictory_file_is_rejected_without_changing_the_publication(tmp_p
             manifest = replace(manifest, schema_hash="wrong")
             path.with_suffix(".csv.json").write_text(manifest.to_json())
         before = store.load_ledger(c), store.read(c.table)
-        receipt = FileDrop(store, c).ingest(path)
+        receipt = FileDrop(store, c).ingest(path, now=at(30))
         assert not receipt.accepted
         assert receipt.publication_id == first.publication_id
         assert (store.load_ledger(c), store.read(c.table)) == before
@@ -176,7 +178,7 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1), row(2)])
         sidecar(path, c, "full", 18, 2, generation="g41")
-        assert FileDrop(store, c).ingest(path).accepted
+        assert FileDrop(store, c).ingest(path, now=at(30)).accepted
         path = csv_file(tmp_path, "restored.csv", [row(3)])
         sidecar(
             path,
@@ -189,15 +191,15 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
             keys=((3,),),
             tombstones=((1,),),
         )
-        rejected = FileDrop(store, c).ingest(path)
+        rejected = FileDrop(store, c).ingest(path, now=at(30))
         assert not rejected.accepted
         assert store.read(c.table) == [row(1), row(2)]
         path = csv_file(tmp_path, "rebase.csv", [row(2), row(3)])
         sidecar(path, c, "full", 20, 2, generation="new-g1")
-        assert FileDrop(store, c).ingest(path).accepted
+        assert FileDrop(store, c).ingest(path, now=at(30)).accepted
         path = csv_file(tmp_path, "feed.csv", [row(4)])
         sidecar(path, c, "feed", 21, 1, since="new-g1", generation="new-g2", keys=((4,),), tombstones=((2,),))
-        accepted = FileDrop(store, c).ingest(path)
+        accepted = FileDrop(store, c).ingest(path, now=at(30))
         assert accepted.accepted
         assert store.read(c.table) == [row(3), row(4)]
         assert accepted.claims.valid_as_of == at(21)
@@ -210,14 +212,14 @@ def test_parquet_and_csv_use_the_same_gate_and_deletions_by_absence(tmp_path):
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         csv = csv_file(tmp_path, "base.csv", [row(1), row(2)])
         m = sidecar(csv, c, "full", 18, 2)
-        assert store.deliver(c, csv, m).accepted
+        assert store.deliver(c, csv, m, now=at(30)).accepted
         parquet = tmp_path / "next.parquet"
         with duckdb.connect() as writer:
             writer.execute("CREATE TABLE rows (id BIGINT, day DATE, value VARCHAR)")
             writer.execute("INSERT INTO rows VALUES (2, DATE '2026-10-18', 'new')")
             writer.execute("COPY rows TO ? (FORMAT PARQUET)", [str(parquet)])
         m = sidecar(parquet, c, "full", 19, 1)
-        receipt = FileDrop(store, c).ingest(parquet)
+        receipt = FileDrop(store, c).ingest(parquet, now=at(30))
         assert receipt.accepted
         assert store.read(c.table) == [row(2, value="new")]
 
@@ -228,7 +230,14 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
     from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
 
     plant = Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
-    c = Contract("plants", ("id",), {"plant": plant}, "plant", (Column("id", "int"), Column("plant", "str")))
+    c = Contract(
+        "plants",
+        ("id",),
+        {"plant": plant},
+        "plant",
+        (Column("id", "int"), Column("plant", "str")),
+        max_shrink_fraction=None,
+    )
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         for day, name, rows in [
             (18, "IT01", [{"id": 1, "plant": "IT01"}]),
@@ -237,7 +246,7 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
         ]:
             path = csv_file(tmp_path, f"{name}_{day}.csv", rows, ("id", "plant"))
             sidecar(path, c, "plant", day, len(rows), window=(name, name))
-            receipt = FileDrop(store, c).ingest(path)
+            receipt = FileDrop(store, c).ingest(path, now=at(30))
             assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 2, "plant": "DE01"}]
         assert store.load_ledger(c).claims(at(20), window=("IT01", "IT01")).valid_as_of == at(20)
@@ -249,7 +258,7 @@ def test_a_failure_after_row_changes_rolls_back_rows_ledger_and_receipt_together
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
         m = sidecar(path, c, "full", 18, 1)
-        first = store.deliver(c, path, m)
+        first = store.deliver(c, path, m, now=at(30))
         assert first.accepted
         original = store.save_receipt
 
@@ -261,20 +270,24 @@ def test_a_failure_after_row_changes_rolls_back_rows_ledger_and_receipt_together
         monkeypatch.setattr(store, "save_receipt", fail_accepted)
         path = csv_file(tmp_path, "new.csv", [row(2)])
         m = sidecar(path, c, "full", 19, 1)
-        failed = store.deliver(c, path, m)
-        assert not failed.accepted
+        from dogana.errors import StoreError
+
+        with pytest.raises(StoreError, match="publication storage failed"):
+            store.deliver(c, path, m, now=at(30))
         assert store.read(c.table) == [row(1)]
         assert store.load_ledger(c) == first.ledger
-        assert [r.accepted for r in store.receipts()] == [True, False]
+        assert [r.accepted for r in store.receipts()] == [True]
         assert store.read(c.table, first.publication_id) == [row(1)]
 
 
 def test_a_filename_pattern_derives_a_manifest_when_the_sender_cannot_write_sidecars(tmp_path):
     c = contract()
-    pattern = FilePattern(r"(?P<shape>full)_(?P<produced_at>\d{4}-\d{2}-\d{2})_(?P<rows>\d+)\.csv")
+    pattern = FilePattern(
+        r"(?P<shape>full)_(?P<produced_at>\d{4}-\d{2}-\d{2})_(?P<rows>\d+)\.csv", timezone=UTC
+    )
     path = csv_file(tmp_path, "full_2026-10-18_2.csv", [row(1), row(2)])
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        receipt = FileDrop(store, c, pattern).ingest(path)
+        receipt = FileDrop(store, c, pattern).ingest(path, now=at(30))
         assert receipt.accepted
         assert receipt.manifest.rows == 2
         assert receipt.manifest.produced_at == at(18)
@@ -296,10 +309,10 @@ def test_the_same_table_under_push_and_pull_has_the_same_rows_ledger_and_receipt
     extractor = FileExtractor()
     with DuckDBStore(tmp_path / "push.duckdb") as push, DuckDBStore(tmp_path / "pull.duckdb") as pull:
         for m, path in zip(manifests, files, strict=True):
-            pushed = push.deliver(c, path, m)
+            pushed = push.deliver(c, path, m, now=at(30))
             request = next_extraction(pull.load_ledger(c), m.shape, m.produced_at)
             pulled_m, source = extractor.extract(c, request)
-            pulled = pull.deliver(c, source, pulled_m)
+            pulled = pull.deliver(c, source, pulled_m, now=at(30))
             assert pushed == pulled
             assert push.read(c.table) == pull.read(c.table)
             assert push.load_ledger(c) == pull.load_ledger(c)
@@ -311,10 +324,10 @@ def test_an_append_only_log_has_no_keys_and_replay_does_not_duplicate_events(tmp
         for day, since in [(18, at(1)), (19, at(18))]:
             path = csv_file(tmp_path, f"{day}.csv", [{"event": f"event{day}"}], ("event",))
             m = sidecar(path, c, "log", day, 1, since=since)
-            receipt = store.deliver(c, path, m)
+            receipt = store.deliver(c, path, m, now=at(30))
             assert receipt.accepted
             assert receipt.transition.plan.actions[0].operation.value == "append"
-            assert store.deliver(c, path, m) == receipt
+            assert store.deliver(c, path, m, now=at(30)) == replace(receipt, replayed=True)
         assert store.read(c.table) == [{"event": "event18"}, {"event": "event19"}]
         assert len(store.receipts()) == 2
 
@@ -330,10 +343,10 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
     rows = [{"plant": "A", "qty": 1}, {"plant": "A", "qty": 1}, {"plant": "B", "qty": 2}]
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "full.csv", rows, ("plant", "qty"))
-        assert store.deliver(c, path, sidecar(path, c, "full", 18, 3)).accepted
+        assert store.deliver(c, path, sidecar(path, c, "full", 18, 3), now=at(30)).accepted
         assert store.read(c.table) == rows
         path = csv_file(tmp_path, "a.csv", [{"plant": "A", "qty": 5}], ("plant", "qty"))
-        receipt = store.deliver(c, path, sidecar(path, c, "plant", 19, 1, window=("A", "A")))
+        receipt = store.deliver(c, path, sidecar(path, c, "plant", 19, 1, window=("A", "A")), now=at(30))
         assert receipt.accepted
         assert sorted(store.read(c.table), key=lambda r: r["plant"]) == [
             {"plant": "A", "qty": 5},
@@ -342,32 +355,29 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
         assert store.load_ledger(c).claims(at(19), window=("B", "B")).valid_as_of == at(18)
 
 
-def test_a_window_that_moves_a_published_key_between_regions_requires_a_full_export(tmp_path):
+def test_a_window_that_moves_a_published_key_into_coverage_removes_its_old_copy(tmp_path):
     c = contract()
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1, 18)])
         m = sidecar(path, c, "full", 18, 1)
-        assert store.deliver(c, path, m).accepted
+        assert store.deliver(c, path, m, now=at(30)).accepted
         path = csv_file(tmp_path, "moved.csv", [row(1, 19)])
         m = sidecar(path, c, "daily", 19, 1, window=(at(19).date(), at(19).date()))
-        refused = store.deliver(c, path, m)
-        assert not refused.accepted
-        assert any(x.name == "window_stability" and not x.passed for x in refused.checks)
-        assert store.read(c.table) == [row(1, 18)]
-        m = replace(m, shape="full", window=None)
-        assert store.deliver(c, path, m).accepted
+        accepted = store.deliver(c, path, m, now=at(30))
+        assert accepted.accepted
+        assert any(x.name == "window_stability" and x.passed for x in accepted.checks)
         assert store.read(c.table) == [row(1, 19)]
 
 
 def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):
     from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
 
-    feed = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION)
+    feed = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.TIMESTAMP)
     c = contract(shapes={"full": FULL, "feed_window": feed})
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1, 18), row(2, 19)])
         m = sidecar(path, c, "full", 19, 2, generation="g1")
-        first = store.deliver(c, path, m)
+        first = store.deliver(c, path, m, now=at(30))
         path = csv_file(tmp_path, "delete.csv", [])
         m = sidecar(
             path,
@@ -376,11 +386,10 @@ def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path
             20,
             0,
             window=(at(19).date(), at(19).date()),
-            since="g1",
-            generation="g2",
+            since=at(19),
             tombstones=((1,),),
         )
-        receipt = store.deliver(c, path, m)
+        receipt = store.deliver(c, path, m, now=at(30))
         assert not receipt.accepted
         assert any(x.name == "named_keys" and not x.passed for x in receipt.checks)
         assert store.read(c.table) == [row(1, 18), row(2, 19)]
@@ -392,11 +401,11 @@ def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "new.csv", [row(1, 19, value="new")])
         m = sidecar(path, c, "daily", 21, 1, window=(at(18).date(), at(20).date()))
-        first = store.deliver(c, path, m)
+        first = store.deliver(c, path, m, now=at(30))
         assert first.accepted
         path = csv_file(tmp_path, "old.csv", [row(1, 19, value="old")])
         m = sidecar(path, c, "daily", 20, 1, window=(at(17).date(), at(19).date()))
-        refused = store.deliver(c, path, m)
+        refused = store.deliver(c, path, m, now=at(30))
         assert not refused.accepted
         assert store.read(c.table) == [row(1, 19, value="new")]
         assert store.load_ledger(c) == first.ledger
@@ -407,11 +416,11 @@ def test_a_changed_key_enumeration_must_match_the_file_and_never_hide_live_tombs
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
         m = sidecar(path, c, "full", 18, 1, generation="g1")
-        assert store.deliver(c, path, m).accepted
+        assert store.deliver(c, path, m, now=at(30)).accepted
         path = csv_file(tmp_path, "feed.csv", [row(2)])
         for keys, tombstones in [(((3,),), ()), ((), ((2,),))]:
             m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", keys=keys, tombstones=tombstones)
-            assert not store.deliver(c, path, m).accepted
+            assert not store.deliver(c, path, m, now=at(30)).accepted
         assert store.read(c.table) == [row(1)]
 
 
@@ -421,10 +430,10 @@ def test_shrink_tolerance_includes_its_exact_fraction_boundary(tmp_path, remaini
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(i) for i in range(10)])
         m = sidecar(path, c, "full", 18, 10)
-        assert store.deliver(c, path, m).accepted
+        assert store.deliver(c, path, m, now=at(30)).accepted
         path = csv_file(tmp_path, "next.csv", [row(i) for i in range(remaining)])
         m = sidecar(path, c, "full", 19, remaining)
-        receipt = store.deliver(c, path, m)
+        receipt = store.deliver(c, path, m, now=at(30))
         assert receipt.accepted is accepted
         assert len(store.read(c.table)) == (remaining if accepted else 10)
 
@@ -433,7 +442,7 @@ def test_a_manifest_naming_the_wrong_table_is_audited_against_the_receiving_cont
     c = contract()
     manifest = Manifest("other", "full", at(18), rows=0, schema_hash=c.schema_hash)
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        receipt = store.deliver(c, tmp_path / "not_read.csv", manifest)
+        receipt = store.deliver(c, tmp_path / "not_read.csv", manifest, now=at(30))
         assert not receipt.accepted
         assert store.receipts(c.table) == (receipt,)
         assert receipt.manifest.table == "other"
@@ -476,7 +485,7 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         request = next_extraction(store.load_ledger(c), "full", at(18))
         manifest, path = extractor.extract(c, request)
-        assert store.deliver(c, path, manifest).accepted
+        assert store.deliver(c, path, manifest, now=at(30)).accepted
         source[:] = [
             {"id": 2, "updated_at": at(19), "value": "updated"},
             {"id": 3, "updated_at": at(19), "value": "new"},
@@ -484,12 +493,13 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         request = next_extraction(store.load_ledger(c), "since", at(19))
         assert request.interval == (at(18), at(19))
         manifest, path = extractor.extract(c, request)
-        receipt = store.deliver(c, path, manifest)
+        receipt = store.deliver(c, path, manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
         assert receipt.claims.complete_as_of == at(19)
         assert receipt.claims.valid_as_of == at(18)
-        assert receipt.claims.state is State.PATCHED
+        assert receipt.claims.state is State.EXPIRED
+        assert receipt.ledger.claims(at(19)).state is State.PATCHED
 
 
 def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_path):
@@ -500,10 +510,10 @@ def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_p
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
         manifest = sidecar(path, c, "full", 18, 1)
-        first = store.deliver(c, path, manifest)
+        first = store.deliver(c, path, manifest, now=at(30))
         assert first.accepted
         with pytest.raises(InvalidContract, match="letter case"):
-            store.deliver(alias, path, replace(manifest, table=alias.table, produced_at=at(19)))
+            store.deliver(alias, path, replace(manifest, table=alias.table, produced_at=at(19)), now=at(30))
         with pytest.raises(InvalidContract, match="letter case"):
             store.read(alias.table)
         assert store.read(c.table) == [row(1)]

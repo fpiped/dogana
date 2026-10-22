@@ -5,24 +5,72 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 
-from dogana import Contract, InvalidContract, Manifest, Receipt, Store
+from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
+from dogana.contract import Scalar, Window
 from dogana.wire import utc
 
 
-def _instant(value: str) -> datetime:
+def _instant(value: str, timezone: tzinfo | None) -> datetime:
     result = datetime.fromisoformat(value)
-    return utc(result if result.tzinfo is not None else result.replace(tzinfo=UTC))
+    if result.tzinfo is not None:
+        return utc(result)
+    if timezone is None:
+        raise InvalidContract("naive filename timestamps need a declared timezone")
+    local = result.replace(tzinfo=timezone)
+    instant = utc(local)
+    if instant.astimezone(timezone).replace(tzinfo=None) != result:
+        raise InvalidContract("nonexistent filename time needs an explicit UTC offset")
+    if local.utcoffset() != local.replace(fold=1).utcoffset():
+        raise InvalidContract("ambiguous filename time needs an explicit UTC offset")
+    return instant
+
+
+def _window_bound(value: str, column_type: str, timezone: tzinfo | None) -> Scalar:
+    if column_type == "datetime":
+        return _instant(value, timezone)
+    if column_type == "date":
+        return date.fromisoformat(value)
+    if column_type == "int":
+        return int(value)
+    if column_type == "str":
+        return value
+    raise InvalidContract("window column must be an ordered scalar")
+
+
+def _literal_path(path: Path) -> None:
+    if any(character in str(path) for character in "*?[]{}"):
+        raise InvalidContract("delivery paths must be literal paths without glob characters")
+
+
+def _resolved_path(path: Path) -> Path:
+    _literal_path(path)
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise InvalidContract("delivery path cannot be resolved") from exc
+    _literal_path(resolved)
+    return resolved
+
+
+def _within_root(path: Path, root: Path) -> Path:
+    resolved = _resolved_path(path)
+    if not resolved.is_relative_to(root):
+        raise InvalidContract("delivery path escapes the drop root")
+    return resolved
 
 
 @dataclass(frozen=True)
 class FilePattern:
+    """A filename declaration; timezone applies only to naive datetime groups."""
+
     expression: str
     shape: str | None = None
+    timezone: tzinfo | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         regex = re.compile(self.expression)
         if "produced_at" not in regex.groupindex:
             raise InvalidContract("a filename pattern needs a produced_at group")
@@ -32,9 +80,12 @@ class FilePattern:
             raise InvalidContract("a fixed shape must be a nonempty name")
         if ("low" in regex.groupindex) != ("high" in regex.groupindex):
             raise InvalidContract("a filename pattern needs both window bounds groups")
+        if self.timezone is not None and not isinstance(self.timezone, tzinfo):
+            raise InvalidContract("a filename timezone must be a tzinfo value")
 
     def manifest(self, filename: str | Path, contract: Contract) -> Manifest:
         path = Path(filename)
+        _resolved_path(path)
         match = re.fullmatch(self.expression, path.name)
         if match is None:
             raise InvalidContract("filename does not match its declared pattern")
@@ -45,18 +96,17 @@ class FilePattern:
         if self.shape is not None and groups.get("shape") is not None and self.shape != groups["shape"]:
             raise InvalidContract("filename shape differs from the declared feed shape")
         shape = contract.shape(shape_name)
-        produced_at = _instant(groups["produced_at"])
-        window = None
+        produced_at = _instant(groups["produced_at"], self.timezone)
+        window: Window | None = None
         column = next((c for c in contract.schema if c.name == contract.window_column), None)
         if "low" in groups:
             if groups.get("low") is None or groups.get("high") is None:
                 raise InvalidContract("filename needs both window bounds")
-            parse = {"int": int, "str": str, "date": date.fromisoformat, "datetime": _instant}.get(
-                column.type if column else "str"
+            column_type = column.type if column else "str"
+            window = (
+                _window_bound(groups["low"], column_type, self.timezone),
+                _window_bound(groups["high"], column_type, self.timezone),
             )
-            if parse is None:
-                raise InvalidContract("window column must be an ordered scalar")
-            window = (parse(groups["low"]), parse(groups["high"]))
         elif shape.coverage == "window":
             if shape.window_size is None:
                 raise InvalidContract("a window feed needs bounds or window_size")
@@ -68,9 +118,9 @@ class FilePattern:
                 if column.type == "date"
                 else (low, produced_at)
             )
-        since = groups.get("since")
-        if since is not None and shape.checkpoint == "timestamp":
-            since = _instant(since)
+        since: str | datetime | None = groups.get("since")
+        if isinstance(since, str) and shape.checkpoint == "timestamp":
+            since = _instant(since, self.timezone)
         return Manifest(
             contract.table,
             shape_name,
@@ -91,21 +141,47 @@ def _count_rows(path: Path) -> int:
         import duckdb
 
         with duckdb.connect() as connection:
-            return connection.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()[0]
+            row = connection.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+            if row is None or not isinstance(row[0], int):
+                raise InvalidContract("Parquet row count is unavailable")
+            return row[0]
     raise InvalidContract("row counting supports CSV and Parquet files")
 
 
 class FileDrop:
-    def __init__(self, store: Store, contract: Contract, pattern: FilePattern | None = None):
-        self.store, self.contract, self.pattern = store, contract, pattern
+    """Ingest paths within root, defaulting to each submitted file's directory."""
 
-    def ingest(self, path: str | Path) -> Receipt:
+    def __init__(
+        self,
+        store: Store,
+        contract: Contract,
+        pattern: FilePattern | None = None,
+        *,
+        root: str | Path | None = None,
+    ) -> None:
+        self.store, self.contract, self.pattern = store, contract, pattern
+        self.root = _resolved_path(Path(root)) if root is not None else None
+
+    def ingest(self, path: str | Path, *, now: datetime | None = None) -> Receipt:
         path = Path(path)
+        root = self.root if self.root is not None else _resolved_path(path.parent)
+        resolved = _within_root(path, root)
         sidecar = path.with_suffix(path.suffix + ".json")
-        if sidecar.exists():
-            manifest = Manifest.from_json(sidecar.read_text())
+        resolved_sidecar = _within_root(sidecar, root)
+        if not resolved.is_file():
+            raise InvalidContract("delivery needs a regular file")
+        if resolved_sidecar.exists():
+            if not resolved_sidecar.is_file():
+                raise InvalidContract("delivery sidecar must be a regular file")
+            try:
+                document = sidecar.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise SerializationError("sidecar manifest must be UTF-8") from exc
+            manifest = Manifest.from_json(document)
         elif self.pattern is not None:
             manifest = self.pattern.manifest(path, self.contract)
         else:
             raise InvalidContract("delivery needs a sidecar manifest or a declared filename pattern")
-        return self.store.deliver(self.contract, path, manifest)
+        return deliver(
+            self.store, self.contract, path, manifest, now=now if now is not None else datetime.now(UTC)
+        )

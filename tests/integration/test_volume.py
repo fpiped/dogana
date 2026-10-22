@@ -1,8 +1,11 @@
 import csv
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 
 import pytest
+
+from tests.support import at
 
 pytest.importorskip("duckdb")
 
@@ -25,12 +28,12 @@ def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp
     )
     with DuckDBStore(tmp_path / "bulk.duckdb") as store:
         start = perf_counter()
-        receipt = store.deliver(c, path, manifest)
+        receipt = store.deliver(c, path, manifest, now=at(30))
         elapsed = perf_counter() - start
         assert receipt.accepted, receipt.checks
         assert elapsed < 30, elapsed
         assert store.connection.execute("SELECT count(*) FROM bulk").fetchone()[0] == 200_000
-        assert store.deliver(c, object(), manifest) == receipt
+        assert store.deliver(c, object(), manifest, now=at(30)) == replace(receipt, replayed=True)
         assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
 
 
@@ -56,7 +59,7 @@ def test_300_small_deliveries_keep_one_receipt_per_publication_and_bounded_row_h
                 rows=1,
                 schema_hash=c.schema_hash,
             )
-            receipt = store.deliver(c, path, manifest)
+            receipt = store.deliver(c, path, manifest, now=at(30))
             assert receipt.accepted, receipt.checks
             accepted.append(receipt)
             assert store.load_ledger(c) == Ledger.from_receipts(c, accepted)

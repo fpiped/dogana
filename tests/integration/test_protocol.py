@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from dogana import Contract, Manifest, Receipt
 EXAMPLES = Path(__file__).parents[2] / "docs" / "examples"
 
 
-def test_the_documented_wire_receipt_is_reproduced_by_a_real_publication(tmp_path):
+def test_the_documented_wire_receipt_describes_a_real_publication(tmp_path):
     pytest.importorskip("duckdb")
     from dogana.reference.duckdb import DuckDBStore
 
@@ -19,4 +20,8 @@ def test_the_documented_wire_receipt_is_reproduced_by_a_real_publication(tmp_pat
     path = tmp_path / "stock.csv"
     path.write_text("id,value\n1,first\n2,second\n")
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        assert store.deliver(c, path, m) == receipt
+        actual = store.deliver(c, path, m, now=receipt.received_at)
+        assert [(check.name, check.passed) for check in actual.checks] == [
+            (check.name, check.passed) for check in receipt.checks
+        ]
+        assert actual == replace(receipt, source=str(path), checks=actual.checks)

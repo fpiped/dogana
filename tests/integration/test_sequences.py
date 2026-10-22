@@ -1,8 +1,11 @@
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from itertools import product
 
 import pytest
+
+from tests.support import at
 
 pytest.importorskip("duckdb")
 
@@ -46,14 +49,13 @@ def invariants(before, after, manifest, shape):
                 assert new.valid_as_of == manifest.produced_at
         for old in before.regions:
             if new.intersection(old) is not None and new.intersection(coverage) is None:
-                assert (new.complete_as_of, new.valid_as_of, new.generation) == (
+                assert (new.complete_as_of, new.valid_as_of) == (
                     old.complete_as_of,
                     old.valid_as_of,
-                    old.generation,
                 )
 
 
-def test_seeded_delivery_sequences_cover_all_fourteen_shapes_and_fold_after_every_attempt(tmp_path):
+def test_seeded_delivery_sequences_cover_all_admitted_shapes_and_fold_after_every_attempt(tmp_path):
     rng = random.Random(8128)
     declared = shapes()
     full = "all_complete_absence_none"
@@ -63,6 +65,7 @@ def test_seeded_delivery_sequences_cover_all_fourteen_shapes_and_fold_after_ever
         declared,
         "day",
         (Column("id", "int"), Column("day", "int"), Column("value", "str")),
+        max_shrink_fraction=None,
     )
     accepted_shapes, replayed, rejected = set(), 0, 0
     expected, previous = {}, []
@@ -72,7 +75,7 @@ def test_seeded_delivery_sequences_cover_all_fourteen_shapes_and_fold_after_ever
             before = store.load_ledger(c)
             if previous and step >= 28 and rng.random() < 0.15:
                 old = rng.choice(previous)
-                assert store.deliver(c, object(), old.manifest) == old
+                assert store.deliver(c, object(), old.manifest, now=at(30)) == replace(old, replayed=True)
                 replayed += 1
                 assert Ledger.from_receipts(c, store.receipts(c.table)) == before
                 continue
@@ -100,14 +103,16 @@ def test_seeded_delivery_sequences_cover_all_fourteen_shapes_and_fold_after_ever
                 until,
                 window=window,
                 since=since,
-                generation=f"g{step}",
+                generation=f"g{step}"
+                if shape.checkpoint == "generation" or (shape.complete and shape.coverage == "all")
+                else None,
                 rows=len(rows),
                 schema_hash=c.schema_hash,
                 keys=tuple((k,) for k in incoming) if shape.coverage == "keys" else (),
                 tombstones=tombstones if shape.deletions == "tombstone" else (),
             )
             source = csv_file(tmp_path, "incoming.csv", rows)
-            receipt = store.deliver(c, source, manifest)
+            receipt = store.deliver(c, source, manifest, now=at(30))
             after = store.load_ledger(c)
             if receipt.accepted:
                 accepted_shapes.add(name)
@@ -156,14 +161,16 @@ def test_seeded_append_intervals_replays_and_gaps_keep_retained_history_exact(tm
                 schema_hash=c.schema_hash,
             )
             rows = [{"event": f"event{step:02}"}]
-            receipt = store.deliver(c, csv_file(tmp_path, "event.csv", rows, ("event",)), manifest)
+            receipt = store.deliver(
+                c, csv_file(tmp_path, "event.csv", rows, ("event",)), manifest, now=at(30)
+            )
             assert receipt.accepted is not gap
             if receipt.accepted:
                 events.extend(rows)
                 accepted.append(receipt)
             if accepted:
                 old = rng.choice(accepted)
-                assert store.deliver(c, object(), old.manifest) == old
+                assert store.deliver(c, object(), old.manifest, now=at(30)) == replace(old, replayed=True)
             assert store.read(c.table) == sorted(events, key=lambda r: r["event"])
             assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
 
@@ -179,10 +186,10 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
     c = contract()
     with DuckDBStore(":memory:") as store:
         source = csv_file(tmp_path, "base.csv", [row(1), row(2)])
-        first = store.deliver(c, source, sidecar(source, c, "full", 18, 2, generation="g1"))
+        first = store.deliver(c, source, sidecar(source, c, "full", 18, 2, generation="g1"), now=at(30))
         source = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
         manifest = sidecar(source, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),))
-        second = store.deliver(c, source, manifest)
+        second = store.deliver(c, source, manifest, now=at(30))
         assert first.accepted and second.accepted
         bad_window = Manifest(
             c.table,
@@ -194,11 +201,11 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
         )
         broken = replace(manifest, produced_at=manifest.produced_at + timedelta(days=1), since="restored")
         for attempt in (first.manifest, bad_window, broken, manifest, bad_window, broken, first.manifest):
-            receipt = store.deliver(c, source, attempt)
+            receipt = store.deliver(c, source, attempt, now=at(30))
             if attempt.identity == first.manifest.identity:
-                assert receipt == first
+                assert receipt == replace(first, replayed=True)
             elif attempt.identity == manifest.identity:
-                assert receipt == second
+                assert receipt == replace(second, replayed=True)
             else:
                 assert not receipt.accepted
             assert store.load_ledger(c) == second.ledger == Ledger.from_receipts(c, store.receipts(c.table))

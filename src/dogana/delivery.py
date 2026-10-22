@@ -56,6 +56,16 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
     previous = _call(store.accepted_receipt, manifest.identity)
     if previous is not None:
         return replace(previous, replayed=True)
+    if not contract.schema:
+        refused = Gate.reject(
+            ledger,
+            manifest,
+            (Check("schema", False, "publication requires a declared schema"),),
+            now=now,
+            source=description,
+        )
+        _call(store.save_receipt, refused)
+        return refused
     if not all(check.passed for check in Gate.preflight(ledger, manifest, now=now)):
         refused = Gate.evaluate(ledger, manifest, now=now, source=description)
         _call(store.save_receipt, refused)
