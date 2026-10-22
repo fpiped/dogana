@@ -1,8 +1,7 @@
 # Architecture
 
-How dogana is built, which patterns it follows, and what it borrows from projects that answered
-the same questions well. The [protocol](protocol.md) defines the semantics; this page explains
-the shape of the code and the reasons.
+How dogana is built and why. The [protocol](protocol.md) defines the semantics; this page explains
+the shape of the code and the decisions behind it.
 
 ## One verb
 
@@ -14,109 +13,109 @@ The test for the boundary is the recomputation rule: everything dogana writes mu
 from two inputs, the sequence of accepted manifests and the contract. The ledger passes (it is a
 fold over manifests). Receipts pass (each is a function of ledger, manifest and check outcomes).
 Rows fail (they are the source's), so dogana never owns a row. Schedules fail, so it never owns a
-clock. This rule decides every "should this live in the core" question without a meeting.
+clock. This rule decides every "should this live in the core" question.
 
-## Ports and adapters
+## Rules, not implementations
 
 The core is `contract`, `ledger`, `gate`, `planner`, `wire`: pure functions over frozen values,
-standard library only. Everything that touches the world is an adapter behind an optional extra:
+standard library only. It emits values that say what must be done (a plan, a list of checks, a
+receipt) and never does it. Whoever writes rows meets the four store obligations of the protocol:
+checks before rows, rows and ledger together, receipts kept, replay returns the stored receipt.
 
-| Port | Protocol | Reference adapter | Others that fit |
-|---|---|---|---|
-| Store | `Store`: hold a candidate, run row checks, execute a plan, publish atomically, read a publication, persist ledger and receipts | DuckDB file | Postgres, DuckLake, Iceberg, Delta |
-| Extractor | `Extractor`: take an `ExtractionRequest`, return a manifest and a row source | none yet | dlt, Airbyte, a SQL script |
-| Entry point | push a file with a manifest, or derive one from the name | `FileDrop` | an SFTP watcher, an S3 event, a queue |
+Those obligations are stated as rules because they can be checked mechanically. `dogana.conformance`
+is the check: the same scenarios (a week of files, a contradictory file, a crash after the rows
+changed, a replay, an out-of-order window) run against any object that implements `Store`. A store
+that passes has met the contract, whoever wrote it. That is why the repository ships no catalogue
+of warehouse adapters: the product is the rule and its test, and a warehouse team writes its store
+the way it writes everything else, then runs the suite.
 
-Dependencies point inward. Adapters import the core; the core imports nothing. A test deletes
-every adapter package and proves the core still validates, applies and answers. That test is the
-architecture's unit test.
+Two reference implementations live in `dogana.reference`, installed under extras: a DuckDB store and
+a file drop that derives a manifest from a filename. They exist so the protocol has a running
+example, the README runs, and the conformance suite has a subject. They are fixtures that happen
+to be usable, not warehouse support.
+
+Dependencies point inward. The reference imports the core; the core imports nothing. A test deletes
+the reference package and proves the core still validates, applies and answers.
+
+## Atomicity: three mechanisms and one guard
+
+The one invariant a store cannot delegate to the core is that rows and the fact about the rows move
+together. The protocol admits three ways to keep it: one transaction when rows and ledger share an
+engine; the table format's commit when rows live in Iceberg, Delta or DuckLake, with the receipt
+identity in the snapshot metadata; ordering plus idempotency when neither exists, which is enough
+for every plan except append.
+
+The guard that makes a violation visible is the publication stamp. The ledger's `publication_id`
+is a hash chain; the store writes it next to the rows in the same step as the rows; `load_ledger`
+compares the two and refuses deliveries while they differ. A crash between rows and ledger, or rows
+replaced behind the gate, becomes a refused delivery with a reason instead of a wrong answer.
 
 ## Values, not calls
 
-The core never asks a store to do something. It emits a value that says what must be done, and
-the adapter executes it:
-
 - `ApplyPlan`: an ordered tuple of `Action` values (`replace_all`, `replace_window`, `upsert`,
   `tombstone`, `append`). Any store with transactions can execute it; none needs to know why.
-- `CheckRequirement` and `Check`: the gate names the row checks a delivery must pass; the adapter
-  returns one outcome per name; the gate decides. A missing, duplicate or unexpected outcome is a
-  rejection, so an adapter cannot skip a check by accident.
-- `Receipt`: the decision as data, with the transition before and after. A store persists it; a
-  reader reconstructs the ledger from the accepted ones.
+- `CheckRequirement` and `Check`: the gate names the row checks; the store returns one outcome per
+  name; the gate decides. A missing, duplicate or unexpected outcome is a rejection, so a store
+  cannot skip a check by accident.
+- `Receipt`: the decision as data, with the transition before and after. The accepted receipts in
+  order reconstruct the ledger.
 
-Values can be serialised, compared, replayed and tested without a database. That is why the
-protocol defines JSON forms for all of them and why every value carries `version` and `kind`.
+Values can be serialised, compared, replayed and tested without a database. Every value carries
+`version` and `kind` and has a JSON form in the protocol.
 
 ## Write, audit, publish
 
 Every delivery follows the pattern lakehouse teams call write-audit-publish: rows land in a
-candidate, checks run against the candidate, and only then does one atomic step make the candidate
-visible. dogana adds what the pattern leaves to each team: the audit is scoped by what the
-delivery claims (a window delivery is checked inside its window), the publish writes a receipt, and
-the ledger records what the publication proved. In the DuckDB adapter the candidate is a temporary
-table and the publish is a transaction that commits rows, ledger and receipt together; a failure
-anywhere rolls all three back.
+candidate, checks run against the candidate, and one atomic step makes the candidate visible.
+dogana adds what the pattern leaves to each team: the audit is scoped by what the delivery claims
+(a window delivery is checked inside its window), the publish writes a receipt, and the ledger
+records what the publication proved.
 
 ## Idempotency by identity
 
 A manifest's identity is the hash of its canonical JSON. An accepted identity applied again returns
 the original receipt and changes nothing, however many deliveries came in between. A corrected file
-needs a corrected manifest, which has a different identity. This is the whole retry story: senders
-can resend, orchestrators can rerun, nothing doubles.
+needs a corrected manifest, which has a different identity. Senders can resend, orchestrators can
+rerun, nothing doubles.
 
 ## The ledger is a fold
 
-`Ledger.apply(manifest)` is a pure function from a ledger to a ledger. Regions are split exactly at
-the delivery's bounds, dates move only where the delivery proves them, and adjacent regions with
-identical evidence merge back. Because the function is pure, the test suite can fuzz it: random
-sequences of full, windowed and changed-since deliveries, with the invariants checked after each
-step (regions partition the domain, validity never exceeds completeness, untouched regions never
-move, touched regions carry exactly the delivery's date).
+`Ledger.apply(manifest)` is a pure function from a ledger to a ledger. Regions split exactly at the
+delivery's bounds, dates move only where the delivery proves them, and adjacent regions with
+identical evidence merge back. Because the function is pure, the suite fuzzes it: random sequences
+of full, windowed and changed-since deliveries, with the invariants checked after each step
+(regions partition the domain, validity never exceeds completeness, untouched regions never move,
+touched regions carry exactly the delivery's date).
+
+## Who should not use it
+
+A team whose every source arrives through log-based change data capture with soft deletes already
+holds a faithful copy; both dates would always be equal and dogana would record nothing new. The
+library is for the other feeds: files on SFTP, APIs that answer "changed since", exports that are
+full on Sunday and windowed on weekdays, append-only logs.
 
 ## What is borrowed, and from whom
 
-dlt. The drop-in library model: no daemon, no service, a function call that works in a notebook,
-a Lambda or an Airflow task. dlt also stores its pipeline state in the destination next to the data
-and restores it on a clean start; dogana does the same with the ledger and receipts, so a store is
-self-describing and a lost working directory loses nothing.
-
-dbt. Declarative configuration as the unit of intent: a model declares its incremental strategy and
-dbt derives the SQL. dogana's contract declares shapes and the core derives plans and checks. dbt
-also made "full refresh" the universal escape hatch for drift; dogana keeps the escape hatch and
-makes the drift visible as a date instead of a feeling.
-
-mosaico. Sessions as immutable layers that are finalised once and never edited, and a catalog that
-can be rebuilt from durable storage if the metadata database is lost. dogana's publications are
-immutable, and the ledger is rebuildable from receipts. mosaico also shows the cost of a daemon:
-the right call for a robotics ingest path at gigabytes per second, the wrong one for a library
-whose hot loop is a hash and a few interval splits.
-
-Iceberg and Delta. Snapshot isolation and a per-commit metadata slot. When a store adapter targets
-them, the receipt identity goes into the snapshot summary, so the table format's own history points
-back at the audit record.
+dlt: the drop-in library model, no daemon, a function call that works in a notebook or a task, and
+state stored next to the data so a lost working directory loses nothing. dbt: declarative intent
+(a shape) from which the library derives the mechanics (plan and checks), and full refresh as the
+universal escape hatch, here made visible as a date. mosaico: immutable layers finalised once and a
+catalog rebuildable from durable storage. Iceberg and Delta: snapshot isolation and a per-commit
+metadata slot, where the receipt identity goes. Iceberg also shows the distribution model:
+a specification plus one reference library, implementations elsewhere.
 
 ## Why Python and why no dependencies
 
-The core's work is validation, interval arithmetic and hashing. Its hot path is not in Python; it
-is in the store that executes the plan. The people who will adopt a delivery ledger write Python,
-and every neighbour (dlt, pyiceberg, Dagster, Soda) is Python. A language with a faster loop would
-buy nothing and cost the integration surface.
-
-No runtime dependencies in the core means the library can be vendored, audited in an afternoon and
-installed anywhere a Python interpreter runs. Adapters pay for their dependencies behind extras.
-
-## Why DuckDB first
-
-A single file, transactions, CSV and Parquet readers, and a type system close to the protocol's
-logical types. The adapter proves the interfaces are sufficient in under 400 lines. It copies the
-whole table on every publication to support reads at a version, which is honest for a reference
-and wrong for a product: that is the first thing a DuckLake or Iceberg adapter would replace with a
-snapshot.
+The core's work is validation, interval arithmetic and hashing; the hot path is in the store that
+executes the plan. The people who adopt a delivery ledger write Python, and every neighbour is
+Python. No runtime dependencies means the core can be vendored and audited in an afternoon.
 
 ## Non-goals, stated so they stay stated
 
 - No scheduler, watcher or daemon. The library is called; it never wakes up.
 - No second rule language. Row rules belong to Soda, Great Expectations or SQL.
-- No parallel contract schema. The delivery contract complements a data contract (schema and
-  semantics); it does not restate it.
-- No platform. If a feature needs a server to exist, it belongs in an adapter or in another project.
+- No parallel contract schema. The delivery contract complements a data contract; it does not
+  restate it.
+- No adapter catalogue. A store is written by the team that owns the warehouse and proved by the
+  conformance suite.
+- No platform. If a feature needs a server to exist, it belongs in another project.

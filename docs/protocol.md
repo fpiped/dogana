@@ -165,19 +165,58 @@ against the ledger before it can be chosen; tombstones with an already sufficien
 still be the cheapest way to advance completeness. Generation requests use the held cursor.
 A request's `until` becomes the manifest's source boundary after extraction.
 
+## Store obligations
+
+The core never writes rows. Whoever does, a reference store or a user's own loader, meets four
+obligations; together they are the store contract, and the conformance suite checks them.
+
+1. Checks before rows. Every `CheckRequirement` the gate names is answered against the candidate
+   rows before any published row changes, and the plan executes only for an accepted receipt.
+2. Rows and ledger move together. After a publication the published rows, the ledger and the
+   receipt agree, whatever happens in between. Three mechanisms meet this:
+   - one transaction, when the rows and the ledger live in the same engine: plan, ledger and
+     receipt commit together or not at all;
+   - the format's commit, when the rows live in a table format with atomic snapshots and commit
+     metadata (Iceberg, Delta, DuckLake): the receipt identity is written into the snapshot, and
+     the ledger is derived from the committed receipts;
+   - ordering with idempotency, when neither exists: rows first, then receipt, then ledger. A crash
+     between them leaves rows ahead of the ledger; the same manifest resubmitted is not yet an
+     accepted identity, so its checks run again against rows that already hold the delivery and
+     its plan executes again. `replace_all`, `replace_window`, `upsert` and `tombstone` are
+     idempotent, so the retry converges. `append` is not, so an append shape requires one of the
+     first two mechanisms, and a store that cannot give them refuses the contract.
+3. Receipts are kept. Every receipt, accepted or rejected, is persisted; the accepted ones in order
+   reconstruct the ledger, so the ledger is derived state and a lost ledger costs a rebuild.
+4. Replay returns the stored receipt. A manifest whose identity is already accepted produces no
+   second publication; the store answers with the receipt it holds.
+
+The publication stamp makes obligation 2 checkable. `Ledger.publication_id` is a hash chain of the
+previous publication, the contract and the accepted manifest. A store writes the current
+`publication_id` next to the rows it publishes (a side table, a table property, commit metadata)
+in the same step as the rows. `load_ledger` compares the stamp with the ledger's `publication_id`
+and refuses every delivery while they differ: a stamp ahead of the ledger means a crash between
+rows and ledger, repaired by folding the receipts; a ledger ahead of the stamp means rows were
+replaced outside the gate, repaired only by a complete delivery. No stamp and no ledger is a new
+table.
+
 ## Interfaces and entry points
 
-`Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store exposes `deliver(contract, source, manifest)` as the gated push facade, holds a candidate,
-runs required checks, executes a plan, publishes rows with ledger and receipt atomically, aborts on
-failure, reads a publication, loads a ledger and persists rejected receipts. `Extractor.extract(contract,
-request)` returns a manifest and an opaque row source consumable by a store. Extraction and storage
-are outside the core.
+`Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store exposes
+`deliver(contract, source, manifest)` as the gated push facade, holds a candidate, runs required
+checks, executes a plan, publishes rows with ledger and receipt, aborts on failure, reads a
+publication, loads a ledger and persists receipts. `Extractor.extract(contract, request)` returns a
+manifest and an opaque row source consumable by a store. Extraction and storage are outside the core.
 
 Push supplies a source plus manifest. Pull passes an `ExtractionRequest` to an extractor, then submits
 the returned source and manifest through the same gate. The next request comes from required claims or
 from `next_extraction`. Both modes produce identical ledgers for identical deliveries.
 
-Reference adapters and their constraints are described in [adapters](adapters.md).
+A loader that is not a `Store` can still meet the obligations with the core alone: load the ledger,
+`manifest.check(contract)`, `Gate.requirements`, run the checks, `Gate.evaluate`, execute
+`receipt.transition.plan`, save `receipt.ledger` and the receipt under obligation 2. The conformance
+suite in `dogana.conformance` runs the same scenarios against any store object and is the proof a
+store meets the contract. Reference stores and their constraints are described in
+[reference](reference.md).
 
 ## Versioned JSON
 

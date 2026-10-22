@@ -1,6 +1,6 @@
-# Reference adapters
+# Reference implementations
 
-The adapters prove the core's interfaces are sufficient. Their constraints are theirs, not the
+These exist so the protocol has a running example and the conformance suite a subject. Their constraints are theirs, not the
 protocol's.
 
 ## DuckDB store
