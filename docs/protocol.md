@@ -31,7 +31,8 @@ replace their coverage wholesale, and append-only shapes: whole-domain, timestam
 deletion signal. Named keys, tombstones and generation checkpoints need a key. A contract with an
 append-only shape declares `start_at`, the beginning of its retained history. Window bounds and key
 components are strings, integers, dates or UTC datetimes; window and key schema columns use these
-logical types.
+logical types, and a manifest's window bounds must have the window column's declared type. Datetime
+bounds are normalised to UTC on entry, so two instants that share a local wall time are never one point.
 
 A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
 and an optional positive `window_size` duration for automatic rolling-window planning. DATE windows

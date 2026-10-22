@@ -214,7 +214,7 @@ class Manifest(Wire):
         object.__setattr__(self, "keys", tuple(tuple(k) for k in self.keys))
         object.__setattr__(self, "tombstones", tuple(tuple(k) for k in self.tombstones))
         if self.window is not None:
-            object.__setattr__(self, "window", tuple(self.window))
+            object.__setattr__(self, "window", bounds(tuple(self.window)))
 
     def check(self, contract: Contract) -> Shape:
         if self.table != contract.table:
@@ -248,6 +248,9 @@ class Manifest(Wire):
                 raise InvalidContract("named keys must be unique, non-null and have the contract's width")
         types = {"int": int, "str": str, "date": date, "datetime": datetime}
         declared = {c.name: c.type for c in contract.schema}
+        if self.window is not None and contract.window_column in declared:
+            if type(self.window[0]) is not types[declared[contract.window_column]]:
+                raise InvalidContract("window bound types differ from the contract schema")
         for key in (*self.keys, *self.tombstones):
             if any(type(value) not in (str, int, date, datetime) for value in key):
                 raise InvalidContract("named key components must be ordered scalars")

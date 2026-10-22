@@ -1,9 +1,13 @@
 from dataclasses import replace
+from functools import partial
 
 import pytest
 
 from dogana import ApplyPlan, Check, Contract, Gate, Ledger, Manifest, Operation, Receipt
 from tests.support import FULL, SINCE, WINDOW, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def outcomes(c, m, fail=None):

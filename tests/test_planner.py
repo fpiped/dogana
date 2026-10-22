@@ -1,9 +1,13 @@
 from datetime import timedelta
+from functools import partial
 
 import pytest
 
 from dogana import Ledger, Manifest, PlanningError, Requirement, next_extraction, plan_delivery
-from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
+from tests.support import FEED, FULL, SCHEMA, SINCE, WINDOW, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def test_deletions_known_today_choose_the_cheapest_complete_shape_for_a_patched_region():
@@ -55,7 +59,7 @@ def test_the_next_changed_since_interval_starts_at_the_weakest_region_boundary()
 
 
 def test_the_next_rolling_window_uses_the_declared_width_and_column_type():
-    c = contract()
+    c = contract(schema=SCHEMA)
     request = next_extraction(Ledger(c), "daily", at(20))
     assert request.interval == ((at(20) - timedelta(days=29)).date(), at(20).date())
 

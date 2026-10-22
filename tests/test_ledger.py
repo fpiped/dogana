@@ -1,9 +1,13 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from functools import partial
 
 import pytest
 
 from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, State
 from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def full(c, day=18, generation=None):
@@ -310,3 +314,33 @@ def test_adjacent_discrete_windows_leave_no_phantom_unknown_region(windows):
     assert claim.state is State.COMPLETE
     assert claim.complete_as_of == at(22)
     assert len(claim.regions) == 2
+
+
+def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
+    from zoneinfo import ZoneInfo
+
+    rome = ZoneInfo("Europe/Rome")
+    early = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=0)
+    late = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=1)
+    c = Contract("ticks", ("id",), {"slot": WINDOW}, window_column="at")
+    ledger = Ledger(c).apply(Manifest(c.table, "slot", at(26), window=(early, early)))
+    assert ledger.claims(at(26), window=(early, early)).state is State.COMPLETE
+    assert ledger.claims(at(26), window=(late, late)).state is State.UNKNOWN
+    assert Manifest.from_json(Manifest(c.table, "slot", at(26), window=(late, late)).to_json()).window == (
+        late.astimezone(UTC),
+        late.astimezone(UTC),
+    )
+
+
+def test_window_bounds_must_have_the_window_columns_declared_type():
+    from dogana import Column
+
+    c = Contract(
+        "orders",
+        ("id",),
+        {"daily": WINDOW},
+        window_column="day",
+        schema=(Column("id", "int"), Column("day", "date")),
+    )
+    with pytest.raises(InvalidContract, match="window bound types"):
+        Manifest(c.table, "daily", at(19), window=("2026-10-01", "2026-10-19")).check(c)
