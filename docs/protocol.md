@@ -212,7 +212,7 @@ These exceptions make recovery possible without blessing rows that no receipt pr
 `Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store exposes
 `deliver(contract, source, manifest)` as the gated push facade, holds a candidate, runs required
 checks, executes a plan, publishes rows with ledger and receipt, aborts on failure, reads a
-publication, loads a ledger and persists receipts. `Extractor.extract(contract, request)` returns a
+publication, loads a ledger, persists and lists receipts, and repairs a ledger from receipts. `Extractor.extract(contract, request)` returns a
 manifest and an opaque row source consumable by a store. Extraction and storage are outside the core.
 
 Push supplies a source plus manifest. Pull passes an `ExtractionRequest` to an extractor, then submits

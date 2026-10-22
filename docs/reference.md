@@ -34,3 +34,33 @@ evidence. Parquet retains its physical schema even when empty. Successful candid
 VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ, so publication types do not depend on file inference. Neither encoding silently accepts
 missing or retyped columns.
 
+
+## Prove a store
+
+Install `dogana[dev]` for pytest. `dogana.conformance` imports only the core, the standard library
+and pytest; it has no DuckDB dependency. In your pytest module:
+
+```python
+import pytest
+from dogana.conformance import StoreConformance
+from your_project.testing import WarehouseFactory
+
+class TestWarehouse(StoreConformance):
+    @pytest.fixture
+    def factory(self, tmp_path, monkeypatch):
+        return WarehouseFactory(tmp_path, monkeypatch)
+```
+
+Implement the `StoreFactory` protocol: `make_store()`, `write_source(rows, schema)` and
+`read_table(store, table)` supply the transport. `atomic_append` declares whether a transaction
+or format commit makes append safe. The three fault hooks are deliberately destructive test
+operations: `fail_after_rows(store)` is a context manager that interrupts one publication after
+rows change; `set_ledger(store, ledger)` overwrites only the ledger; `set_stamp(store, table, id)`
+overwrites only the stamp. Run against disposable storage. A store exposes `deliver`, `load_ledger`,
+`receipts(table)` in persistence order, and `repair`; optional `close()` releases it after each test.
+
+The inherited scenarios check rows, dates, audit history, replay, contradictory files, generation
+breaks, overlapping windows, atomic failure or idempotent retry, append refusal, and both stamp
+mismatches. Every completed delivery also rebuilds the ledger from accepted receipts. The repository
+runs the same suite against DuckDB, a whole-state atomic in-memory implementation, and an ordered
+in-memory implementation that writes rows, receipt and ledger separately and refuses append.
