@@ -121,14 +121,19 @@ share one in-memory state; replacing that state publishes them together.
 from dogana import Check, Gate, Ledger, Operation
 
 memory_contract = Contract(
-    "items", ("id",), {"full": Shape("all", "complete", "absence", "none")},
+    "items",
+    ("id",),
+    {"full": Shape("all", "complete", "absence", "none")},
     schema=(Column("id", "int"),),
 )
 memory_state = ([], Ledger(memory_contract), (), None)
 candidate_rows = [{"id": 1}, {"id": 2}]
 memory_manifest = Manifest(
-    "items", "full", datetime(2026, 10, 18, tzinfo=timezone.utc),
-    rows=2, schema_hash=memory_contract.schema_hash,
+    "items",
+    "full",
+    datetime(2026, 10, 18, tzinfo=timezone.utc),
+    rows=2,
+    schema_hash=memory_contract.schema_hash,
 )
 
 published_rows, memory_ledger, receipts, stamp = memory_state
@@ -137,11 +142,10 @@ memory_manifest.check(memory_contract)
 requirements = Gate.requirements(memory_contract, memory_manifest)
 results = {
     "row_count": len(candidate_rows) == memory_manifest.rows,
-    "schema_hash": memory_manifest.schema_hash == memory_contract.schema_hash and all(
-        tuple(row) == ("id",) and type(row["id"]) is int for row in candidate_rows
-    ),
+    "schema_hash": memory_manifest.schema_hash == memory_contract.schema_hash
+    and all(tuple(row) == ("id",) and type(row["id"]) is int for row in candidate_rows),
     "key_integrity": len({row["id"] for row in candidate_rows}) == len(candidate_rows)
-                     and all(row["id"] is not None for row in candidate_rows),
+    and all(row["id"] is not None for row in candidate_rows),
 }
 checks = tuple(Check(r.name, results[r.name]) for r in requirements)
 memory_receipt = Gate.evaluate(memory_ledger, memory_manifest, checks)
@@ -150,7 +154,10 @@ if memory_receipt.accepted:
         assert action.operation is Operation.REPLACE_ALL
         published_rows = list(candidate_rows)
 memory_state = (
-    published_rows, memory_receipt.ledger, receipts + (memory_receipt,), memory_receipt.publication_id,
+    published_rows,
+    memory_receipt.ledger,
+    receipts + (memory_receipt,),
+    memory_receipt.publication_id,
 )
 assert memory_receipt.accepted and memory_state[0] == candidate_rows
 assert Ledger.from_receipts(memory_contract, memory_state[2]) == memory_state[1]

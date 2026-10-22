@@ -209,10 +209,19 @@ class Manifest(Wire):
         object.__setattr__(self, "produced_at", utc(self.produced_at))
         if isinstance(self.since, datetime):
             object.__setattr__(self, "since", utc(self.since))
-        object.__setattr__(self, "keys", tuple(tuple(k) for k in self.keys))
-        object.__setattr__(self, "tombstones", tuple(tuple(k) for k in self.tombstones))
+        for name in ("keys", "tombstones"):
+            object.__setattr__(
+                self,
+                name,
+                tuple(
+                    tuple(utc(v) if isinstance(v, datetime) else v for v in key)
+                    for key in getattr(self, name)
+                ),
+            )
         if self.window is not None:
-            object.__setattr__(self, "window", tuple(self.window))
+            object.__setattr__(
+                self, "window", tuple(utc(v) if isinstance(v, datetime) else v for v in self.window)
+            )
 
     def check(self, contract: Contract) -> Shape:
         if self.table != contract.table:

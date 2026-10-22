@@ -49,7 +49,7 @@ class Wire:
             if not isinstance(result, cls):
                 raise SerializationError(f"expected {cls.__name__}")
             return result
-        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+        except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as exc:
             raise SerializationError(str(exc)) from exc
 
     @classmethod
@@ -67,7 +67,10 @@ class Wire:
 def utc(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise InvalidContract("timestamps must be timezone-aware datetimes")
-    return value.astimezone(UTC)
+    try:
+        return value.astimezone(UTC)
+    except OverflowError as exc:
+        raise InvalidContract("timestamp is outside the UTC datetime range") from exc
 
 
 def encode(value):
@@ -108,6 +111,9 @@ def decode(value):
         if cls is None:
             raise SerializationError("unknown wire kind")
         try:
+            names = {f.name for f in fields(cls)}
+            if set(value) != names | {"kind", "version"}:
+                raise SerializationError(f"fields differ from {cls.__name__}")
             decoded = {k: decode(v) for k, v in value.items() if k not in ("kind", "version")}
             hints = _hints(cls)
             for name, item in decoded.items():

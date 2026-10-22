@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from functools import wraps
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 import duckdb
 
@@ -48,8 +50,28 @@ def _logical(value: str) -> str:
     return {"VARCHAR": "str", "BOOLEAN": "bool", "DATE": "date"}.get(value, "unsupported")
 
 
+_LOCKS: WeakValueDictionary = WeakValueDictionary()
+_LOCKS_GUARD = Lock()
+
+
+def _synchronized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return call
+
+
 class DuckDBStore:
     def __init__(self, path: str | Path):
+        key = str(Path(path).resolve()) if str(path) != ":memory:" else uuid4().hex
+        with _LOCKS_GUARD:
+            self._lock = _LOCKS.setdefault(key, RLock())
+        with self._lock:
+            self._initialize(path)
+
+    def _initialize(self, path: str | Path):
         self.connection = duckdb.connect(str(path))
         self.connection.execute("SET TimeZone='UTC'")
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_ledgers
@@ -62,7 +84,6 @@ class DuckDBStore:
         self._candidates: dict[str, tuple[Manifest, bool]] = {}
         self._checked: dict[str, tuple[Contract, tuple[Check, ...]]] = {}
         self._transaction: str | None = None
-        self._lock = RLock()
 
     def __enter__(self):
         return self
@@ -70,6 +91,7 @@ class DuckDBStore:
     def __exit__(self, *exc):
         self.close()
 
+    @_synchronized
     def close(self) -> None:
         for candidate in tuple(self._candidates):
             self.abort(candidate)
@@ -117,6 +139,7 @@ class DuckDBStore:
             for r in self.receipts(ledger.contract.table)
         )
 
+    @_synchronized
     def load_ledger(self, contract: Contract) -> Ledger:
         ledger = self._stored_ledger(contract)
         stamp = self._stamp(contract.table)
@@ -142,8 +165,12 @@ class DuckDBStore:
 
     def repair(self, contract: Contract) -> Ledger:
         with self._lock:
+            stored = self._stored_ledger(contract)
+            stamp = self._stamp(contract.table)
+            if stamp != stored.publication_id and self._ledger_ahead(stored, stamp):
+                raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
             ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
-            if ledger.publication_id != self._stamp(contract.table):
+            if ledger.publication_id != stamp:
                 raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
             self.connection.execute(
                 "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
@@ -151,6 +178,7 @@ class DuckDBStore:
             )
             return ledger
 
+    @_synchronized
     def receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
         sql = "SELECT document FROM __dogana_receipts"
         params = []
@@ -185,10 +213,10 @@ class DuckDBStore:
             raise ValueError("only CSV and Parquet files are supported")
         candidate = "__dogana_candidate_" + uuid4().hex
         options = ", header=true, sample_size=-1" if suffix == ".csv" else ""
+        self._candidates[candidate] = (manifest, suffix == ".csv")
         self.connection.execute(
             f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM {reader}(?{options})", [str(path)]
         )
-        self._candidates[candidate] = (manifest, suffix == ".csv")
         return candidate
 
     def check(
@@ -326,8 +354,8 @@ class DuckDBStore:
         if self._transaction is not None:
             raise RuntimeError("a publication transaction is already open")
         db, target, source = self.connection, _quote(plan.table), _quote(candidate)
-        db.execute("BEGIN TRANSACTION")
         self._transaction = candidate
+        db.execute("BEGIN TRANSACTION")
         db.execute(f"CREATE TABLE IF NOT EXISTS {target} AS SELECT * FROM {source} WHERE false")
         for action in plan.actions:
             if action.operation is Operation.REPLACE_ALL:
@@ -377,7 +405,11 @@ class DuckDBStore:
 
     def abort(self, candidate: str) -> None:
         if self._transaction == candidate:
-            self.connection.execute("ROLLBACK")
+            try:
+                self.connection.execute("ROLLBACK")
+            except duckdb.TransactionException as exc:
+                if "no transaction is active" not in str(exc):
+                    raise
             self._transaction = None
         self._release(candidate)
 
@@ -394,6 +426,7 @@ class DuckDBStore:
                 self.save_receipt(receipt)
                 return receipt
             candidate = None
+            held_before = set(self._candidates)
             checks = ()
             try:
                 candidate = self.hold(source, manifest)
@@ -407,12 +440,21 @@ class DuckDBStore:
                     self.save_receipt(receipt)
                 return receipt
             except (duckdb.Error, OSError, ValueError, TypeError) as exc:
-                if candidate is not None:
-                    self.abort(candidate)
+                for held in set(self._candidates) - held_before:
+                    self.abort(held)
+                old = self.connection.execute(
+                    "SELECT document FROM __dogana_receipts "
+                    "WHERE table_name=? AND manifest_id=? AND accepted",
+                    [contract.table, manifest.identity],
+                ).fetchone()
+                if old:
+                    self.load_ledger(contract)
+                    return Receipt.from_json(old[0])
                 receipt = Gate.evaluate(ledger, manifest, checks + (Check("execution", False, str(exc)),))
                 self.save_receipt(receipt)
                 return receipt
 
+    @_synchronized
     def read(self, table: str, publication_id: str | None = None) -> list[dict]:
         self._check_table_spelling(table)
         target = table

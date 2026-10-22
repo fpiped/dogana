@@ -25,7 +25,7 @@ class Requirement(Wire):
         object.__setattr__(self, "complete_as_of", utc(self.complete_as_of))
         if self.valid_as_of is not None:
             object.__setattr__(self, "valid_as_of", utc(self.valid_as_of))
-        bounds(self.window)
+        object.__setattr__(self, "window", bounds(self.window))
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class ExtractionRequest(Wire):
 
     def __post_init__(self):
         object.__setattr__(self, "until", utc(self.until))
-        bounds(self.window)
+        object.__setattr__(self, "window", bounds(self.window))
         if isinstance(self.since, datetime):
             object.__setattr__(self, "since", utc(self.since))
 
@@ -67,7 +67,7 @@ def next_extraction(
                 window = ((until - shape.window_size + timedelta(days=1)).date(), until.date())
     elif window is not None:
         raise PlanningError("only window shapes can extract a window")
-    bounds(window)
+    window = bounds(window)
     regions = ledger.covered(window)
     since = None
     if not shape.complete:

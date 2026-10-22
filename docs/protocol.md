@@ -28,7 +28,8 @@ Moving keys between partitions or changing their window value requires a full de
 source guarantee, not something the gate can infer from one delivery. Keys are non-null and unique.
 An empty key means append-only; such a contract declares `start_at`, the beginning of its retained
 history, and admits only whole-domain timestamp shapes without deletions. Window bounds and key
-components are strings, integers, dates or UTC datetimes; window and key schema columns use these
+components are strings, integers, dates or UTC datetimes; timezone-aware inputs normalize to UTC
+before interval arithmetic and key equality, including repeated local times at DST transitions; window and key schema columns use these
 logical types.
 
 A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
@@ -144,7 +145,9 @@ identity. A rejected receipt references the existing publication. Receipt indexi
 contract table, even when the rejected manifest names a different table. A successful publication identity is
 a hash of the previous publication, contract and manifest identities. Receipt identity also includes
 check outcomes. Receipt claims use the supplied `now`, defaulting to the source read boundary for a
-deterministic decision. Readers recompute ledger claims with their current time to evaluate freshness. The audit history includes rejected attempts without making them publications.
+deterministic decision. Readers recompute ledger claims with their current time to evaluate freshness. The audit history includes rejected attempts without making them publications. A failure after
+commit cannot turn a publication into a rejection: the store returns the committed receipt on retry
+or after recovering from cleanup failure.
 
 ## Claims and pull planning
 
@@ -234,7 +237,9 @@ store meets the contract. Reference stores and their constraints are described i
 ## Versioned JSON
 
 Every structured value has `version: 1` and `kind` equal to its public class name. Field names match
-constructor arguments. Tuples encode as arrays, enums as their string values, mappings as objects.
+constructor arguments. Every field is present, including null and empty defaults; otherwise a lost
+field could silently change the declaration or its identity during decoding. Missing fields are
+refused, as are overflowing scalar tags, through `SerializationError`. Tuples encode as arrays, enums as their string values, mappings as objects.
 Wire field types are checked before constructor normalization; an array cannot stand in for a mapping
 and a string cannot stand in for a key tuple. Scalar-tag names remain valid shape names.
 UTC datetimes encode as `{"$datetime":"2026-10-18T00:00:00+00:00"}`, dates as

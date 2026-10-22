@@ -15,7 +15,12 @@ ahead side. `repair(contract)` folds receipts and restores a missing or stale le
 result matches the stamp. A ledger ahead of the stamp requires a new complete whole-table delivery;
 a window or a replay cannot repair rows. An unknown stamp or an incomplete receipt chain needs
 investigation rather than a ledger reset.
-Contracts cannot change within a table's history. One store instance serializes deliveries.
+Contracts cannot change within a table's history. Stores for the same resolved DuckDB file share a process-local lock across checks and publication.
+Two threads using one instance or two instances serialize; an older overlapping delivery gets a
+rejected receipt. Reads and ledger loads on these instances use the same lock. This is a single-process
+reference implementation: independent processes are subject to DuckDB's file locking and cannot share
+this Python lock. Direct SQL writers must coordinate with it. A stamp cannot detect a writer that
+changes rows without updating their stamp.
 The DuckDB extra includes `pytz`, required by its Python client when returning timezone-aware columns.
 The internal `__dogana_` namespace is reserved regardless of letter case. DuckDB refuses a spelling
 alias of an already registered table because its SQL identifiers are case-insensitive, while core

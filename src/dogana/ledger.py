@@ -42,6 +42,10 @@ class Region(Wire):
     generation: str | None = None
 
     def __post_init__(self):
+        for name in ("low", "high"):
+            value = getattr(self, name)
+            if isinstance(value, datetime):
+                object.__setattr__(self, name, utc(value))
         if self.low is not None and self.high is not None:
             bounds((self.low, self.high))
             if not _nonempty(self.low, self.high, self.low_open, self.high_open):
@@ -218,7 +222,7 @@ class Ledger(Wire):
         return ledger
 
     def covered(self, window: Window | None = None) -> tuple[Region, ...]:
-        bounds(window)
+        window = bounds(window)
         coverage = Region(*window) if window is not None else Region()
         try:
             return tuple(part for r in self.regions if (part := r.intersection(coverage)) is not None)

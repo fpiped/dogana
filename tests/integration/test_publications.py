@@ -82,3 +82,18 @@ def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery
         assert recovered.accepted
         assert store.load_ledger(c) == Ledger.from_receipts(c, store.receipts(c.table))
         assert store.read(c.table) == [row(2)]
+
+
+def test_repair_cannot_rewind_a_ledger_that_is_ahead_of_the_last_retained_receipt(tmp_path):
+    c = contract()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        first = store.deliver(c, path, sidecar(path, c, "full", 18, 1))
+        ahead = first.ledger.apply(Manifest(c.table, "full", at(19)))
+        store.connection.execute(
+            "UPDATE __dogana_ledgers SET document=? WHERE table_name=?", [ahead.to_json(), c.table]
+        )
+        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+            store.repair(c)
+        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+            store.load_ledger(c)
