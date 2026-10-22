@@ -65,3 +65,31 @@ def test_history_equality_retains_null_values_without_copying_a_complete_table(t
                 {"id": 2, "value": 2},
             ]
         assert store.connection.execute("SELECT count(*) FROM __dogana_history_nullable").fetchone()[0] == 2
+
+
+def test_legacy_snapshot_tables_stay_readable_after_new_publications_use_row_versions(tmp_path):
+    from dogana import InconsistentPublication
+
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        source = csv_file(tmp_path, "first.csv", [row(1)])
+        first = store.deliver(c, source, sidecar(source, c, "full", 18, 1))
+        legacy = "__dogana_version_" + first.publication_id
+        store.connection.execute(f'CREATE TABLE "{legacy}" AS SELECT * FROM moves')
+        store.connection.execute("DROP TABLE __dogana_history_moves")
+        store.connection.execute("DELETE FROM __dogana_publications")
+        store.connection.execute("UPDATE __dogana_receipts SET document=?", [first.to_json()])
+        with pytest.raises(InconsistentPublication, match="ledger ahead"):
+            store.load_ledger(c)
+        assert store.read(c.table, first.publication_id) == [row(1)]
+        source = csv_file(tmp_path, "next.csv", [row(2)])
+        second = store.deliver(c, source, sidecar(source, c, "full", 19, 1))
+        assert second.accepted
+        assert store.read(c.table, first.publication_id) == [row(1)]
+        assert store.read(c.table, second.publication_id) == [row(2)]
+        assert (
+            store.connection.execute(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE '__dogana_version_%'"
+            ).fetchone()[0]
+            == 1
+        )

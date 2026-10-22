@@ -247,7 +247,7 @@ one.
 
 ## Status
 
-Protocol version 1, no release yet. 280 tests cover transitions, JSON, planning, runnable README
+Protocol version 1, no release yet. 281 tests cover transitions, JSON, planning, runnable README
 examples and store obligations. A conformance suite proves a store; DuckDB and file drop are
 reference implementations. Contract evolution remains open.
 

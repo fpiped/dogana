@@ -551,6 +551,10 @@ class DuckDBStore:
                 "WHERE __dogana_from <= ? AND (__dogana_until IS NULL OR __dogana_until > ?)"
             )
             params = [sequence, sequence]
+            legacy = "__dogana_version_" + publication_id
+            if self._exists(legacy):
+                query = f"SELECT {columns} FROM {_quote(legacy)}"
+                params = []
         cursor = self.connection.execute(query + " ORDER BY ALL", params)
         names = [c[0] for c in cursor.description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]

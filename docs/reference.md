@@ -25,6 +25,8 @@ candidate events, including equal events. History grows with changed rows; compa
 the table. Stored receipt JSON replaces accepted-identity lists with internal prefix counts over
 the receipt index. `receipts()` restores the public wire value. The current ledger retains all
 accepted identities; requesting every full receipt materializes their historical prefixes.
+Existing whole-table snapshot publications remain readable; new publications create no such copies.
+Older databases without stamps require a new complete delivery before ordinary delivery resumes.
 
 Stores for the same resolved file share a process-local lock across checks and publication.
 Two threads using one instance or two instances serialize; an older overlapping delivery gets a
