@@ -8,11 +8,16 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[1]
-BLOCKS = re.findall(r"^```([^\n]*)\n(.*?)^```", (ROOT / "README.md").read_text(), re.MULTILINE | re.DOTALL)
+PAGES = {
+    name: re.findall(r"^```([^\n]*)\n(.*?)^```", (ROOT / name).read_text(), re.MULTILINE | re.DOTALL)
+    for name in ("README.md", "docs/quickstart.md")
+}
 
 
-def test_every_readme_block_runs_from_its_documented_directory(tmp_path):
+@pytest.mark.parametrize("page", sorted(PAGES))
+def test_every_documented_block_runs_from_its_documented_directory(tmp_path, page):
     pytest.importorskip("duckdb")
+    BLOCKS = PAGES[page]
     assert BLOCKS and all(language in ("sh", "python", "text") for language, _ in BLOCKS)
     environment = dict(
         os.environ,
