@@ -256,3 +256,21 @@ def test_a_generation_window_cannot_advance_a_region_whose_cursor_it_skipped():
     )
     assert point(ledger, 5).valid_as_of == at(20)
     assert point(ledger, 15).valid_as_of == at(18)
+
+
+@pytest.mark.parametrize(
+    "windows",
+    [
+        ((1, 9), (10, 20)),
+        ((at(18).date(), at(19).date()), (at(20).date(), at(21).date())),
+        ((at(18), at(19)), (at(19) + timedelta(microseconds=1), at(20))),
+    ],
+)
+def test_adjacent_discrete_windows_leave_no_phantom_unknown_region(windows):
+    c = contract()
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(22), window=windows[0]))
+    ledger = ledger.apply(Manifest(c.table, "daily", at(23), window=windows[1]))
+    claim = ledger.claims(at(23), window=(windows[0][0], windows[1][1]))
+    assert claim.state is State.COMPLETE
+    assert claim.complete_as_of == at(22)
+    assert len(claim.regions) == 2

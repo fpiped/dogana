@@ -57,7 +57,7 @@ def test_the_next_changed_since_interval_starts_at_the_weakest_region_boundary()
 def test_the_next_rolling_window_uses_the_declared_width_and_column_type():
     c = contract()
     request = next_extraction(Ledger(c), "daily", at(20))
-    assert request.interval == ((at(20) - timedelta(days=30)).date(), at(20).date())
+    assert request.interval == ((at(20) - timedelta(days=29)).date(), at(20).date())
 
 
 def test_the_next_read_cannot_go_backwards_in_source_time():

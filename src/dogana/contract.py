@@ -83,13 +83,16 @@ class Shape(Wire):
     window_size: timedelta | None = None
 
     def __post_init__(self):
-        for name, enum in (
-            ("coverage", Coverage),
-            ("completeness", Completeness),
-            ("deletions", Deletions),
-            ("checkpoint", Checkpoint),
-        ):
-            object.__setattr__(self, name, enum(getattr(self, name)))
+        try:
+            for name, enum in (
+                ("coverage", Coverage),
+                ("completeness", Completeness),
+                ("deletions", Deletions),
+                ("checkpoint", Checkpoint),
+            ):
+                object.__setattr__(self, name, enum(getattr(self, name)))
+        except (TypeError, ValueError) as exc:
+            raise InvalidContract("shape properties must use the protocol's closed vocabularies") from exc
         if self.complete != (self.checkpoint is Checkpoint.NONE):
             raise InvalidContract("complete deliveries have no checkpoint; changed-only deliveries have one")
         if self.complete != (self.deletions is Deletions.ABSENCE):
@@ -150,6 +153,11 @@ class Contract(Wire):
             if c.name in self.key or c.name == self.window_column
         ):
             raise InvalidContract("key and window columns must use ordered scalar logical types")
+        if any(c.name == self.window_column and c.type == "date" for c in self.schema) and any(
+            shape.window_size is not None and shape.window_size.total_seconds() % 86400
+            for shape in self.shapes.values()
+        ):
+            raise InvalidContract("DATE window_size must contain a whole number of days")
         if not isinstance(self.freshness, timedelta) or self.freshness < timedelta(0):
             raise InvalidContract("freshness must be a nonnegative duration")
         if self.max_shrink_fraction is not None and (

@@ -95,11 +95,11 @@ def decode(value):
         return tuple(decode(v) for v in value)
     if not isinstance(value, dict):
         return value
-    if set(value) == {"$datetime"}:
+    if set(value) == {"$datetime"} and isinstance(value["$datetime"], str):
         return utc(datetime.fromisoformat(value["$datetime"]))
-    if set(value) == {"$date"}:
+    if set(value) == {"$date"} and isinstance(value["$date"], str):
         return date.fromisoformat(value["$date"])
-    if set(value) == {"$seconds"}:
+    if set(value) == {"$seconds"} and type(value["$seconds"]) in (int, float):
         return timedelta(seconds=value["$seconds"])
     if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, bool):
         if type(value.get("version")) is not int or value["version"] != 1:
@@ -108,8 +108,12 @@ def decode(value):
         if cls is None:
             raise SerializationError("unknown wire kind")
         try:
-            result = cls(**{k: decode(v) for k, v in value.items() if k not in ("kind", "version")})
+            decoded = {k: decode(v) for k, v in value.items() if k not in ("kind", "version")}
             hints = _hints(cls)
+            for name, item in decoded.items():
+                if name not in hints or not _matches(item, hints[name]):
+                    raise SerializationError(f"invalid type for {cls.__name__}.{name}")
+            result = cls(**decoded)
             for f in fields(result):
                 if not _matches(getattr(result, f.name), hints[f.name]):
                     raise SerializationError(f"invalid type for {cls.__name__}.{f.name}")
@@ -138,6 +142,12 @@ def _matches(value, annotation) -> bool:
         return isinstance(value, Mapping) and all(
             _matches(k, args[0]) and _matches(v, args[1]) for k, v in value.items()
         )
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        try:
+            annotation(value)
+            return True
+        except (TypeError, ValueError):
+            return False
     if annotation in (str, int, bool):
         return type(value) is annotation
     if annotation is float:

@@ -87,10 +87,10 @@ def test_the_core_runs_in_an_isolated_package_with_every_adapter_removed(tmp_pat
 import sys
 sys.path.insert(0, sys.argv[1])
 from datetime import datetime, timezone
-from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
+from dogana import Column, Contract, Shape, Manifest, Ledger, Gate, Check, State
 shape = Shape('all', 'complete', 'absence', 'none')
-c = Contract('stock', ('id',), {'full': shape})
-m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc))
+c = Contract('stock', ('id',), {'full': shape}, schema=(Column('id', 'int'),))
+m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
 checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
 receipt = Gate.evaluate(Ledger(c), m, checks)
 assert receipt.accepted
@@ -99,3 +99,26 @@ assert Ledger.from_json(receipt.ledger.to_json()) == receipt.ledger
 assert 'dogana.adapters' not in sys.modules
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
+
+
+@pytest.mark.parametrize("change", [{"keys": "12"}, {"tombstones": "12"}])
+def test_strings_cannot_be_normalized_into_lists_of_named_keys(change):
+    raw = Manifest("stock", "full", at(18)).to_dict()
+    raw.update(change)
+    with pytest.raises(SerializationError):
+        Manifest.from_dict(raw)
+
+
+def test_arrays_cannot_be_normalized_into_shape_mappings():
+    raw = contract().to_dict()
+    raw["shapes"] = list(raw["shapes"].items())
+    with pytest.raises(SerializationError):
+        Contract.from_dict(raw)
+
+
+@pytest.mark.parametrize("name", ["$date", "$datetime", "$seconds"])
+def test_scalar_tag_names_remain_valid_shape_names(name):
+    from tests.support import FULL
+
+    c = contract(shapes={name: FULL})
+    assert Contract.from_json(c.to_json()) == c

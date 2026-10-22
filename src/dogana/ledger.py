@@ -35,8 +35,8 @@ class Region(Wire):
     def __post_init__(self):
         if self.low is not None and self.high is not None:
             bounds((self.low, self.high))
-            if self.low == self.high and (self.low_open or self.high_open):
-                raise InvalidContract("an open singleton region is empty")
+            if not _nonempty(self.low, self.high, self.low_open, self.high_open):
+                raise InvalidContract("region is empty in its scalar domain")
         for value in (self.low, self.high):
             if value is not None and type(value) not in (str, int, datetime, date):
                 raise InvalidContract("unsupported region bound")
@@ -67,20 +67,55 @@ class Region(Wire):
             high, hi = other.high, other.high_open
         elif high == other.high:
             hi = hi or other.high_open
-        if low is not None and high is not None and (low > high or (low == high and (lo or hi))):
+        if not _nonempty(low, high, lo, hi):
             return None
         return replace(self, low=low, high=high, low_open=lo, high_open=hi)
 
     def outside(self, inside: Region) -> tuple[Region, ...]:
         parts = []
-        if inside.low is not None and (self.low, self.low_open) != (inside.low, inside.low_open):
+        if (
+            inside.low is not None
+            and (self.low, self.low_open) != (inside.low, inside.low_open)
+            and _nonempty(self.low, inside.low, self.low_open, not inside.low_open)
+        ):
             parts.append(replace(self, high=inside.low, high_open=not inside.low_open))
-        if inside.high is not None and (self.high, self.high_open) != (inside.high, inside.high_open):
+        if (
+            inside.high is not None
+            and (self.high, self.high_open) != (inside.high, inside.high_open)
+            and _nonempty(inside.high, self.high, not inside.high_open, self.high_open)
+        ):
             parts.append(replace(self, low=inside.high, low_open=not inside.high_open))
         return tuple(parts)
 
     def touches(self, other: Region) -> bool:
-        return self.high is not None and self.high == other.low and self.high_open != other.low_open
+        if self.high is None or other.low is None:
+            return False
+        if self.high == other.low:
+            return self.high_open != other.low_open
+        unit = _unit(self.high)
+        if unit is None or type(self.high) is not type(other.low):
+            return False
+        distance = other.low - self.high
+        return distance == unit * (1 - self.high_open - other.low_open)
+
+
+def _unit(value):
+    if type(value) is int:
+        return 1
+    if type(value) is datetime:
+        return timedelta(microseconds=1)
+    if type(value) is date:
+        return timedelta(days=1)
+    return None
+
+
+def _nonempty(low, high, low_open, high_open) -> bool:
+    if low is None or high is None:
+        return True
+    if low > high or (low == high and (low_open or high_open)):
+        return False
+    unit = _unit(low)
+    return unit is None or high - low >= unit * (low_open + high_open)
 
 
 @dataclass(frozen=True)

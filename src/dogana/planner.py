@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .contract import Checkpoint, Coverage, Manifest, Window, bounds
 from .ledger import Ledger, RejectedDelivery
@@ -64,7 +64,7 @@ def next_extraction(
                 (c for c in ledger.contract.schema if c.name == ledger.contract.window_column), None
             )
             if column is not None and column.type == "date":
-                window = tuple(v.date() for v in window)
+                window = ((until - shape.window_size + timedelta(days=1)).date(), until.date())
     elif window is not None:
         raise PlanningError("only window shapes can extract a window")
     bounds(window)

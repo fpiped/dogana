@@ -120,3 +120,15 @@ def test_append_only_history_has_an_explicit_start_instead_of_an_impossible_full
     assert log.start_at == at(1)
     with pytest.raises(InvalidContract):
         Contract("events", (), {"log": SINCE})
+
+
+def test_unrecognized_shape_properties_use_the_public_contract_error():
+    with pytest.raises(InvalidContract, match="closed vocabularies"):
+        Shape("sometimes", "complete", "absence", "none")
+
+
+def test_date_windows_cannot_request_fractional_calendar_days():
+    from dataclasses import replace
+
+    with pytest.raises(InvalidContract, match="whole number of days"):
+        contract(shapes={"daily": replace(WINDOW, window_size=timedelta(hours=12))})

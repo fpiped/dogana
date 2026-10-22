@@ -32,7 +32,10 @@ components are strings, integers, dates or UTC datetimes; window and key schema 
 logical types.
 
 A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
-and an optional positive `window_size` duration for automatic rolling-window planning:
+and an optional positive `window_size` duration for automatic rolling-window planning. DATE windows
+count calendar dates, including the final date: thirty days ending October 19 start September 20.
+Their width must be a whole number of days. Datetime windows span the duration with both endpoints
+included:
 
 | Property | Values | Meaning |
 |---|---|---|
@@ -78,7 +81,9 @@ current table generation, accepted manifest identities and the current publicati
 there is one unbounded unknown region. Each region has `low`, `high`, endpoint-open flags,
 `complete_as_of`, `valid_as_of`, and the source `generation` it can continue from. `None` endpoints mean
 unbounded. Both dates are absent together in unknown regions; otherwise `valid_as_of <= complete_as_of`.
-Explicit unknown gaps prevent an undelivered plant from disappearing from table claims.
+Explicit unknown gaps prevent an undelivered plant from disappearing from table claims. Empty gaps
+between successive integers, calendar dates or microsecond datetimes are discarded. Adjacency is
+measured in the scalar domain, so [1, 9] and [10, 20] leave no unknown integer between them.
 
 | State | Condition |
 |---|---|
@@ -190,6 +195,8 @@ missing or retyped columns.
 
 Every structured value has `version: 1` and `kind` equal to its public class name. Field names match
 constructor arguments. Tuples encode as arrays, enums as their string values, mappings as objects.
+Wire field types are checked before constructor normalization; an array cannot stand in for a mapping
+and a string cannot stand in for a key tuple. Scalar-tag names remain valid shape names.
 UTC datetimes encode as `{"$datetime":"2026-10-18T00:00:00+00:00"}`, dates as
 `{"$date":"2026-10-18"}`, durations as `{"$seconds":604800.0}`. Other supported bounds are strings
 and integers. Type tags distinguish an ISO-looking plant code from a date. Unsupported versions,

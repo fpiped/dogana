@@ -77,6 +77,11 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 assert store.read(c.table) == sorted(expected[c.table].values(), key=lambda r: r["id"])
                 ledger = store.load_ledger(c)
                 assert ledger == receipt.ledger
+                replayed = Ledger(c)
+                for previous_receipt in store.receipts(c.table):
+                    if previous_receipt.accepted:
+                        replayed = replayed.apply(previous_receipt.manifest)
+                assert replayed == ledger
                 assert ledger == Ledger.from_json(ledger.to_json())
                 assert store.receipts(c.table)[-1] == Receipt.from_json(receipt.to_json())
                 claim = ledger.claims(at(day))
@@ -385,3 +390,17 @@ def test_a_changed_key_enumeration_must_match_the_file_and_never_hide_live_tombs
             m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", keys=keys, tombstones=tombstones)
             assert not store.deliver(c, path, m).accepted
         assert store.read(c.table) == [row(1)]
+
+
+@pytest.mark.parametrize("remaining,accepted", [(3, True), (2, False)])
+def test_shrink_tolerance_includes_its_exact_fraction_boundary(tmp_path, remaining, accepted):
+    c = contract(max_shrink_fraction=0.7)
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(i) for i in range(10)])
+        m = sidecar(path, c, "full", 18, 10)
+        assert store.deliver(c, path, m).accepted
+        path = csv_file(tmp_path, "next.csv", [row(i) for i in range(remaining)])
+        m = sidecar(path, c, "full", 19, remaining)
+        receipt = store.deliver(c, path, m)
+        assert receipt.accepted is accepted
+        assert len(store.read(c.table)) == (remaining if accepted else 10)

@@ -248,7 +248,7 @@ class DuckDBStore:
                 previous = db.execute(sql, params).fetchone()[0]
             checks["shrink_tolerance"] = Check(
                 "shrink_tolerance",
-                count >= previous * (1 - contract.max_shrink_fraction),
+                previous == 0 or (previous - count) / previous <= contract.max_shrink_fraction,
                 f"previous={previous}, candidate={count}",
             )
         result = tuple(checks[r.name] for r in requirements)
