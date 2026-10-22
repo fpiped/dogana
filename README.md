@@ -1,4 +1,9 @@
-<p align="center"><img src="docs/assets/wordmark.svg" alt="dogana: know which rows you can trust" width="460"></p>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
+<img src="docs/assets/wordmark-light.svg" alt="dogana: know which rows you can trust" width="420">
+</picture>
+</p>
 
 <p align="center">
 <a href="https://github.com/fpiped/dogana/actions/workflows/ci.yml"><img src="https://github.com/fpiped/dogana/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -16,7 +21,12 @@ a contradiction. A **ledger** keeps, for each region of the table, two dates: **
 nothing is missing, and **valid as of**, nothing deleted is still here. One rule governs it: a
 delivery never raises a date above what it proves.
 
-<p align="center"><img src="docs/assets/flow.svg" alt="A delivery with its manifest passes the gate, the ledger records two dates per region, readers get claims" width="760"></p>
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+<img src="docs/assets/flow-light.svg" alt="delivery, gate, ledger, claims" width="760">
+</picture>
+</p>
 
 ## The answer it gives
 

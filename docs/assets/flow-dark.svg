@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="120" viewBox="0 0 860 120" role="img" aria-label="delivery, gate, ledger, claims">
+    <line x1="100" y1="60" x2="760" y2="60" stroke="#4b5563" stroke-width="2"/>
+  <circle cx="100" cy="60" r="7" fill="#e6e9ec"/>
+  <text x="100" y="36" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="600" fill="#e6e9ec">delivery</text>
+  <text x="100" y="96" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#9aa3ad">rows plus a manifest</text>
+  <circle cx="320" cy="60" r="7" fill="#e6e9ec"/>
+  <text x="320" y="36" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="600" fill="#e6e9ec">gate</text>
+  <text x="320" y="96" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#9aa3ad">checks rows against the claim</text>
+  <circle cx="540" cy="60" r="7" fill="#5fb07f"/>
+  <text x="540" y="36" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="600" fill="#5fb07f">ledger</text>
+  <text x="540" y="96" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#9aa3ad">two dates per region</text>
+  <circle cx="760" cy="60" r="7" fill="#e6e9ec"/>
+  <text x="760" y="36" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="600" fill="#e6e9ec">claims</text>
+  <text x="760" y="96" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#9aa3ad">which rows to trust, since when</text>
+</svg>
