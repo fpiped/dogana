@@ -1,0 +1,25 @@
+[project]
+name = "closedworld"
+version = "0.0.1"
+description = "Delivery contracts and arrival state for data integrations: know where absence means deletion"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Filippo Scotti" }]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["data-integration", "data-contract", "incremental-loading", "completeness", "ingestion"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["closedworld"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
