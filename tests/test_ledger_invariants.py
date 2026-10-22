@@ -39,8 +39,6 @@ def test_random_delivery_sequences_keep_every_ledger_invariant():
         ledger = Ledger(CONTRACT)
         for _ in range(40):
             manifest = random_manifest(rng)
-            if manifest.identity in ledger.accepted:
-                continue
             try:
                 after = ledger.apply(manifest)
             except RejectedDelivery:

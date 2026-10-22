@@ -70,3 +70,52 @@ def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_
     assert region.high - region.low == timedelta(hours=1)
     assert region.low == datetime(2026, 3, 29, 0, 30, tzinfo=UTC)
     assert region.high == datetime(2026, 3, 29, 1, 30, tzinfo=UTC)
+
+
+def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap():
+    c = contract(shapes={"daily": WINDOW}, schema=())
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("a", "a")))
+    ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=("a\x00", "a\x00")))
+    claims = ledger.claims(at(20), window=("a", "a\x00"))
+    assert claims.complete_as_of == at(19)
+    assert len(claims.regions) == 2
+
+
+@pytest.mark.parametrize(
+    "low,high", [(date.min, date.max), (datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC))]
+)
+def test_full_representable_window_delivery_leaves_no_unknown_exterior(low, high):
+    c = contract(shapes={"daily": WINDOW}, schema=())
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(low, high)))
+    assert ledger.claims(at(19)).complete_as_of == at(19)
+    assert len(ledger.regions) == 1
+    assert Ledger.from_json(ledger.to_json()) == ledger
+
+
+def test_first_string_partition_delivery_leaves_no_unknown_region_below_the_empty_string():
+    c = contract(shapes={"daily": WINDOW}, schema=())
+    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("", "")))
+    assert len(ledger.regions) == 2
+    assert ledger.regions[0].complete_as_of == at(19)
+
+
+@pytest.mark.parametrize(
+    "region",
+    [
+        dict(high="", high_open=True),
+        dict(low="a", high="a\x00", low_open=True, high_open=True),
+        dict(high=date.min, high_open=True),
+        dict(low=date.max, low_open=True),
+    ],
+)
+def test_delivery_regions_cannot_contain_an_empty_scalar_interval(region):
+    from dogana import InvalidContract
+
+    with pytest.raises(InvalidContract, match="empty"):
+        Region(**region)
+
+
+def test_delivery_regions_only_touch_their_ordered_successor():
+    left, right = Region(1, 9), Region(10, 20)
+    assert left.touches(right)
+    assert not right.touches(left)

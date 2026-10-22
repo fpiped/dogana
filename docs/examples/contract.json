@@ -1,12 +1,13 @@
 {
+  "cursor_column":null,
   "freshness":{
-    "$seconds":604800.0
+    "$seconds":604800
   },
   "key":[
     "id"
   ],
   "kind":"Contract",
-  "max_shrink_fraction":null,
+  "max_shrink_fraction":0.5,
   "schema":[
     {
       "kind":"Column",
@@ -25,10 +26,11 @@
     "full":{
       "checkpoint":"none",
       "completeness":"complete",
-      "cost":1,
+      "cost":1.0,
       "coverage":"all",
       "deletions":"absence",
       "kind":"Shape",
+      "lookback":null,
       "version":1,
       "window_size":null
     }

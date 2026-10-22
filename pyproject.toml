@@ -10,7 +10,7 @@ dependencies = []
 keywords = ["data-integration", "data-contract", "incremental-loading", "completeness", "ingestion"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "mypy>=1.11"]
 duckdb = ["duckdb>=1.1", "pytz>=2024.1"]
 
 [build-system]
@@ -19,6 +19,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dogana = ["py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

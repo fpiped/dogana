@@ -108,14 +108,16 @@ def test_an_older_disjoint_window_can_establish_previously_unknown_history():
     assert point(ledger, 10).complete_as_of == at(21)
 
 
-def test_the_same_window_manifest_applied_twice_is_one_delivery_even_after_a_later_delivery():
+def test_repeated_window_deliveries_require_a_store_receipt_lookup_before_accounting():
     c = contract()
     first = Manifest(c.table, "daily", at(20), window=(1, 30))
     ledger = Ledger(c).apply(first)
-    assert ledger.apply(first) is ledger
+    with pytest.raises(RejectedDelivery, match="later"):
+        ledger.apply(first)
     ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=(2, 31)))
-    assert ledger.apply(first) is ledger
-    assert len(ledger.accepted) == 2
+    with pytest.raises(RejectedDelivery, match="later"):
+        ledger.apply(first)
+    assert not hasattr(ledger, "accepted")
 
 
 def test_independent_plant_exports_include_unknown_plants_and_empty_decommissioned_plants():
@@ -247,7 +249,7 @@ def test_an_empty_append_interval_cannot_carry_rows():
     c = Contract("events", (), {"log": SINCE}, start_at=at(1))
     with pytest.raises(InvalidContract, match="empty interval"):
         Manifest(c.table, "log", at(1), since=at(1), rows=1).check(c)
-    assert Ledger(c).apply(Manifest(c.table, "log", at(1), since=at(1), rows=0)).accepted
+    assert Ledger(c).apply(Manifest(c.table, "log", at(1), since=at(1), rows=0)).publication_id
 
 
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
@@ -278,24 +280,15 @@ def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     assert len(unknown.in_state(State.UNKNOWN)) == 1
 
 
-def test_a_generation_window_cannot_advance_a_region_whose_cursor_it_skipped():
-    from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
-
-    window_feed = Shape(
-        Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION
-    )
-    c = contract(shapes={"full": FULL, "feed_window": window_feed})
+def test_window_deliveries_preserve_the_table_cursor_for_the_next_global_feed():
+    c = contract()
     ledger = full(c, generation="g1")
-    ledger = ledger.apply(
-        Manifest(c.table, "feed_window", at(19), window=(1, 10), since="g1", generation="g2")
-    )
-    with pytest.raises(RejectedDelivery, match="generation chain"):
-        ledger.apply(Manifest(c.table, "feed_window", at(20), window=(5, 20), since="g2", generation="g3"))
-    ledger = ledger.apply(
-        Manifest(c.table, "feed_window", at(20), window=(1, 10), since="g2", generation="g3")
-    )
-    assert point(ledger, 5).valid_as_of == at(20)
-    assert point(ledger, 15).valid_as_of == at(18)
+    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
+    assert ledger.generation == "g1"
+    assert not hasattr(ledger.regions[0], "generation")
+    ledger = ledger.apply(Manifest(c.table, "feed", at(20), since="g1", generation="g2"))
+    assert ledger.generation == "g2"
+    assert ledger.claims(at(20)).valid_as_of == at(20)
 
 
 @pytest.mark.parametrize(
@@ -344,3 +337,41 @@ def test_window_bounds_must_have_the_window_columns_declared_type():
     )
     with pytest.raises(InvalidContract, match="window bound types"):
         Manifest(c.table, "daily", at(19), window=("2026-10-01", "2026-10-19")).check(c)
+
+
+@pytest.mark.parametrize("since,expected_valid", [(17, 20), (18, 20), (19, 18)])
+def test_timestamp_tombstones_repair_patch_deletion_debt_only_when_the_checkpoint_covers_it(
+    since, expected_valid
+):
+    from dogana import Shape
+
+    tombstones = Shape("all", "changed_only", "tombstone", "timestamp")
+    c = contract(shapes={"full": FULL, "since": SINCE, "deletes": tombstones})
+    ledger = full(c).apply(Manifest(c.table, "since", at(19), since=at(18)))
+    ledger = ledger.apply(Manifest(c.table, "deletes", at(20), since=at(since)))
+    assert ledger.claims(at(20)).valid_as_of == at(expected_valid)
+
+
+def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletions():
+    from dogana import Shape
+
+    feed = Shape("all", "changed_only", "none", "generation")
+    c = contract(shapes={"full": FULL, "patch": feed, "feed": FEED})
+    ledger = full(c, generation="g1")
+    ledger = ledger.apply(Manifest(c.table, "patch", at(19), since="g1", generation="g2"))
+    ledger = ledger.apply(Manifest(c.table, "feed", at(20), since="g2", generation="g3"))
+    assert ledger.claims(at(20)).valid_as_of == at(18)
+
+
+def test_typed_window_queries_refuse_a_different_domain_even_before_the_first_delivery():
+    from dogana import Column
+
+    c = Contract(
+        "stock",
+        ("id",),
+        {"daily": WINDOW},
+        window_column="day",
+        schema=(Column("id", "int"), Column("day", "date")),
+    )
+    with pytest.raises(InvalidContract, match="window bound types"):
+        Ledger(c).claims(at(18), window=(1, 10))

@@ -96,7 +96,7 @@ shape = Shape('all', 'complete', 'absence', 'none')
 c = Contract('stock', ('id',), {'full': shape}, schema=(Column('id', 'int'),))
 m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
 checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
-receipt = Gate.evaluate(Ledger(c), m, checks)
+receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
 assert receipt.claims.state is State.COMPLETE
 assert Ledger.from_json(receipt.ledger.to_json()) == receipt.ledger
@@ -126,3 +126,179 @@ def test_scalar_tag_names_remain_valid_shape_names(name):
 
     c = contract(shapes={name: FULL})
     assert Contract.from_json(c.to_json()) == c
+
+
+def test_every_public_wire_value_is_hashable_and_round_trips():
+    from dogana import (
+        Action,
+        ApplyPlan,
+        Check,
+        CheckRequirement,
+        Column,
+        ExtractionRequest,
+        Gate,
+        Receipt,
+        Region,
+        RegionClaim,
+        Requirement,
+        Shape,
+        Transition,
+    )
+    from tests.support import FULL
+
+    c = contract()
+    m = Manifest(c.table, "full", at(18))
+    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+    receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
+    values = (
+        Column("id", "int"),
+        FULL,
+        c,
+        m,
+        Region(),
+        receipt.ledger,
+        receipt.claims.regions[0],
+        receipt.claims,
+        receipt.transition.plan.actions[0],
+        receipt.transition.plan,
+        CheckRequirement("row_count"),
+        checks[0],
+        receipt.transition,
+        receipt,
+        Requirement(c.table, at(19)),
+        ExtractionRequest(c.table, "full", at(19)),
+    )
+    assert {type(value) for value in values} == {
+        Column,
+        Shape,
+        Contract,
+        Manifest,
+        Region,
+        Ledger,
+        RegionClaim,
+        type(receipt.claims),
+        Action,
+        ApplyPlan,
+        CheckRequirement,
+        Check,
+        Transition,
+        Receipt,
+        Requirement,
+        ExtractionRequest,
+    }
+    for value in values:
+        decoded = type(value).from_json(value.to_json())
+        assert decoded == value
+        assert hash(decoded) == hash(value)
+        assert decoded.identity == value.identity
+
+
+def test_subclasses_cannot_replace_a_registered_wire_kind():
+    from dogana import Shape as ProtocolShape
+    from dogana.wire import Wire
+    from tests.support import FULL
+
+    class Shape(ProtocolShape):
+        pass
+
+    class PrivateValue(Wire):
+        pass
+
+    assert type(ProtocolShape.from_json(FULL.to_json())) is ProtocolShape
+    for kind in ("PrivateValue", "Wire"):
+        with pytest.raises(SerializationError, match="unknown wire kind"):
+            Wire.from_dict({"version": 1, "kind": kind})
+    with pytest.raises(SerializationError, match="unknown wire kind"):
+        Shape("all", "complete", "absence", "none").to_dict()
+
+
+def test_numeric_spellings_and_default_values_do_not_fork_identity():
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from dogana import Shape
+
+    integer = Shape("all", "complete", "absence", "none", cost=2)
+    decimal = replace(integer, cost=2.0)
+    assert integer == decimal
+    assert hash(integer) == hash(decimal)
+    assert integer.to_json() == decimal.to_json()
+    assert integer.identity_json() == decimal.identity_json()
+    assert integer.identity_dict()["cost"] == 2
+    assert "cost" not in replace(integer, cost=1).identity_dict()
+    c = Contract("stock", ("id",), {"full": integer})
+    assert "freshness" not in c.identity_dict()
+    assert "max_shrink_fraction" not in c.identity_dict()
+    assert replace(c, max_shrink_fraction=None).identity_dict()["max_shrink_fraction"] is None
+    assert replace(c, freshness=timedelta(seconds=2)).identity_dict()["freshness"] == {"$seconds": 2}
+
+
+def test_identity_excludes_versions_recursively(monkeypatch):
+    from dogana.wire import Wire
+
+    value = Ledger(contract())
+    identity = value.identity
+    monkeypatch.setattr(Wire, "version", 2)
+    assert value.to_dict()["version"] == 2
+    assert value.to_dict()["contract"]["version"] == 2
+    assert value.identity == identity
+
+
+def test_key_set_order_and_timestamp_offsets_do_not_change_manifest_identity():
+    from dataclasses import replace
+    from datetime import timedelta, timezone
+
+    m = Manifest("stock", "feed", at(18), keys=((2,), (10,)), tombstones=((3,), (1,)))
+    other = replace(
+        m,
+        keys=tuple(reversed(m.keys)),
+        tombstones=tuple(reversed(m.tombstones)),
+        produced_at=at(18).astimezone(timezone(timedelta(hours=2))),
+    )
+    assert other.identity == m.identity
+    assert m.identity_dict()["keys"] == [[10], [2]]
+    assert m.identity_dict()["tombstones"] == [[1], [3]]
+    assert m.identity_dict()["produced_at"] == {"$datetime": "2026-10-18T00:00:00+00:00"}
+
+
+def test_replay_marker_preserves_the_original_receipt_identity_and_clock():
+    from dataclasses import replace
+
+    from dogana import Check, Gate, Receipt
+
+    c = contract()
+    m = Manifest(c.table, "full", at(18))
+    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+    original = Gate.evaluate(Ledger(c), m, checks, now=at(19), source="stock.csv")
+    replay = replace(original, replayed=True)
+    assert replay.identity == original.identity
+    assert replay.received_at == original.received_at
+    assert replay.to_dict()["replayed"] is True
+    assert "replayed" not in replay.identity_dict()
+    assert Receipt.from_json(replay.to_json()) == replay
+    assert replace(original, source="corrected.csv").identity != original.identity
+    assert replace(original, received_at=at(20)).identity != original.identity
+
+
+def test_removed_history_fields_are_refused_on_the_wire():
+    from dogana import Region
+
+    for value, field, extra in ((Ledger(contract()), "accepted", []), (Region(), "generation", None)):
+        raw = value.to_dict()
+        raw[field] = extra
+        with pytest.raises(SerializationError, match="unknown fields"):
+            type(value).from_dict(raw)
+
+
+def test_new_default_fields_remain_required_on_the_wire():
+    from dogana import Shape
+
+    for value, field in (
+        (contract(), "cursor_column"),
+        (Manifest("stock", "full", at(18)), "content_hash"),
+        (Shape("all", "complete", "absence", "none"), "lookback"),
+    ):
+        raw = value.to_dict()
+        del raw[field]
+        with pytest.raises(SerializationError, match=f"missing fields.*{field}"):
+            type(value).from_dict(raw)

@@ -1,17 +1,17 @@
 import csv
 from contextlib import contextmanager
+from threading import Event
 from uuid import uuid4
 
 import pytest
 
 from dogana.conformance import StoreConformance
-from tests.memory_store import MemoryStore, OrderedMemoryStore
+from tests.memory_store import CommitMemoryStore, MemoryStore
 
 
 class MemoryFactory:
     def __init__(self, store_type, monkeypatch):
         self.store_type, self.monkeypatch = store_type, monkeypatch
-        self.atomic_append = store_type.atomic_append
 
     def make_store(self):
         return self.store_type()
@@ -34,13 +34,30 @@ class MemoryFactory:
     def set_ledger(self, store, ledger):
         store.state[1][ledger.contract.table] = ledger
 
+    def remove_ledger(self, store, table):
+        store.state[1].pop(table, None)
+
+    def read_publication(self, store, contract):
+        with store.lock:
+            return store.read(contract.table), store.load_ledger(contract)
+
+    @contextmanager
+    def pause_after_rows(self, store):
+        written, resume = Event(), Event()
+
+        def pause():
+            written.set()
+            assert resume.wait(5)
+
+        with self.monkeypatch.context() as patch:
+            patch.setattr(store, "_after_rows", pause)
+            yield written, resume
+
     def set_stamp(self, store, table, publication_id):
         store.state[0][table] = store.state[0][table][0], publication_id
 
 
 class DuckDBFactory:
-    atomic_append = True
-
     def __init__(self, folder, monkeypatch):
         self.folder, self.monkeypatch = folder, monkeypatch
 
@@ -78,6 +95,26 @@ class DuckDBFactory:
             [ledger.contract.table, ledger.to_json()],
         )
 
+    def remove_ledger(self, store, table):
+        store.connection.execute("DELETE FROM __dogana_ledgers WHERE table_name=?", [table])
+
+    def read_publication(self, store, contract):
+        return store.read_publication(contract)
+
+    @contextmanager
+    def pause_after_rows(self, store):
+        written, resume = Event(), Event()
+        original = store.execute
+
+        def pause(candidate, plan):
+            original(candidate, plan)
+            written.set()
+            assert resume.wait(5)
+
+        with self.monkeypatch.context() as patch:
+            patch.setattr(store, "execute", pause)
+            yield written, resume
+
     def set_stamp(self, store, table, publication_id):
         if publication_id is None:
             store.connection.execute("DELETE FROM __dogana_publications WHERE table_name=?", [table])
@@ -93,10 +130,10 @@ class TestAtomicMemory(StoreConformance):
         return MemoryFactory(MemoryStore, monkeypatch)
 
 
-class TestOrderedMemory(StoreConformance):
+class TestCommitMemory(StoreConformance):
     @pytest.fixture
     def factory(self, monkeypatch):
-        return MemoryFactory(OrderedMemoryStore, monkeypatch)
+        return MemoryFactory(CommitMemoryStore, monkeypatch)
 
 
 class TestDuckDB(StoreConformance):
@@ -106,32 +143,25 @@ class TestDuckDB(StoreConformance):
         return DuckDBFactory(tmp_path, monkeypatch)
 
 
-def test_an_ordered_receipt_written_before_a_crash_repairs_the_ledger_before_replay(monkeypatch):
-    from dogana import InconsistentPublication, Ledger
+def test_a_commit_failure_before_publication_leaves_no_receipt_or_rows(monkeypatch):
+    from dogana import Manifest, StoreError, deliver
     from tests.integration.support import row
     from tests.support import at, contract
 
     c = contract()
-    store = OrderedMemoryStore()
-    factory = MemoryFactory(OrderedMemoryStore, monkeypatch)
-    suite = StoreConformance()
-    first = suite._deliver(factory, store, c, [row(1)])
+    store = CommitMemoryStore()
+    first_manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
+    first = deliver(store, c, [row(1)], first_manifest, at(20))
 
     def fail():
-        raise OSError("interrupted after receipt")
+        raise OSError("interrupted before commit")
 
     with monkeypatch.context() as patch:
-        patch.setattr(store, "_after_receipt", fail)
-        from dogana import Manifest
-
+        patch.setattr(store, "_after_rows", fail)
         manifest = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
-        failed = store.deliver(c, [row(2)], manifest)
-    assert not failed.accepted
-    with pytest.raises(InconsistentPublication, match="stamp ahead"):
-        store.load_ledger(c)
-    replay = store.deliver(c, object(), manifest)
-    assert replay.accepted
-    assert replay.ledger != first.ledger
-    assert store.load_ledger(c) == Ledger.from_receipts(c, store.receipts(c.table))
-    assert factory.read_table(store, c.table) == [row(2)]
-    assert not store.pending
+        with pytest.raises(StoreError, match="interrupted before commit"):
+            deliver(store, c, [row(2)], manifest, at(20))
+    assert store.load_ledger(c) == first.ledger
+    assert store.receipts(c.table) == (first,)
+    assert store.read(c.table) == [row(1)]
+    assert not store.candidates

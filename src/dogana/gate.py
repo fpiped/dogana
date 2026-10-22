@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from .contract import Contract, Coverage, Manifest, Scalar, Window
-from .ledger import Claims, Ledger, Region, RejectedDelivery
-from .wire import InvalidContract, Wire
+from .contract import Checkpoint, Contract, Coverage, Manifest, Scalar, Window, bounds, identifier
+from .errors import InvalidContract, RejectedDelivery
+from .ledger import Claims, Ledger, Region
+from .wire import Wire, utc
 
 
 class Operation(StrEnum):
@@ -25,9 +26,15 @@ class Action(Wire):
     window: Window | None = None
     keys: tuple[tuple[Scalar, ...], ...] = ()
 
-    def __post_init__(self):
-        object.__setattr__(self, "operation", Operation(self.operation))
-        object.__setattr__(self, "keys", tuple(tuple(k) for k in self.keys))
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "window", bounds(self.window))
+        if (self.operation is Operation.REPLACE_WINDOW) != (self.window is not None):
+            raise InvalidContract("only replace_window actions supply a window")
+        if self.keys and self.operation not in (Operation.UPSERT, Operation.TOMBSTONE):
+            raise InvalidContract("only key actions supply keys")
+        if any(not key for key in self.keys) or len(set(self.keys)) != len(self.keys):
+            raise InvalidContract("action keys must be nonempty and distinct")
 
 
 @dataclass(frozen=True)
@@ -37,13 +44,27 @@ class ApplyPlan(Wire):
     window_column: str | None
     actions: tuple[Action, ...]
 
-    def __post_init__(self):
-        object.__setattr__(self, "key", tuple(self.key))
-        object.__setattr__(self, "actions", tuple(self.actions))
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        identifier(self.table)
+        for name in self.key:
+            identifier(name)
+        if len(set(self.key)) != len(self.key):
+            raise InvalidContract("duplicate plan key column")
+        if self.window_column is not None:
+            identifier(self.window_column)
+        for action in self.actions:
+            if action.window is not None and self.window_column is None:
+                raise InvalidContract("window actions need a window column")
+            if action.operation in (Operation.UPSERT, Operation.TOMBSTONE) and not self.key:
+                raise InvalidContract("key actions need a key")
+            if any(len(key) != len(self.key) for key in action.keys):
+                raise InvalidContract("action keys must have the plan key width")
 
     @classmethod
     def build(cls, contract: Contract, manifest: Manifest) -> ApplyPlan:
         shape = manifest.check(contract)
+        actions: tuple[Action, ...]
         if not shape.complete and not contract.key:
             actions = (Action(Operation.APPEND),)
         elif shape.complete:
@@ -63,6 +84,11 @@ class ApplyPlan(Wire):
 class CheckRequirement(Wire):
     name: str
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.name:
+            raise InvalidContract("a required check needs a name")
+
 
 @dataclass(frozen=True)
 class Check(Wire):
@@ -70,13 +96,10 @@ class Check(Wire):
     passed: bool
     detail: str = ""
 
-    def __post_init__(self):
-        if (
-            type(self.passed) is not bool
-            or not isinstance(self.name, str)
-            or not isinstance(self.detail, str)
-        ):
-            raise InvalidContract("a check has a name, boolean outcome and text detail")
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.name:
+            raise InvalidContract("a check needs a name")
 
 
 @dataclass(frozen=True)
@@ -84,6 +107,11 @@ class Transition(Wire):
     before: tuple[Region, ...]
     after: tuple[Region, ...]
     plan: ApplyPlan
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.before or not self.after:
+            raise InvalidContract("a transition needs preceding and resulting regions")
 
 
 @dataclass(frozen=True)
@@ -95,26 +123,42 @@ class Receipt(Wire):
     ledger: Ledger
     claims: Claims
     publication_id: str | None
+    received_at: datetime
+    replayed: bool = False
+    source: str | None = None
+    base_publication_id: str | None = None
 
-    def __post_init__(self):
-        object.__setattr__(self, "checks", tuple(self.checks))
+    def __post_init__(self) -> None:
+        super().__post_init__()
         if self.accepted != (self.transition is not None):
             raise InvalidContract("only accepted receipts contain a transition")
         if self.accepted and not all(c.passed for c in self.checks):
             raise InvalidContract("accepted receipts require passing checks")
         if self.publication_id != self.ledger.publication_id:
             raise InvalidContract("receipt publication must identify its ledger")
+        if self.replayed and not self.accepted:
+            raise InvalidContract("only accepted receipts can be replayed")
+        if self.transition is not None and self.transition.after != self.ledger.regions:
+            raise InvalidContract("receipt transition must establish its ledger regions")
+        if self.accepted and self.manifest.produced_at > self.received_at:
+            raise InvalidContract("accepted receipts cannot attest a future source boundary")
+        if not self.accepted and self.base_publication_id != self.publication_id:
+            raise InvalidContract("rejected receipts retain their base publication")
 
 
 class Gate:
     @staticmethod
     def requirements(contract: Contract, manifest: Manifest) -> tuple[CheckRequirement, ...]:
         shape = manifest.check(contract)
-        names = ["row_count", "schema_hash"]
+        names = ["row_count"]
+        if contract.schema:
+            names.append("schema_hash")
         if manifest.window is not None:
             names.append("rows_in_window")
         if contract.window_column is not None:
             names.append("window_stability")
+        if contract.cursor_column is not None and shape.checkpoint is Checkpoint.TIMESTAMP:
+            names.append("rows_in_interval")
         if contract.key:
             names.append("key_integrity")
         if shape.coverage is Coverage.KEYS or manifest.keys or manifest.tombstones:
@@ -124,16 +168,47 @@ class Gate:
         return tuple(CheckRequirement(n) for n in names)
 
     @staticmethod
-    def preflight(ledger: Ledger, manifest: Manifest) -> tuple[Check, ...]:
+    def preflight(ledger: Ledger, manifest: Manifest, *, now: datetime) -> tuple[Check, ...]:
+        now = utc(now)
         try:
             manifest.check(ledger.contract)
-        except (InvalidContract, TypeError, ValueError) as exc:
+        except InvalidContract as exc:
             return (Check("manifest", False, str(exc)),)
+        if manifest.produced_at > now:
+            return (
+                Check("manifest", True),
+                Check("receiver_time", False, "source boundary is after receiver time"),
+            )
         try:
             ledger.apply(manifest)
-        except (InvalidContract, RejectedDelivery, TypeError, ValueError) as exc:
+        except (InvalidContract, RejectedDelivery) as exc:
             return (Check("manifest", True), Check("transition", False, str(exc)))
-        return (Check("manifest", True), Check("transition", True))
+        return (Check("manifest", True), Check("receiver_time", True), Check("transition", True))
+
+    @staticmethod
+    def reject(
+        ledger: Ledger,
+        manifest: Manifest,
+        checks: tuple[Check, ...],
+        *,
+        now: datetime,
+        source: str | None = None,
+    ) -> Receipt:
+        now = utc(now)
+        if not checks or all(check.passed for check in checks):
+            raise InvalidContract("a rejection needs a failed check")
+        return Receipt(
+            manifest,
+            checks,
+            False,
+            None,
+            ledger,
+            ledger.claims(now),
+            ledger.publication_id,
+            now,
+            source=source,
+            base_publication_id=ledger.publication_id,
+        )
 
     @classmethod
     def evaluate(
@@ -142,16 +217,17 @@ class Gate:
         manifest: Manifest,
         outcomes: tuple[Check, ...] = (),
         *,
-        now: datetime | None = None,
+        now: datetime,
+        source: str | None = None,
     ) -> Receipt:
-        checks = cls.preflight(ledger, manifest)
-        replay = manifest.identity in ledger.accepted
-        if replay:
-            checks += (Check("replay", True, "already accounted; return the original store receipt"),)
-        if all(c.passed for c in checks) and not replay:
+        now = utc(now)
+        if not isinstance(outcomes, (tuple, list)) or any(not isinstance(c, Check) for c in outcomes):
+            raise InvalidContract("row outcomes must be Check values")
+        checks = cls.preflight(ledger, manifest, now=now)
+        if all(c.passed for c in checks):
             expected = {r.name for r in cls.requirements(ledger.contract, manifest)}
             names = [c.name for c in outcomes]
-            checks += outcomes
+            checks += tuple(outcomes)
             checks += (
                 Check(
                     "check_set",
@@ -159,18 +235,20 @@ class Gate:
                     "one outcome per required row check",
                 ),
             )
-        accepted = all(c.passed for c in checks)
-        after = ledger.apply(manifest) if accepted else ledger
-        plan = ApplyPlan.build(ledger.contract, manifest) if accepted else None
-        if replay and plan is not None:
-            plan = ApplyPlan(plan.table, plan.key, plan.window_column, ())
-        transition = Transition(ledger.regions, after.regions, plan) if accepted else None
+        if not all(c.passed for c in checks):
+            return cls.reject(ledger, manifest, checks, now=now, source=source)
+        after = ledger.apply(manifest)
+        plan = ApplyPlan.build(ledger.contract, manifest)
+        transition = Transition(ledger.regions, after.regions, plan)
         return Receipt(
             manifest,
             checks,
-            accepted,
+            True,
             transition,
             after,
-            after.claims(now or manifest.produced_at),
+            after.claims(now),
             after.publication_id,
+            now,
+            source=source,
+            base_publication_id=ledger.publication_id,
         )

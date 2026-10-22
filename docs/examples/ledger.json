@@ -1,16 +1,14 @@
 {
-  "accepted":[
-    "168dae53c6e16ccfe410a31ad90423f415d681ada476d7b8fae4af16b1a8066d"
-  ],
   "contract":{
+    "cursor_column":null,
     "freshness":{
-      "$seconds":604800.0
+      "$seconds":604800
     },
     "key":[
       "id"
     ],
     "kind":"Contract",
-    "max_shrink_fraction":null,
+    "max_shrink_fraction":0.5,
     "schema":[
       {
         "kind":"Column",
@@ -29,10 +27,11 @@
       "full":{
         "checkpoint":"none",
         "completeness":"complete",
-        "cost":1,
+        "cost":1.0,
         "coverage":"all",
         "deletions":"absence",
         "kind":"Shape",
+        "lookback":null,
         "version":1,
         "window_size":null
       }
@@ -44,13 +43,12 @@
   },
   "generation":null,
   "kind":"Ledger",
-  "publication_id":"bea3ebff5a1c9a9368c0289270534dda203c80e5f7a720ee2aacb824c8a8ac47",
+  "publication_id":"7410632d3dbbd92b420536b24b2c96da2aebd428a177270e53d1f8a2bd1a385d",
   "regions":[
     {
       "complete_as_of":{
         "$datetime":"2026-10-18T00:00:00+00:00"
       },
-      "generation":null,
       "high":null,
       "high_open":false,
       "kind":"Region",

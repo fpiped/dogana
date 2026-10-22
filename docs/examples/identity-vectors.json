@@ -1,0 +1,142 @@
+{
+  "examples": {
+    "contract": "56ede4a996efc04319d5e0a1b84e68916bc62ea6f780b48d82fec361eb311831",
+    "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
+    "ledger": "86320694e3ff2128f83f9a86666dafa0871c0414ca6b7f754455d85190f97d03",
+    "receipt": "a5c960d23d0d6bf6d7a892ea994c03a054af1242d46640f4eb2f179df2934dda"
+  },
+  "vectors": [
+    {
+      "name": "shape-defaults",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "all",
+        "completeness": "complete",
+        "deletions": "absence",
+        "checkpoint": "none",
+        "cost": 1.0,
+        "window_size": null,
+        "lookback": null
+      },
+      "canonical": "{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}",
+      "sha256": "1f3d8a81371c56628451522a6517616388d15ddc8e9fb93cd70f4a99ebbc0417"
+    },
+    {
+      "name": "shape-numbers-and-durations",
+      "wire": {
+        "kind": "Shape",
+        "version": 1,
+        "coverage": "window",
+        "completeness": "changed_only",
+        "deletions": "tombstone",
+        "checkpoint": "timestamp",
+        "cost": 2.0,
+        "window_size": {
+          "$seconds": 86400
+        },
+        "lookback": {
+          "$seconds": 0.500001
+        }
+      },
+      "canonical": "{\"checkpoint\":\"timestamp\",\"completeness\":\"changed_only\",\"cost\":2,\"coverage\":\"window\",\"deletions\":\"tombstone\",\"kind\":\"Shape\",\"lookback\":{\"$seconds\":0.500001},\"window_size\":{\"$seconds\":86400}}",
+      "sha256": "97f5914a7464d8b2d54267210361b222e4ea3c387bd0ad8db8be7a97dfda1f76"
+    },
+    {
+      "name": "minimal-manifest",
+      "wire": {
+        "kind": "Manifest",
+        "version": 1,
+        "table": "stock",
+        "shape": "full",
+        "produced_at": {
+          "$datetime": "2026-10-18T00:00:00+00:00"
+        },
+        "window": null,
+        "since": null,
+        "generation": null,
+        "rows": null,
+        "schema_hash": null,
+        "keys": [],
+        "tombstones": [],
+        "content_hash": null
+      },
+      "canonical": "{\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
+      "sha256": "31b5b0420d68fd744536c43bc48c79c11be628a8a5dea862cbc907a50e230b96"
+    },
+    {
+      "name": "unicode-key-order-and-utc",
+      "wire": {
+        "kind": "Manifest",
+        "version": 1,
+        "table": "stock",
+        "shape": "r\u00e9cent",
+        "produced_at": {
+          "$datetime": "2026-10-18T02:00:00.123456+02:00"
+        },
+        "window": null,
+        "since": null,
+        "generation": null,
+        "rows": 2,
+        "schema_hash": null,
+        "keys": [
+          [
+            2,
+            "\u00e9"
+          ],
+          [
+            10,
+            "e\u0301"
+          ]
+        ],
+        "tombstones": [
+          [
+            3,
+            "c"
+          ],
+          [
+            1,
+            "a"
+          ]
+        ],
+        "content_hash": "sha256:changed"
+      },
+      "canonical": "{\"content_hash\":\"sha256:changed\",\"keys\":[[10,\"e\\u0301\"],[2,\"\\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
+      "sha256": "e0b7b27ae9f5e689fad431684096ac94ed4c33420bebe642aff9a8315ed4dd84"
+    },
+    {
+      "name": "explicit-disabled-shrink",
+      "wire": {
+        "kind": "Contract",
+        "version": 1,
+        "table": "stock",
+        "key": [
+          "id"
+        ],
+        "shapes": {
+          "full": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          }
+        },
+        "window_column": null,
+        "schema": [],
+        "max_shrink_fraction": null,
+        "freshness": {
+          "$seconds": 604800
+        },
+        "start_at": null,
+        "cursor_column": null
+      },
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\"}",
+      "sha256": "1e14b29a2dd7707cec46fd42b94cfbe4409795d855487810bda82ced3803475e"
+    }
+  ]
+}

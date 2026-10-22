@@ -9,13 +9,13 @@ from tests.support import at, contract
 def publication(ledger, day):
     manifest = Manifest(ledger.contract.table, "full", at(day))
     checks = tuple(Check(r.name, True) for r in Gate.requirements(ledger.contract, manifest))
-    return Gate.evaluate(ledger, manifest, checks)
+    return Gate.evaluate(ledger, manifest, checks, now=at(25))
 
 
 def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     c = contract()
     first = publication(Ledger(c), 18)
-    refused = Gate.evaluate(first.ledger, Manifest(c.table, "full", at(17)))
+    refused = Gate.evaluate(first.ledger, Manifest(c.table, "full", at(17)), now=at(25))
     second = publication(first.ledger, 19)
     assert Ledger.from_receipts(c, iter((first, refused, second))) == second.ledger
     assert Ledger.from_receipts(c, ()) == Ledger(c)
@@ -35,3 +35,50 @@ def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):
     }[problem]
     with pytest.raises(InconsistentPublication):
         Ledger.from_receipts(c, receipts)
+
+
+def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
+    from datetime import timedelta
+
+    c = contract()
+    first = publication(Ledger(c), 18)
+    newer = replace(c, freshness=timedelta(days=2), max_shrink_fraction=None)
+    second = publication(first.ledger.with_contract(newer), 19)
+    assert first.ledger.contract == c
+    assert second.ledger.contract == newer
+    rebuilt = Ledger.from_receipts(newer, (first, second))
+    assert rebuilt == second.ledger
+    assert Ledger.from_receipts(c, (first, second)) == second.ledger.with_contract(c)
+    assert second.base_publication_id == first.publication_id
+
+
+def test_replayed_full_delivery_receipt_retains_its_original_identity_and_receiving_time():
+    first = publication(Ledger(contract()), 18)
+    replay = replace(first, replayed=True)
+    assert replay.identity == first.identity
+    assert replay.received_at == first.received_at
+    assert replay != first
+    assert replay.to_json() != first.to_json()
+
+
+def test_many_full_deliveries_keep_receipt_size_bounded_by_regions_not_history():
+    from datetime import timedelta
+
+    from dogana import Contract
+    from tests.support import FULL
+
+    c = Contract("stock", ("id",), {"full": FULL})
+    ledger = Ledger(c)
+    sizes = []
+    for index in range(1000):
+        boundary = at(18) + timedelta(seconds=index)
+        manifest = Manifest(c.table, "full", boundary)
+        checks = tuple(Check(r.name, True) for r in Gate.requirements(c, manifest))
+        receipt = Gate.evaluate(ledger, manifest, checks, now=boundary)
+        assert receipt.accepted
+        ledger = receipt.ledger
+        if index in (1, 999):
+            sizes.append(len(receipt.to_json()))
+    assert abs(sizes[1] - sizes[0]) < 100
+    assert len(ledger.regions) == 1
+    assert "accepted" not in ledger.to_dict()
