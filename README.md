@@ -14,10 +14,8 @@ file lacks an invoice dated last week: it was deleted, and the file proves it. T
 invoice from March was also deleted at the ERP, but March is outside the window, so the file says
 nothing about it. The row stays in your landing table until Sunday.
 
-Every incremental pipeline lives with this. The usual answer is a weekly full refresh and a shrug in
-between. What is missing is the record: which parts of the table are complete as of when, which may
-still hold deleted rows, and which have never been delivered at all. Without it, "items with no
-movement" is computed over rows that should be gone, and nobody can say so.
+Between full refreshes, a reader needs to know which regions may retain deleted rows and which
+have never arrived. Otherwise "items with no movement" includes rows that should be gone.
 
 dogana keeps that record as two dates per region of a table:
 
@@ -100,11 +98,9 @@ assert history == [
 ]
 ```
 
-Read the history line by line. Sunday 18: a full export, both dates are the 18th everywhere.
-Monday 19: the window deleted order 2 (inside the window, absent from the file) and kept order 1
-(outside the window, so the file proves nothing about it). Inside the window both dates are now the
-19th, but the dates of the whole table stay at the 18th, because the weakest region decides.
-Sunday 25: the full export removes order 1 and moves everything to the 25th.
+Sunday 18 establishes both dates everywhere. Monday's window deletes order 2 but keeps order 1
+outside it. The whole table stays at the 18th because its weakest region decides. Sunday 25 removes
+order 1 and moves both dates everywhere to the 25th.
 
 Ask for the window alone and the answer changes:
 
@@ -112,9 +108,79 @@ Ask for the window alone and the answer changes:
 assert ledger.claims(manifest.produced_at, window=window).valid_as_of.date() == date(2026, 10, 25)
 ```
 
-Every receipt and every publication stays readable. A file that contradicts its manifest (rows
+Every receipt stays readable. A file that contradicts its manifest (rows
 outside the window, a wrong count, a column gone) is refused, leaves rows and ledger untouched, and
 still gets a receipt that says why.
+
+## Without a store
+
+An existing loader can use the core alone. Here the published rows, stamp, ledger and receipts
+share one in-memory state; replacing that state publishes them together.
+
+```python
+from dogana import Check, Gate, Ledger, Operation
+
+memory_contract = Contract(
+    "items", ("id",), {"full": Shape("all", "complete", "absence", "none")},
+    schema=(Column("id", "int"),),
+)
+memory_state = ([], Ledger(memory_contract), (), None)
+candidate_rows = [{"id": 1}, {"id": 2}]
+memory_manifest = Manifest(
+    "items", "full", datetime(2026, 10, 18, tzinfo=timezone.utc),
+    rows=2, schema_hash=memory_contract.schema_hash,
+)
+
+published_rows, memory_ledger, receipts, stamp = memory_state
+assert stamp == memory_ledger.publication_id
+memory_manifest.check(memory_contract)
+requirements = Gate.requirements(memory_contract, memory_manifest)
+results = {
+    "row_count": len(candidate_rows) == memory_manifest.rows,
+    "schema_hash": memory_manifest.schema_hash == memory_contract.schema_hash and all(
+        tuple(row) == ("id",) and type(row["id"]) is int for row in candidate_rows
+    ),
+    "key_integrity": len({row["id"] for row in candidate_rows}) == len(candidate_rows)
+                     and all(row["id"] is not None for row in candidate_rows),
+}
+checks = tuple(Check(r.name, results[r.name]) for r in requirements)
+memory_receipt = Gate.evaluate(memory_ledger, memory_manifest, checks)
+if memory_receipt.accepted:
+    for action in memory_receipt.transition.plan.actions:
+        assert action.operation is Operation.REPLACE_ALL
+        published_rows = list(candidate_rows)
+memory_state = (
+    published_rows, memory_receipt.ledger, receipts + (memory_receipt,), memory_receipt.publication_id,
+)
+assert memory_receipt.accepted and memory_state[0] == candidate_rows
+assert Ledger.from_receipts(memory_contract, memory_state[2]) == memory_state[1]
+```
+
+A production loader meets four obligations:
+
+- Check candidate rows before changing published rows.
+- Publish rows, stamp, ledger and receipt together, or use the protocol's recovery ordering.
+- Keep accepted and rejected receipts so evidence can be rebuilt.
+- Return the stored receipt for an accepted manifest replay.
+
+Run `dogana.conformance.StoreConformance` against your store; [reference](docs/reference.md) shows
+the factory and fault hooks. The example above handles a full replacement only.
+
+## The concepts, in the order you meet them
+
+| Term | What it is |
+|---|---|
+| Contract | One table: key, schema, admitted delivery shapes, optional window column. |
+| Shape | How a delivery was produced: coverage (all, window, keys), completeness (complete, changed only), deletion signal (absence, tombstone, none), checkpoint (generation, timestamp, none). Fourteen combinations are valid. |
+| Manifest | What one delivery claims: its shape, the source read boundary, window, count, schema hash. Written by the sender as a sidecar, derived from a file name, or produced by your own extraction. |
+| Gate | Checks the claim against the contract and the rows against the claim. Accept or reject, never partially. |
+| Ledger | Disjoint regions of the key space, each with the two dates. Never delivered regions stay visible as unknown. |
+| State | Per region: unknown, complete, patched (deleted rows may remain), expired (older than the freshness limit). |
+| Claims | What a reader may rely on, for a table or a set of tables: the weakest dates and the state of every region. |
+| Receipt | The audit record: manifest, checks, transition, resulting claims, publication identity. The ledger can be rebuilt from receipts. |
+
+The [protocol](docs/protocol.md) defines every term and transition. It is the authority; the code
+follows it.
 
 ## Pull mode
 
@@ -136,22 +202,6 @@ assert rolling.interval == (date(2026, 9, 27), date(2026, 10, 26))
 The request goes to your extractor. What comes back passes through the same gate as a pushed file,
 so push and pull produce the same ledger for the same deliveries.
 
-## The concepts, in the order you meet them
-
-| Term | What it is |
-|---|---|
-| Contract | One table: key, schema, admitted delivery shapes, optional window column. |
-| Shape | How a delivery was produced: coverage (all, window, keys), completeness (complete, changed only), deletion signal (absence, tombstone, none), checkpoint (generation, timestamp, none). Fourteen combinations are valid. |
-| Manifest | What one delivery claims: its shape, the source read boundary, window, count, schema hash. Written by the sender as a sidecar, derived from a file name, or produced by your own extraction. |
-| Gate | Checks the claim against the contract and the rows against the claim. Accept or reject, never partially. |
-| Ledger | Disjoint regions of the key space, each with the two dates. Never delivered regions stay visible as unknown. |
-| State | Per region: unknown, complete, patched (deleted rows may remain), expired (older than the freshness limit). |
-| Claims | What a reader may rely on, for a table or a set of tables: the weakest dates and the state of every region. |
-| Receipt | The audit record: manifest, checks, transition, resulting claims, publication identity. The ledger can be rebuilt from receipts. |
-
-The [protocol](docs/protocol.md) defines every term and transition. It is the authority; the code
-follows it.
-
 ## Common source patterns
 
 | Source | Shapes | What the ledger says |
@@ -170,10 +220,14 @@ follows it.
 - Not a quality monitor. Soda or Great Expectations test row values; dogana tracks what a delivery proved.
 - Not a store. Rows live in DuckDB, Postgres, Iceberg or DuckLake. The store executes plans the core emits as values.
 
-The reference implementations (DuckDB store, file drop) exist to prove the interfaces, not to be the
-product. [Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg,
+The DuckDB store and file drop are reference implementations. [Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg,
 DuckLake, Dagster and the observability tools. [Architecture](docs/architecture.md) explains the
 design and what it borrows from projects that got these questions right.
+
+## Who should not use it
+
+If every source uses log-based CDC with soft deletes, your replica already captures absence.
+Both dates would stay equal; this ledger adds little.
 
 ## Grounding
 
@@ -185,10 +239,9 @@ one.
 
 ## Status
 
-Protocol version 1, reference implementation, no release yet. 148 tests cover the transitions, the
-gate, JSON round trips, pull planning, and a week of files for three tables through DuckDB. The
-README code blocks run in the test suite. Next: a dlt extractor adapter, a DuckLake store, contract
-evolution.
+Protocol version 1, no release yet. 225 tests cover transitions, JSON, planning, runnable README
+examples and store obligations. A conformance suite proves a store; DuckDB and file drop are
+reference implementations. Contract evolution remains open.
 
 ## Licence
 
