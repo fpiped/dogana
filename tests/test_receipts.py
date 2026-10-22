@@ -7,7 +7,7 @@ from tests.support import at, contract
 
 
 def publication(ledger, day):
-    manifest = Manifest(ledger.contract.table, "full", at(day))
+    manifest = ledger.contract.manifest("full", at(day))
     checks = tuple(Check(r.name, True) for r in Gate.requirements(ledger.contract, manifest))
     return Gate.evaluate(ledger, manifest, checks, now=at(25))
 
@@ -67,7 +67,7 @@ def test_many_full_deliveries_keep_receipt_size_bounded_by_regions_not_history()
     from dogana import Contract
     from tests.support import FULL
 
-    c = Contract("stock", ("id",), {"full": FULL})
+    c = Contract("stock", ("id",), {"full": FULL}, types={"id": "int"})
     ledger = Ledger(c)
     sizes = []
     for index in range(1000):

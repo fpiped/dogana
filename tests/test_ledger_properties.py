@@ -10,7 +10,6 @@ from hypothesis import strategies as st
 
 from dogana import (
     Claims,
-    Column,
     Contract,
     Deletions,
     Ledger,
@@ -35,7 +34,7 @@ CONTRACT = Contract(
         "global_deletes": replace(SINCE, deletions=Deletions.TOMBSTONE),
     },
     window_column="bucket",
-    schema=(Column("id", "int"), Column("bucket", "int")),
+    types={"id": "int", "bucket": "int"},
     max_shrink_fraction=None,
 )
 LAWS = settings(max_examples=80, deadline=None, database=None)

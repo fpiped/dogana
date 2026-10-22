@@ -47,6 +47,7 @@ from dogana.errors import (
     SerializationError,
     StoreError,
 )
+from dogana.reference._sources import _column_hash, _columns, _FileSource, _RowSource
 
 _TYPES = {
     "int": "BIGINT",
@@ -116,6 +117,8 @@ class _Candidate:
     manifest: Manifest
     contract: Contract | None
     csv: bool = False
+    columns: Mapping[str, str] | None = None
+    header: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,8 @@ class _Audit:
     contract: Contract
     delivery: ParsedDelivery
     count: int
+    columns: Mapping[str, str]
+    schema_error: str | None
 
     @property
     def manifest(self) -> Manifest:
@@ -406,7 +411,8 @@ class DuckDBStore:
         if self._transaction is not None:
             raise StoreError("publish or abort the existing candidate first")
         candidate = "__dogana_candidate_" + uuid4().hex
-        self._candidates[candidate] = _Candidate(manifest, contract)
+        columns = source.columns if isinstance(source, (_FileSource, _RowSource)) else None
+        self._candidates[candidate] = _Candidate(manifest, contract, columns=columns)
         try:
             if isinstance(source, (str, PathLike)):
                 path = Path(source)
@@ -419,11 +425,21 @@ class DuckDBStore:
                     raise StoreError("the delivered path must be a regular file")
                 suffix = path.suffix.lower()
                 if suffix == ".csv":
-                    self._candidates[candidate] = _Candidate(manifest, contract, csv=True)
+                    header = self.connection.execute(
+                        "SELECT * FROM read_csv(?, header=false, all_varchar=true, sample_size=-1) LIMIT 1",
+                        [[str(path)]],
+                    ).fetchone()
+                    self._candidates[candidate] = _Candidate(
+                        manifest,
+                        contract,
+                        csv=columns is not None,
+                        columns=columns,
+                        header=tuple(value if value is not None else "" for value in header or ()),
+                    )
                     self.connection.execute(
                         f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
-                        "FROM read_csv(?, header=true, all_varchar=true, sample_size=-1)",
-                        [[str(path)]],
+                        "FROM read_csv(?, header=true, all_varchar=?, sample_size=-1)",
+                        [[str(path)], columns is not None],
                     )
                 elif suffix == ".parquet":
                     self.connection.execute(
@@ -441,8 +457,10 @@ class DuckDBStore:
                     )
                 finally:
                     self.connection.unregister(relation)
+            elif isinstance(source, _RowSource):
+                self._hold_rows(candidate, source.rows, source.columns)
             elif isinstance(source, Iterable) and not isinstance(source, (bytes, Mapping)):
-                self._hold_rows(candidate, source, contract)
+                self._hold_rows(candidate, source)
             else:
                 raise InvalidContract("source must be a path, iterable of row mappings or Arrow table")
             return candidate
@@ -450,54 +468,83 @@ class DuckDBStore:
             self._release(candidate)
             raise
 
-    def _hold_rows(self, candidate: str, source: Iterable[object], contract: Contract | None) -> None:
-        if contract is None or not contract.schema:
-            raise InvalidContract("row mappings require a declared schema")
-        columns = tuple(c.name for c in contract.schema)
-        declarations = ", ".join(f"{_quote(c.name)} {_TYPES[c.type]}" for c in contract.schema)
-        self.connection.execute(f"CREATE TEMP TABLE {_quote(candidate)} ({declarations})")
-        placeholders = ", ".join("?" for _ in columns)
+    def _hold_rows(
+        self, candidate: str, source: Iterable[object], columns: Mapping[str, str] | None = None
+    ) -> None:
+        inferred: dict[str, str | None] = dict(columns) if columns is not None else {}
+        staging = _quote(candidate)
         batch: list[list[object]] = []
-        for row in source:
-            if not isinstance(row, Mapping) or set(row) != set(columns):
-                raise InvalidContract("each source row must match the declared columns")
-            for column in contract.schema:
-                value = row[column.name]
-                if value is not None and (
-                    type(value) is not LOGICAL_TYPES[column.type].python_type
-                    and not (column.type == "float" and type(value) is int)
-                    or isinstance(value, datetime)
-                    and value.utcoffset() is None
-                ):
-                    raise InvalidContract(f"source column {column.name} does not have type {column.type}")
-            batch.append([row[c] for c in columns])
-            if len(batch) == 1000:
-                self.connection.executemany(f"INSERT INTO {_quote(candidate)} VALUES ({placeholders})", batch)
-                batch.clear()
-        if batch:
-            self.connection.executemany(f"INSERT INTO {_quote(candidate)} VALUES ({placeholders})", batch)
 
-    def _typed_csv(self, candidate: str, contract: Contract) -> bool:
+        def create() -> None:
+            declarations = ", ".join(
+                f"{_quote(name)} {_TYPES[kind or 'str']}" for name, kind in inferred.items()
+            )
+            self.connection.execute(f"CREATE TEMP TABLE {staging} ({declarations})")
+
+        def flush() -> None:
+            if batch:
+                placeholders = ", ".join("?" for _ in inferred)
+                self.connection.executemany(f"INSERT INTO {staging} VALUES ({placeholders})", batch)
+                batch.clear()
+
+        if columns is not None:
+            create()
+        for row in source:
+            if not isinstance(row, Mapping):
+                raise InvalidContract("source rows must be mappings")
+            if not inferred:
+                _columns({name: "str" for name in row})
+                inferred = dict.fromkeys(row)
+                create()
+            if set(row) != set(inferred):
+                raise InvalidContract("each source row must have the same columns")
+            for name, value in row.items():
+                if value is None:
+                    continue
+                kind = next((k for k, t in LOGICAL_TYPES.items() if type(value) is t.python_type), None)
+                if kind is None or isinstance(value, datetime) and value.utcoffset() is None:
+                    raise InvalidContract(f"source column {name} has an unsupported value")
+                previous = inferred[name]
+                if previous == "float" and kind == "int":
+                    kind = "float"
+                if previous != kind:
+                    if (
+                        columns is not None
+                        or previous not in (None, "int")
+                        or (previous == "int" and kind != "float")
+                    ):
+                        raise InvalidContract(f"source column {name} has inconsistent types")
+                    flush()
+                    self.connection.execute(f"ALTER TABLE {staging} ALTER {_quote(name)} TYPE {_TYPES[kind]}")
+                    inferred[name] = kind
+            batch.append([row[name] for name in inferred])
+            if len(batch) == 1000:
+                flush()
+        if not inferred or any(kind is None for kind in inferred.values()):
+            raise InvalidContract("empty or all-null row columns require an explicitly typed source")
+        flush()
+
+    def _typed_csv(self, candidate: str, columns: Mapping[str, str]) -> bool:
         source = _quote(candidate)
         predicates = [
-            f"({_quote(c.name)} IS NOT NULL AND TRY_CAST({_quote(c.name)} AS {_TYPES[c.type]}) IS NULL)"
-            for c in contract.schema
+            f"({_quote(name)} IS NOT NULL AND TRY_CAST({_quote(name)} AS {_TYPES[kind]}) IS NULL)"
+            for name, kind in columns.items()
         ]
         predicates.extend(
-            f"({_quote(c.name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(c.name)}), '[+-]?[0-9]+'))"
-            for c in contract.schema
-            if c.type == "int"
+            f"({_quote(name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(name)}), '[+-]?[0-9]+'))"
+            for name, kind in columns.items()
+            if kind == "int"
         )
         invalid = " OR ".join(predicates)
         if self._one(f"SELECT count(*) FROM {source} WHERE {invalid}")[0]:
             return False
-        self._recast(candidate, contract)
+        self._recast(candidate, columns)
         return True
 
-    def _recast(self, candidate: str, contract: Contract) -> None:
+    def _recast(self, candidate: str, columns: Mapping[str, str]) -> None:
         staging = _quote(candidate)
         casts = ", ".join(
-            f"CAST({_quote(c.name)} AS {_TYPES[c.type]}) AS {_quote(c.name)}" for c in contract.schema
+            f"CAST({_quote(name)} AS {_TYPES[kind]}) AS {_quote(name)}" for name, kind in columns.items()
         )
         self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {staging} AS SELECT {casts} FROM {staging}")
 
@@ -510,17 +557,61 @@ class DuckDBStore:
             [key[i] for key in keys] for i in range(len(columns))
         ]
 
-    def _assert_destination_schema(self, contract: Contract) -> None:
-        if not self._exists(contract.table):
-            return
+    def _assert_destination_schema(self, contract: Contract, candidate: str) -> None:
         row = self.connection.execute(
-            "SELECT document FROM __dogana_ledgers WHERE table_name=?", [contract.table]
+            "SELECT publication_id, history_table, columns FROM __dogana_commits "
+            "WHERE table_name=? ORDER BY sequence DESC LIMIT 1",
+            [contract.table],
         ).fetchone()
-        previous = Ledger.from_json(row[0]).contract if row else contract
-        actual = tuple((name, _logical(kind)) for name, kind in self._description(contract.table))
-        expected = tuple((column.name, column.type) for column in previous.schema)
-        if actual != expected:
+        if not self._exists(contract.table):
+            if row is not None:
+                raise StoreError("published table is missing from its recorded schema")
+            return
+        actual = self._description(contract.table)
+        if row is not None:
+            if self._exists(row[1]):
+                expected = self._description(row[1])[:-2]
+            elif self._exists("__dogana_version_" + row[0]):
+                expected = self._description("__dogana_version_" + row[0])
+            else:
+                raise InconsistentPublication("recorded publication schema is missing")
+            matches = actual == expected and tuple(name for name, _ in expected) == tuple(row[2])
+        else:
+            columns = {name: _logical(kind) for name, kind in actual}
+            matches = (
+                _column_hash(columns) == contract.schema_hash
+                if contract.schema_hash is not None
+                else tuple(columns.items())
+                == tuple((name, _logical(kind)) for name, kind in self._description(candidate))
+            )
+        if not matches:
             raise StoreError("published column order or types differ from the recorded schema")
+
+    def _prepare_schema(self, candidate: str, contract: Contract) -> tuple[Mapping[str, str], str | None]:
+        held = self._candidates[candidate]
+        columns = {name: _logical(kind) for name, kind in self._description(candidate)}
+        if held.header is not None and held.header != tuple(columns):
+            return columns, "CSV header differs from the parsed column names"
+        if held.columns is not None and tuple(columns) != tuple(held.columns):
+            return columns, "source column order differs from the supplied columns"
+        if held.csv:
+            assert held.columns is not None
+            if not self._typed_csv(candidate, held.columns):
+                return columns, "CSV values cannot be converted to the supplied column types"
+            self._candidates[candidate] = _Candidate(
+                held.manifest, held.contract, columns=held.columns, header=held.header
+            )
+            columns = dict(held.columns)
+        if held.columns is not None and columns != held.columns:
+            return columns, "source types differ from the supplied column types"
+        try:
+            validated = _columns(columns)
+        except InvalidContract as exc:
+            return columns, str(exc)
+        if any(columns.get(name) != kind for name, kind in contract.types.items()):
+            return columns, "source columns differ from the contract's bound column types"
+        self._recast(candidate, validated)
+        return validated, None
 
     @_synchronized
     def check(
@@ -532,20 +623,23 @@ class DuckDBStore:
     ) -> tuple[Check, ...]:
         if self._transaction is not None:
             raise StoreError("publish or abort the existing candidate first")
-        if not contract.schema:
-            raise InvalidContract("publishing requires a declared schema")
         held = self._candidates.get(candidate)
         if held is None or held.manifest != manifest or held.contract not in (None, contract):
             raise StoreError("candidate belongs to a different manifest")
         if requirements != Gate.requirements(contract, manifest):
             raise StoreError("row checks must come from the gate")
         base, stamp = self._base(contract, manifest), self._stamp(contract.table)
-        self._assert_destination_schema(contract)
+        columns, schema_error = self._prepare_schema(candidate, contract)
+        self._assert_destination_schema(contract, candidate)
+        if schema_error is not None and contract.schema_hash is None:
+            raise InvalidContract(schema_error)
         audit = _Audit(
             candidate,
             contract,
             manifest.check(contract),
             int(self._one(f"SELECT count(*) FROM {_quote(candidate)}")[0]),
+            columns,
+            schema_error,
         )
         handlers = {
             "row_count": self._check_row_count,
@@ -560,7 +654,11 @@ class DuckDBStore:
         checks: dict[str, Check] = {}
         for requirement in requirements:
             name = requirement.name
-            dependencies: tuple[str, ...] = () if name in ("row_count", "schema_hash") else ("schema_hash",)
+            dependencies: tuple[str, ...] = (
+                ("schema_hash",)
+                if contract.schema_hash is not None and name not in ("row_count", "schema_hash")
+                else ()
+            )
             if name == "named_keys":
                 dependencies += ("key_integrity",)
             if name == "shrink_tolerance":
@@ -582,26 +680,14 @@ class DuckDBStore:
         )
 
     def _check_schema_hash(self, audit: _Audit) -> Check:
-        contract, candidate = audit.contract, audit.candidate
-        description = self._description(candidate)
-        expected = tuple((column.name, column.type) for column in contract.schema)
-        names_match = tuple(name for name, _ in description) == tuple(contract.columns)
-        held = self._candidates[candidate]
-        converted = True
-        if held.csv and names_match:
-            converted = self._typed_csv(candidate, contract)
-            description = self._description(candidate)
-            if converted:
-                self._candidates[candidate] = _Candidate(held.manifest, held.contract)
-        actual = tuple((name, _logical(kind)) for name, kind in description)
-        passed = converted and actual == expected and audit.manifest.schema_hash == contract.schema_hash
-        if passed and not held.csv:
-            self._recast(candidate, contract)
+        actual = _column_hash(audit.columns)
+        expected = audit.contract.schema_hash
+        passed = audit.schema_error is None and actual == audit.manifest.schema_hash == expected
         return Check(
             "schema_hash",
             passed,
-            f"expected={expected}, actual={actual}, "
-            f"declared_hash={audit.manifest.schema_hash}, expected_hash={contract.schema_hash}",
+            f"actual_hash={actual}, declared_hash={audit.manifest.schema_hash}, expected_hash={expected}"
+            + (f"; {audit.schema_error}" if audit.schema_error else ""),
         )
 
     def _check_key_integrity(self, audit: _Audit) -> Check:
@@ -694,19 +780,12 @@ class DuckDBStore:
         if not self._exists(plan.table):
             self.connection.execute(f"CREATE TABLE {target} AS SELECT * FROM {source} WHERE false")
         elif self._description(plan.table) != self._description(candidate):
-            if any(a.operation is Operation.REPLACE_ALL for a in plan.actions):
+            if not self._one(f"SELECT count(*) FROM {target}")[0]:
                 self.connection.execute(
                     f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {source} WHERE false"
                 )
             else:
-                old = dict(self._description(plan.table))
-                projections = ", ".join(
-                    f"CAST({_quote(name) if name in old else 'NULL'} AS {kind}) AS {_quote(name)}"
-                    for name, kind in self._description(candidate)
-                )
-                self.connection.execute(
-                    f"CREATE OR REPLACE TABLE {target} AS SELECT {projections} FROM {target}"
-                )
+                raise InvalidContract("schema changes require a full replacement while published rows remain")
 
     def _delete_rows(self, candidate: str, plan: ApplyPlan) -> None:
         db, target, source = self.connection, _quote(plan.table), _quote(candidate)
@@ -743,7 +822,7 @@ class DuckDBStore:
         try:
             self.connection.execute("BEGIN TRANSACTION")
             self._assert_base(checked)
-            self._assert_destination_schema(checked.contract)
+            self._assert_destination_schema(checked.contract, candidate)
             db, target, source = self.connection, _quote(plan.table), _quote(candidate)
             if self._exists(plan.table):
                 self._delete_rows(candidate, plan)

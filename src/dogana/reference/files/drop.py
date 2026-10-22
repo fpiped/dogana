@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import csv
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
 from dogana.contract import Scalar, Window
+from dogana.reference._sources import _column_hash, _columns, _FileSource
 from dogana.wire import utc
 
 
@@ -98,21 +100,20 @@ class FilePattern:
         shape = contract.shape(shape_name)
         produced_at = _instant(groups["produced_at"], self.timezone)
         window: Window | None = None
-        column = contract.columns.get(contract.window_column) if contract.window_column else None
+        column_type = contract.types.get(contract.window_column) if contract.window_column else None
         if "low" in groups:
             if groups.get("low") is None or groups.get("high") is None:
                 raise InvalidContract("filename needs both window bounds")
-            column_type = column.type if column else "str"
             window = (
-                _window_bound(groups["low"], column_type, self.timezone),
-                _window_bound(groups["high"], column_type, self.timezone),
+                _window_bound(groups["low"], column_type or "str", self.timezone),
+                _window_bound(groups["high"], column_type or "str", self.timezone),
             )
         elif shape.coverage == "window":
             if shape.window_size is None:
                 raise InvalidContract("a window feed needs bounds or window_size")
-            if column is None or column.type not in ("date", "datetime"):
+            if column_type not in ("date", "datetime"):
                 raise InvalidContract("derived windows need a date or datetime column")
-            window = shape.window_ending_at(produced_at, column.type)
+            window = shape.window_ending_at(produced_at, column_type)
 
         since: str | datetime | None = groups.get("since")
         if isinstance(since, str) and shape.checkpoint == "timestamp":
@@ -153,9 +154,15 @@ class FileDrop:
         contract: Contract,
         pattern: FilePattern | None = None,
         *,
+        columns: Mapping[str, str],
         root: str | Path | None = None,
     ) -> None:
         self.store, self.contract, self.pattern = store, contract, pattern
+        self.columns = _columns(columns)
+        if any(self.columns.get(name) != kind for name, kind in contract.types.items()):
+            raise InvalidContract("file columns must match the contract's bound column types")
+        if contract.schema_hash is not None and _column_hash(self.columns) != contract.schema_hash:
+            raise InvalidContract("file column hash differs from the contract schema_hash")
         self.root = _resolved_path(Path(root)) if root is not None else None
 
     def ingest(self, path: str | Path, *, now: datetime | None = None) -> Receipt:
@@ -179,5 +186,9 @@ class FileDrop:
         else:
             raise InvalidContract("delivery needs a sidecar manifest or a declared filename pattern")
         return deliver(
-            self.store, self.contract, path, manifest, now=now if now is not None else datetime.now(UTC)
+            self.store,
+            self.contract,
+            _FileSource(path, self.columns),
+            manifest,
+            now=now if now is not None else datetime.now(UTC),
         )

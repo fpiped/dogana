@@ -5,11 +5,12 @@ from time import perf_counter
 
 import pytest
 
-from tests.support import at
+from tests.support import at, schema_hash
 
 pytest.importorskip("duckdb")
 
-from dogana import Column, Contract, Ledger, Manifest, Shape
+from dogana import Contract, Ledger, Manifest, Shape
+from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 
 FULL = Shape.full()
@@ -17,7 +18,8 @@ SINCE = Shape.append()
 
 
 def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp_path):
-    c = Contract("bulk", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("value", "str")))
+    columns = {"id": "int", "value": "str"}
+    c = Contract("bulk", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     path = tmp_path / "bulk.csv"
     with path.open("w", newline="") as stream:
         writer = csv.writer(stream)
@@ -28,7 +30,7 @@ def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp
     )
     with DuckDBStore(tmp_path / "bulk.duckdb") as store:
         start = perf_counter()
-        receipt = store.deliver(c, path, manifest, now=at(30))
+        receipt = store.deliver(c, _FileSource(path, columns), manifest, now=at(30))
         elapsed = perf_counter() - start
         assert receipt.accepted, receipt.checks
         assert elapsed < 30, elapsed
@@ -38,11 +40,13 @@ def test_a_200k_row_delivery_finishes_within_thirty_seconds_and_replays_once(tmp
 
 
 def test_300_small_deliveries_keep_one_receipt_per_publication_and_bounded_row_history(tmp_path):
+    columns = {"id": "int", "value": "str"}
     c = Contract(
         "growing",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("value", "str")),
+        types={"id": "int"},
+        schema_hash=schema_hash(columns),
     )
     boundary = datetime(2026, 1, 1, tzinfo=UTC)
     path = tmp_path / "small.csv"
@@ -59,7 +63,7 @@ def test_300_small_deliveries_keep_one_receipt_per_publication_and_bounded_row_h
                 rows=1,
                 schema_hash=c.schema_hash,
             )
-            receipt = store.deliver(c, path, manifest, now=at(30))
+            receipt = store.deliver(c, _FileSource(path, columns), manifest, now=at(30))
             assert receipt.accepted, receipt.checks
             accepted.append(receipt)
             assert store.load_ledger(c) == Ledger.from_receipts(c, accepted)

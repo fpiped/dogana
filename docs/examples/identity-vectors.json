@@ -1,9 +1,9 @@
 {
   "examples": {
-    "contract": "56ede4a996efc04319d5e0a1b84e68916bc62ea6f780b48d82fec361eb311831",
+    "contract": "73e7a37939f0583ff390d280f0d621184532643e8067ca6b93d70b0829751737",
     "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
-    "ledger": "86320694e3ff2128f83f9a86666dafa0871c0414ca6b7f754455d85190f97d03",
-    "receipt": "6f8f75f34e266056c740c298b77d49b9bd669662d7e17adae672270fb627e360"
+    "ledger": "8218b98dbcacfe0643ca274915c7ebcae1bd8281d860c68ad5d60941a5e5c675",
+    "receipt": "97603cb72ee64ae81b8cdf266d954581243b09e0c1bc5b8dbe2db8091c8506b3"
   },
   "vectors": [
     {
@@ -127,16 +127,19 @@
           }
         },
         "window_column": null,
-        "schema": [],
         "max_shrink_fraction": null,
         "freshness": {
           "$seconds": 604800
         },
         "start_at": null,
-        "cursor_column": null
+        "cursor_column": null,
+        "types": {
+          "id": "int"
+        },
+        "schema_hash": null
       },
-      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\"}",
-      "sha256": "1e14b29a2dd7707cec46fd42b94cfbe4409795d855487810bda82ced3803475e"
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
+      "sha256": "3a57d7447db0eb789ff794eb4081094de819f0f214509d0bad3039d3179a3423"
     },
     {
       "name": "shape-small-cost",
@@ -236,16 +239,19 @@
           }
         },
         "window_column": null,
-        "schema": [],
         "max_shrink_fraction": 0.5,
         "freshness": {
           "$seconds": 604800
         },
         "start_at": null,
-        "cursor_column": null
+        "cursor_column": null,
+        "types": {
+          "id": "int"
+        },
+        "schema_hash": null
       },
-      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"\ud83d\ude00\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"\ufffd\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\"}",
-      "sha256": "b8aaa9fdacb2ef61667403824aa745175fa5ac6c73dc0a18eee6058030e71c4f"
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"\ud83d\ude00\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"\ufffd\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
+      "sha256": "4972f813d5842e8b6a9a8ac7ac872b6b83d5a65723d53581c87b78f1ed124e8c"
     },
     {
       "name": "utf16-key-set-order",
@@ -275,6 +281,89 @@
       },
       "canonical": "{\"keys\":[[\"\ud83d\ude00\"],[\"\ufffd\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
       "sha256": "4325c0ae311a45f3695a113ced129a874bb19f63a1e48f85f85785f523b0c762"
+    },
+    {
+      "name": "contract-types-and-external-hash",
+      "wire": {
+        "kind": "Contract",
+        "version": 1,
+        "table": "events",
+        "key": [
+          "id"
+        ],
+        "shapes": {
+          "full": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          },
+          "daily": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "window",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          }
+        },
+        "window_column": "day",
+        "types": {
+          "updated_at": "datetime",
+          "day": "date",
+          "id": "int"
+        },
+        "schema_hash": "opaque:orders-columns-v1",
+        "max_shrink_fraction": 0.5,
+        "freshness": {
+          "$seconds": 604800
+        },
+        "start_at": null,
+        "cursor_column": "updated_at"
+      },
+      "canonical": "{\"cursor_column\":\"updated_at\",\"key\":[\"id\"],\"kind\":\"Contract\",\"schema_hash\":\"opaque:orders-columns-v1\",\"shapes\":{\"daily\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"window\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"events\",\"types\":{\"day\":\"date\",\"id\":\"int\",\"updated_at\":\"datetime\"},\"window_column\":\"day\"}",
+      "sha256": "ccdc9c297a11a5f3f30b0ba7390a7316da66ae6922858567a1aed49647395fc3"
+    },
+    {
+      "name": "unbound-contract-defaults",
+      "wire": {
+        "kind": "Contract",
+        "version": 1,
+        "table": "events",
+        "key": [],
+        "shapes": {
+          "full": {
+            "kind": "Shape",
+            "version": 1,
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none",
+            "cost": 1.0,
+            "window_size": null,
+            "lookback": null
+          }
+        },
+        "window_column": null,
+        "types": {},
+        "schema_hash": null,
+        "max_shrink_fraction": 0.5,
+        "freshness": {
+          "$seconds": 604800
+        },
+        "start_at": null,
+        "cursor_column": null
+      },
+      "canonical": "{\"key\":[],\"kind\":\"Contract\",\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"events\"}",
+      "sha256": "6bcbd6cc77b5dafb6ead5eef0739d2c183e763ab9e78cf93d414587a18aed19d"
     }
   ]
 }

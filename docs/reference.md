@@ -3,13 +3,35 @@
 The [protocol](protocol.md) defines required behavior. This page describes the shipped DuckDB and
 file-drop implementations and how to supply your own storage.
 
+## Column types and hashes
+
+The data contract owns the columns. `Contract.types` maps exactly the union of key, window and
+cursor column names to logical types, with no extras; it is empty only when none are bound.
+Key and window columns use `int`, `str`, `date` or `datetime`; a cursor uses `datetime`.
+`Contract.schema_hash` is an optional opaque string supplied by the data contract. The core
+neither holds a full column schema nor computes its hash. When the hash is present, the gate
+requires both the manifest and the store's candidate hash to match it. Without a contract hash,
+`schema_hash` is not applicable and no schema-check outcome is required, including for accounting alone.
+
+For an ODCS schema object, traverse its `properties` in declared column order. Normalize each
+property's `logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`, then pair its `name`
+with that type. Resolve physical or nested types explicitly in the receiver. Hash these ordered
+`[name, type]` pairs with SHA-256 over
+`json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`.
+This excludes document metadata and preserves the previous column-hash recipe, so existing hashes
+remain valid. DuckDB and file drop use this recipe; other stores must agree with their receivers
+on the opaque hash. The [quick start](quickstart.md) uses a hand-written ordered column mapping.
+
 ## DuckDB store
 
 `DuckDBStore(path, adopt=False)` accepts a CSV or Parquet path, an iterable of row dictionaries,
 or an Arrow table when PyArrow is installed.
-`hold(source, manifest, contract)` stages the candidate with declared types. CSV values are parsed
-using the contract schema, not inferred from whether a particular file happens to contain decimals
-or nulls. Parquet retains its physical schema for validation. Successful candidates normalize to
+`hold(source, manifest, contract)` stages the candidate and inspects its column names and types.
+Bare CSV paths and row dictionaries use inferred types; `Contract.types` is not a full input schema.
+Row mappings cannot infer types from an empty input or an all-null column. For typed CSV,
+use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
+including for files with only nulls or no rows. Parquet retains its physical schema for validation.
+Successful candidates normalize to
 BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. CSV datetime values without an offset
 are interpreted as UTC by the store session; include offsets when the source uses another timezone.
 This CSV convention does not relax the requirement for aware datetimes in core values and manifests.
@@ -96,13 +118,19 @@ Rebuilding a receipt prefix restores evidence only, not the historical rows.
 Use a compatible new `Contract` to change freshness, shrink policy, costs or other nonbinding fields.
 `Ledger.with_contract` enforces unchanged table, key and window bindings, including their types.
 Receipts preserve the contract used for each decision. Establish changed row schemas with a complete
-whole-table delivery so retained rows have defined values under the new schema. A source restoration
+whole-table delivery so retained rows have defined values under the new schema. DuckDB refuses a
+layout change if any previously published rows remain after the accepted plan's deletions. A source restoration
 can invalidate an unchanged timestamp checkpoint: request a genuinely complete read instead of
 continuing from its old numeric value. Opaque generation tokens must distinguish source incarnations.
 
 ## File drop
 
-`FileDrop(store, contract, pattern=None, root=None).ingest(path, now=None)` accepts CSV or Parquet files.
+`FileDrop(store, contract, pattern=None, *, columns, root=None).ingest(path, *, now=None)` accepts CSV
+or Parquet files. Required keyword-only `columns` is an ordered mapping of every data column name
+to its logical type, for example `{"id": "int", "day": "date", "amount": "int"}`. It supplies typed
+CSV parsing and the reference column hash without adding columns to the delivery contract.
+The mapping must agree with `Contract.types` and, when present, `Contract.schema_hash`.
+The gate checks the candidate hash only when that hash is present.
 The sidecar is `<file>.json`, for example `orders.csv.json`. Without it, `FilePattern` derives a
 manifest using a full-match filename expression. It requires `produced_at` and either a named
 `shape` group or a fixed `shape` argument. Optional groups include `rows`, `low`, `high`, `since`,
@@ -119,7 +147,8 @@ pattern = FilePattern(r"orders_(?P<produced_at>\d{4}-\d{2}-\d{2})\.csv", shape="
 
 Naive filename timestamps without a declared timezone are refused. Ambiguous or nonexistent local
 times need an explicit offset. DATE windows use UTC calendar dates. Missing bounds derive a closed
-window from the shape's `window_size`; explicit bounds must appear as a pair and match the schema.
+window from the shape's `window_size`; explicit bounds must appear as a pair and match the window
+column's entry in `Contract.types`.
 Thirty DATE days ending October 19 start September 20. A window lacking both bounds and duration
 is refused. The duration is not a restriction on explicitly declared push windows.
 

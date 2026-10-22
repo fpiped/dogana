@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
@@ -177,7 +177,7 @@ class Gate:
         delivery = manifest.check(contract)
         shape = delivery.shape
         names = ["row_count"]
-        if contract.schema:
+        if contract.schema_hash is not None:
             names.append("schema_hash")
         if isinstance(delivery, WindowDelivery) or (
             isinstance(delivery, TimestampChanges) and isinstance(delivery.coverage, WindowCoverage)
@@ -255,7 +255,14 @@ class Gate:
         if all(c.passed for c in checks):
             expected = {r.name for r in cls.requirements(ledger.contract, manifest)}
             names = [c.name for c in outcomes]
-            checks += tuple(outcomes)
+            checks += tuple(
+                replace(outcome, passed=False, detail="manifest and contract schema hashes differ")
+                if outcome.name == "schema_hash"
+                and outcome.passed
+                and manifest.schema_hash != ledger.contract.schema_hash
+                else outcome
+                for outcome in outcomes
+            )
             checks += (
                 Check(
                     "check_set",

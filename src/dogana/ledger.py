@@ -434,9 +434,9 @@ class Ledger(Wire):
     def _check_window_type(self, window: Window | None) -> None:
         if window is None:
             return
-        column = self.contract.columns.get(self.contract.window_column or "")
-        if column is not None and type(window[0]) is not LOGICAL_TYPES[column.type].python_type:
-            raise InvalidContract("window bound types differ from the contract schema")
+        logical_type = self.contract.types.get(self.contract.window_column or "")
+        if logical_type is not None and type(window[0]) is not LOGICAL_TYPES[logical_type].python_type:
+            raise InvalidContract("window bound types differ from the contract types")
         if any(cut.value is not None and type(cut.value) is not type(window[0]) for cut, _ in self._cuts):
             raise InvalidContract("window bound types differ from the ledger domain")
 

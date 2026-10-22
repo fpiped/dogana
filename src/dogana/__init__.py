@@ -1,6 +1,6 @@
 """Delivery evidence, publication decisions and reader claims."""
 
-from .contract import Checkpoint, Column, Completeness, Contract, Coverage, Deletions, Manifest, Shape
+from .contract import Checkpoint, Completeness, Contract, Coverage, Deletions, Manifest, Shape
 from .delivery import deliver
 from .errors import (
     DoganaError,
@@ -25,7 +25,6 @@ __all__ = [
     "CheckRequirement",
     "Checkpoint",
     "Claims",
-    "Column",
     "Completeness",
     "Contract",
     "Coverage",

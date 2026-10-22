@@ -153,3 +153,31 @@ def test_the_protocol_receipt_matches_the_gate_decision_at_receiver_time():
         )
         == receipt
     )
+
+
+def test_external_column_hash_keeps_the_original_ordered_pair_bytes():
+    from hashlib import sha256
+
+    columns = {"id": "int", "value": "str"}
+    encoded = json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    assert encoded == b'[["id","int"],["value","str"]]'
+    expected = "14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5"
+    assert sha256(encoded).hexdigest() == expected
+    contract = Contract.from_json((EXAMPLES / "contract.json").read_text())
+    manifest = Manifest.from_json((EXAMPLES / "manifest.json").read_text())
+    assert contract.schema_hash == manifest.schema_hash == expected
+    assert contract.types == {"id": "int"}
+
+
+@pytest.mark.parametrize("digest", ["\ud800", "\udfff", "hash\udc80"])
+def test_contract_schema_hash_rejects_surrogates_in_wire_schema_and_decoder(digest, validate_wire):
+    from jsonschema import ValidationError
+
+    from dogana import SerializationError
+
+    raw = Contract.from_json((EXAMPLES / "contract.json").read_text()).to_dict()
+    raw["schema_hash"] = digest
+    with pytest.raises(ValidationError):
+        validate_wire(raw)
+    with pytest.raises(SerializationError):
+        Contract.from_dict(raw)

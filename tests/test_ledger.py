@@ -1,13 +1,11 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from functools import partial
 
 import pytest
 
 from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, State
-from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
-
-# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
-contract = partial(contract, schema=())
+from tests.support import FEED, FULL, SINCE, WINDOW, at
+from tests.support import accounting_contract as contract
 
 
 def full(c, day=18, generation=None):
@@ -38,7 +36,7 @@ def test_weekly_full_plus_changed_since_without_deletes_stays_patched_until_sund
 
 
 def test_weekly_full_plus_daily_thirty_day_windows_keeps_old_dates_outside_the_window():
-    c = contract()
+    c = contract(window_type="date")
     ledger = full(c)
     for day in range(19, 25):
         low, high = (at(day) - timedelta(days=30)).date(), at(day).date()
@@ -121,7 +119,7 @@ def test_repeated_window_deliveries_require_a_store_receipt_lookup_before_accoun
 
 
 def test_independent_plant_exports_include_unknown_plants_and_empty_decommissioned_plants():
-    c = contract()
+    c = contract(window_type="str")
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(18), window=("IT01", "IT01"), rows=50))
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=("DE01", "DE01"), rows=20))
     ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=("IT01", "IT01"), rows=0))
@@ -230,8 +228,9 @@ def test_a_keyless_append_after_a_window_is_refused_until_a_full_delivery_aligns
     c = Contract(
         "events",
         (),
-        {"full": FULL, "bucket": WINDOW, "log": SINCE},
+        {"full": FULL, "bucket": replace(WINDOW, window_size=None), "log": SINCE},
         window_column="id",
+        types={"id": "int"},
         start_at=at(1),
     )
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18, 1)))
@@ -300,7 +299,7 @@ def test_window_deliveries_preserve_the_table_cursor_for_the_next_global_feed():
     ],
 )
 def test_adjacent_discrete_windows_leave_no_phantom_unknown_region(windows):
-    c = contract()
+    c = contract(window_type=type(windows[0][0]).__name__)
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(22), window=windows[0]))
     ledger = ledger.apply(Manifest(c.table, "daily", at(23), window=windows[1]))
     claim = ledger.claims(at(23), window=(windows[0][0], windows[1][1]))
@@ -315,7 +314,9 @@ def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
     rome = ZoneInfo("Europe/Rome")
     early = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=0)
     late = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=1)
-    c = Contract("ticks", ("id",), {"slot": WINDOW}, window_column="at")
+    c = Contract(
+        "ticks", ("id",), {"slot": WINDOW}, window_column="at", types={"id": "int", "at": "datetime"}
+    )
     ledger = Ledger(c).apply(Manifest(c.table, "slot", at(26), window=(early, early)))
     assert ledger.claims(at(26), window=(early, early)).state is State.COMPLETE
     assert ledger.claims(at(26), window=(late, late)).state is State.UNKNOWN
@@ -326,14 +327,13 @@ def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
 
 
 def test_window_bounds_must_have_the_window_columns_declared_type():
-    from dogana import Column
 
     c = Contract(
         "orders",
         ("id",),
         {"daily": WINDOW},
         window_column="day",
-        schema=(Column("id", "int"), Column("day", "date")),
+        types={"id": "int", "day": "date"},
     )
     with pytest.raises(InvalidContract, match="window bound types"):
         Manifest(c.table, "daily", at(19), window=("2026-10-01", "2026-10-19")).check(c)
@@ -366,14 +366,13 @@ def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletio
 
 
 def test_typed_window_queries_refuse_a_different_domain_even_before_the_first_delivery():
-    from dogana import Column
 
     c = Contract(
         "stock",
         ("id",),
         {"daily": WINDOW},
         window_column="day",
-        schema=(Column("id", "int"), Column("day", "date")),
+        types={"id": "int", "day": "date"},
     )
     with pytest.raises(InvalidContract, match="window bound types"):
         Ledger(c).claims(at(18), window=(1, 10))
@@ -441,7 +440,7 @@ def test_accounting_refusals_name_the_delivery_and_its_bounds(table, shape, opti
 
 def test_an_accounting_window_with_the_wrong_scalar_domain_is_a_delivery_refusal():
     ledger = Ledger(contract()).apply(Manifest("moves", "daily", at(18), window=(1, 9)))
-    with pytest.raises(RejectedDelivery, match="window=.*ledger domain"):
+    with pytest.raises(RejectedDelivery, match="window=.*contract types"):
         ledger.apply(Manifest("moves", "daily", at(19), window=("a", "b")))
 
 

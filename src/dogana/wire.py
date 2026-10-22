@@ -242,8 +242,8 @@ def decode(value: object) -> object:
             raise SerializationError(f"missing fields for {kind}: {', '.join(sorted(missing))}")
         if extra:
             raise SerializationError(f"unknown fields for {kind}: {', '.join(sorted(extra))}")
-        decoded = {name: decode(value[name]) for name in names}
         hints = _hints(schema)
+        decoded = {name: _decode_field(value[name], hints[name]) for name in names}
         for name, item in decoded.items():
             if not _matches(item, hints[name]):
                 raise SerializationError(f"invalid value for {kind}.{name}={item!r}")
@@ -251,15 +251,21 @@ def decode(value: object) -> object:
     return {key: decode(item) for key, item in value.items()}
 
 
+def _decode_field(value: object, annotation: object) -> object:
+    if get_origin(annotation) is Mapping and isinstance(value, Mapping):
+        item_type = get_args(annotation)[1]
+        return {key: _decode_field(item, item_type) for key, item in value.items()}
+    return decode(value)
+
+
 @cache
 def _registry() -> Mapping[str, type[Wire]]:
-    from .contract import Column, Contract, Manifest, Shape
+    from .contract import Contract, Manifest, Shape
     from .gate import Action, ApplyPlan, Check, CheckRequirement, Receipt, Transition
     from .ledger import Claims, Ledger, Region, RegionClaim
     from .planner import ExtractionRequest, Requirement
 
     kinds = (
-        Column,
         Contract,
         Manifest,
         Shape,

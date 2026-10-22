@@ -5,11 +5,11 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from dogana import Column, InvalidContract
+from dogana import InvalidContract
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
 from tests.integration.support import csv_file, row
-from tests.support import FULL, WINDOW, at, contract
+from tests.support import COLUMNS, FULL, WINDOW, at, contract
 
 
 def test_a_fixed_feed_shape_and_counted_csv_need_only_a_source_date_in_the_filename(tmp_path):
@@ -17,7 +17,7 @@ def test_a_fixed_feed_shape_and_counted_csv_need_only_a_source_date_in_the_filen
     path = csv_file(tmp_path, "orders-2026-10-19.csv", [row(1, 19, "line one\nline two"), row(2, 19)])
     pattern = FilePattern(r"orders-(?P<produced_at>\d{4}-\d{2}-\d{2})\.csv", shape="daily", timezone=UTC)
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        receipt = FileDrop(store, c, pattern).ingest(path, now=at(30))
+        receipt = FileDrop(store, c, pattern, columns=COLUMNS).ingest(path, now=at(30))
         assert receipt.accepted, receipt.checks
         assert receipt.manifest.rows == 2
         assert receipt.manifest.window == (at(19).date() - timedelta(days=29), at(19).date())
@@ -43,7 +43,8 @@ def test_a_parquet_feed_counts_physical_rows(tmp_path):
 
 
 def test_a_datetime_feed_derives_a_closed_duration_ending_at_the_source_boundary(tmp_path):
-    c = contract(schema=(Column("id", "int"), Column("day", "datetime"), Column("value", "str")))
+    columns = {"id": "int", "day": "datetime", "value": "str"}
+    c = contract(columns=columns)
     path = csv_file(tmp_path, "2026-10-19.csv", [])
     manifest = FilePattern(r"(?P<produced_at>.*)\.csv", shape="daily", timezone=UTC).manifest(path, c)
     assert manifest.window == (at(19) - timedelta(days=30), at(19))

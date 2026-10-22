@@ -141,6 +141,31 @@
       ],
       "canonical": "[{\"a\":[true,false],\"z\":null},{\"a\":2,\"b\":1}]",
       "sha256": "1284354ca904b7bd8da5e40eb0dc3a487c58bf06532d253d2844d113c455078c"
+    },
+    {
+      "name": "delivery-contract-types-and-hash",
+      "value": {
+        "kind": "Contract",
+        "table": "stock",
+        "key": [
+          "id"
+        ],
+        "shapes": {
+          "full": {
+            "kind": "Shape",
+            "coverage": "all",
+            "completeness": "complete",
+            "deletions": "absence",
+            "checkpoint": "none"
+          }
+        },
+        "types": {
+          "id": "int"
+        },
+        "schema_hash": "14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5"
+      },
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"schema_hash\":\"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5\",\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
+      "sha256": "73e7a37939f0583ff390d280f0d621184532643e8067ca6b93d70b0829751737"
     }
   ]
 }

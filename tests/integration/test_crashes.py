@@ -1,11 +1,12 @@
 import pytest
 
-from tests.support import at
+from tests.support import COLUMNS, at, schema_hash
 
 pytest.importorskip("duckdb")
 
-from dogana import Column, Contract, Ledger, Manifest, Shape
+from dogana import Contract, Ledger, Manifest, Shape
 from dogana.errors import StoreError
+from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import contract
@@ -45,22 +46,22 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
         incoming, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),), tombstones=((1,),)
     )
     with DuckDBStore(":memory:") as store:
-        assert store.deliver(c, base, first_manifest, now=at(30)).accepted
+        assert store.deliver(c, _FileSource(base, COLUMNS), first_manifest, now=at(30)).accepted
         trace = StatementFault(store.connection)
         store.connection = trace
-        assert store.deliver(c, incoming, manifest, now=at(30)).accepted
+        assert store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30)).accepted
         statements = trace.statements
     assert any(sql == "COMMIT" for sql in statements)
     assert any("__dogana_publications VALUES" in sql for sql in statements)
     for after in (False, True):
         for index, sql in enumerate(statements):
             with DuckDBStore(":memory:") as store:
-                first = store.deliver(c, base, first_manifest, now=at(30))
+                first = store.deliver(c, _FileSource(base, COLUMNS), first_manifest, now=at(30))
                 connection = store.connection
                 fault = StatementFault(connection, index, after, error_type)
                 store.connection = fault
                 try:
-                    result = store.deliver(c, incoming, manifest, now=at(30))
+                    result = store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30))
                 except (StoreError, KeyboardInterrupt):
                     result = None
                 finally:
@@ -73,7 +74,7 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 assert store.read(c.table) == ([row(2, value="changed")] if committed else [row(1), row(2)])
                 if result is not None and committed:
                     assert result == committed, (index, sql)
-                retry = store.deliver(c, incoming, manifest, now=at(30))
+                retry = store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30))
                 assert retry.accepted, (index, sql, retry.checks)
                 assert store.read(c.table) == [row(2, value="changed")]
                 assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
@@ -88,7 +89,8 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
 def test_reopening_after_an_interrupted_append_retains_one_publication_and_retry_preserves_duplicates(
     tmp_path, monkeypatch, error_type
 ):
-    c = Contract("events", (), {"log": Shape.append()}, schema=(Column("event", "str"),), start_at=at(18))
+    columns = {"event": "str"}
+    c = Contract("events", (), {"log": Shape.append()}, schema_hash=schema_hash(columns), start_at=at(18))
     path = tmp_path / "landing.duckdb"
     first_manifest = Manifest(c.table, "log", at(19), since=at(18), rows=1, schema_hash=c.schema_hash)
     manifest = Manifest(c.table, "log", at(20), since=at(19), rows=2, schema_hash=c.schema_hash)

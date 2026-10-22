@@ -8,18 +8,21 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from dogana import Column, Contract, Ledger, Shape, deliver, next_extraction
+from dogana import Contract, Ledger, Shape, deliver, next_extraction
+from dogana.reference._sources import _RowSource
 from dogana.reference.duckdb import DuckDBStore
-from tests.support import at
+from tests.support import at, schema_hash
 
 
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path, monkeypatch, after_commit):
+    columns = {"id": "int", "value": "str"}
     c = Contract(
         "stock",
         ("id",),
         {"snapshot": Shape.full(), "cdc": Shape.feed()},
-        schema=(Column("id", "int"), Column("value", "str")),
+        types={"id": "int"},
+        schema_hash=schema_hash(columns),
     )
     path = tmp_path / "stream.duckdb"
     snapshot = c.manifest("snapshot", at(18), rows=2, generation="log:100")
@@ -76,7 +79,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         next_batch = c.manifest(
             "cdc", request.until, since=request.since, generation="log:104", rows=0, tombstones=((2,),)
         )
-        final = deliver(restarted, c, [], next_batch, now=at(20))
+        final = deliver(restarted, c, _RowSource([], columns), next_batch, now=at(20))
         assert final.accepted
         assert (final.claims.complete_as_of, final.claims.valid_as_of) == (at(20), at(20))
         assert restarted.read(c.table) == [{"id": 3, "value": "new"}]
@@ -87,11 +90,13 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
 
 
 def event_contract():
+    columns = {"event": "str", "arrived_at": "datetime"}
     return Contract(
         "events",
         (),
         {"append": Shape.append()},
-        schema=(Column("event", "str"), Column("arrived_at", "datetime")),
+        types={"arrived_at": "datetime"},
+        schema_hash=schema_hash(columns),
         cursor_column="arrived_at",
         start_at=at(18),
     )

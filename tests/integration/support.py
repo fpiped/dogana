@@ -1,11 +1,12 @@
 import csv
+from collections.abc import Mapping
 from pathlib import Path
 
 from dogana import Manifest
-from tests.support import at
+from tests.support import COLUMNS, at
 
 
-def csv_file(folder: Path, name: str, rows: list[dict], columns=("id", "day", "value")) -> Path:
+def csv_file(folder: Path, name: str, rows: list[dict], columns: Mapping[str, str] = COLUMNS) -> Path:
     path = folder / name
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)

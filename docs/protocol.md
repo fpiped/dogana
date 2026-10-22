@@ -24,16 +24,32 @@ no lookback proves that extraction was complete.
 ## Contract and shapes
 
 `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, optional `cursor_column`,
-`schema`, `max_shrink_fraction`, `freshness` and `start_at`. A schema is an ordered tuple of
-`Column(name, type)` with logical types `int`, `float`, `str`, `bool`, `date`, `datetime`. Column order
-matters: `schema_hash` is SHA-256 of compact ASCII JSON containing ordered `[name, type]` pairs. Publication requires a schema; accounting alone does not.
+`types`, optional `schema_hash`, `max_shrink_fraction`, `freshness` and `start_at`. `types` maps
+column names to logical types `int`, `float`, `str`, `bool`, `date`, `datetime`. It covers exactly
+the union of key, window and cursor columns, with no other columns; it is empty only when none
+are bound. Keys and window bounds use ordered scalar types; a cursor uses `datetime`.
+
+The data contract defines the columns. The delivery contract references it by an opaque
+`schema_hash`, keeping column ownership in one place. The receiver obtains this string from its
+ODCS document, dbt model or hand-written column list. When present, the manifest must carry the
+same hash and the store checks its candidate against it. When absent, no schema check is required,
+including for accounting-only contracts, where `schema_hash` is not applicable.
+
+For an ODCS schema object, traverse its properties in declared column order, map each property's
+name and logical type to an ordered `[name, type]` pair, then compute SHA-256 of
+`json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`. Use dogana's six
+logical type names, resolving physical or nested types explicitly in the receiver. Hash only
+these pairs, not the ODCS document, metadata or wire JSON. This compact ASCII JSON recipe is the
+one previously used by the library, so existing column hashes remain valid. The reference store
+and file drop use this recipe; another store must agree with its receiver on the opaque hash.
+
 `freshness` defaults to seven days; choose cadence plus arrival slack. `max_shrink_fraction` defaults
 to 0.5, lies between zero and one, and is disabled only by explicit `None`.
 
 A window column exists exactly when a window shape exists. Regions divide this one column's ordered
 domain, not the key space. Its value must be immutable for a key; a full delivery can reset it.
 Keys are unique and non-null. Key and window values are strings, integers, dates or UTC datetimes;
-schema columns and manifest bounds must agree on type. Normalize aware datetimes to UTC before key
+`types` and manifest bounds must agree on type. Normalize aware datetimes to UTC before key
 equality or interval arithmetic, including DST folds. Strings use code-point order, without Unicode
 normalization or locale collation. Equal-endpoint windows denote one partition. String adjacency uses successor `s + "\x00"` and minimum `""`. Date and datetime domains respect
 their representable minima and maxima; empty exterior intervals are discarded. A set of delivered
@@ -44,8 +60,8 @@ Keyless rows form a multiset: equal events retain separate occurrences.
 Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
 `start_at` bounding retained history. This declares that the source only appends and never deletes
 or revises retained events. Named-key coverage, tombstones and generation checkpoints require keys.
-An optional `cursor_column` names a schema datetime column for timestamp row checks; without it,
-the gate cannot check individual rows against the declared extraction interval.
+An optional `cursor_column` names a column declared as `datetime` in `types` for timestamp row
+checks; without it, the gate cannot check individual rows against the declared extraction interval.
 
 A `Shape` has four semantic properties:
 
@@ -64,8 +80,8 @@ Shapes also carry nonnegative relative `cost` (default one), optional positive `
 optional `lookback` durations. `window_size` is a planning hint, not a push-window width constraint.
 Rolling durations require date or datetime windows. DATE widths are whole days including both ends:
 thirty days ending October 19 start September 20. Datetime windows include both ends of the elapsed UTC duration.
-Timestamp resolution is one microsecond; DATE planning uses UTC calendar dates. Without a declared
-window schema type, rolling planning uses datetime bounds; a DATE window requires its schema type.
+Timestamp resolution is one microsecond; DATE planning uses UTC calendar dates. Rolling planning
+uses the window column's declared type in `types`.
 `lookback` is nonnegative and allowed only on timestamp shapes in keyed contracts; it extends a planned read back
 from the weakest covered completeness boundary. Keyless appends cannot overlap.
 
@@ -84,8 +100,8 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 | Immutable event stream in arrival-order intervals | `Shape.append()` with `start_at` | Event-time completeness or deduplication of a re-emitted event in a new batch. |
 
 Shape constructors take keywords; `Contract` and `Manifest` require keywords after `shapes` and
-`produced_at`, respectively. `Contract.manifest(shape, produced_at, ...)` supplies table and schema
-hash. `Shape.window_ending_at` centralizes inclusive DATE and elapsed datetime window arithmetic.
+`produced_at`, respectively. `Contract.manifest(shape, produced_at, ...)` supplies the table and
+the contract's optional schema hash. `Shape.window_ending_at` centralizes inclusive DATE and elapsed datetime window arithmetic.
 
 ## Manifest
 
@@ -169,7 +185,7 @@ matching. Keyless replacement does not match keys. The core describes operations
 | Check | Predicate |
 |---|---|
 | row_count | Candidate live row count equals `manifest.rows`. |
-| schema_hash | Candidate ordered schema and manifest hash equal the contract schema hash; omitted for schemaless accounting. |
+| schema_hash | Candidate column hash and manifest hash equal `contract.schema_hash`; omitted when the contract hash is absent. |
 | rows_in_window | Every candidate window value is non-null and inside the declared closed window. |
 | window_stability | Every candidate window-column value is non-null. |
 | key_integrity | Every candidate key is non-null and unique. |
@@ -306,7 +322,7 @@ manifest, not to an arbitrary batch or cumulative history.
 
 History binds `table`, `key`, `window_column` and the types of key/window columns. Stores refuse
 changes to these bindings. Other fields may evolve, including freshness, shrink policy, costs,
-window sizes, lookback, admitted shapes and nonbinding schema columns. Each accepted receipt retains
+window sizes, lookback, admitted shapes, cursor columns and the data-contract hash. Each accepted receipt retains
 the contract used for that decision. The full contract, including policy with normalized numeric
 spelling, participates in the chain; only binding differences cause history refusal.
 `Ledger.with_contract(contract)` verifies compatibility and preserves regions, generation and head.
@@ -343,7 +359,7 @@ regions, generation and publication head; a receipt embeds its decision and resu
 [Contract](examples/contract.json), [manifest](examples/manifest.json), [ledger](examples/ledger.json)
 and [receipt](examples/receipt.json) are executable wire examples.
 [Identity vectors](examples/identity-vectors.json) specify exact canonical forms and hashes for independent implementations.
-[JSON Schema 2020-12 documents](wire/) cover all sixteen wire kinds; semantic rules remain in this protocol.
+[JSON Schema 2020-12 documents](wire/) cover all fifteen wire kinds; semantic rules remain in this protocol.
 
 ## Boundaries
 

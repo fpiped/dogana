@@ -62,13 +62,7 @@ def _rolling_window(ledger: Ledger, shape: Shape, until: datetime) -> Window:
     size = shape.window_size
     if size is None:
         raise PlanningError("a window shape needs a window or window_size")
-    column = ledger.contract.columns.get(ledger.contract.window_column or "")
-    domain = next((type(b) for r in ledger.regions for b in (r.low, r.high) if b is not None), None)
-    date_window = column.type == "date" if column is not None else domain is date
-    if column is None and domain not in (None, date, datetime):
-        raise PlanningError("duration windows need a date or datetime domain")
-    if date_window and size % timedelta(days=1):
-        raise PlanningError("DATE window_size must contain a whole number of days")
+    date_window = ledger.contract.types.get(ledger.contract.window_column or "") == "date"
     unit = timedelta(days=1) if date_window else timedelta(microseconds=1)
     try:
         low, high = shape.window_ending_at(until, "date" if date_window else "datetime")

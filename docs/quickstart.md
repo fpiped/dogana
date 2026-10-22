@@ -1,6 +1,8 @@
 # Quick start
 
-Python 3.11 or later. No release is on PyPI yet. Install from GitHub with
+Python 3.11 or later. After the first release, install with `pip install dogana`.
+The core has no dependencies. The `duckdb` extra adds the reference store the quick start uses; nothing in the core imports it.
+For this quick start, use `pip install 'dogana[duckdb]'`. No release is on PyPI yet. Install from GitHub with
 `pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`, or, with uv and an active
 virtual environment, from the source checkout containing `pyproject.toml`:
 
@@ -11,21 +13,33 @@ uv pip install -e '.[duckdb]'
 Run this script in an empty directory. Fixed source and receiver times make the story reproducible;
 production callers supply the actual receiver clock as `now`.
 
+The ordered `columns` mapping is the data contract. Its hash covers compact ASCII JSON pairs of
+column names and logical types. The delivery contract keeps that hash and only the types its key
+and window need. `FileDrop` reads each manifest from its sidecar and uses `columns` to parse CSV.
+The `movements` deliveries use row mappings with inferred types and omit the optional schema check.
+
 ```python
 import csv
+import json
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
-from dogana import Column, Contract, Shape, deliver
+from dogana import Contract, Shape, deliver
 from dogana.reference.duckdb import DuckDBStore
+from dogana.reference.files import FileDrop
 
+columns = {"id": "int", "day": "date", "amount": "int"}
+schema_hash = sha256(
+    json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+).hexdigest()
 contract = Contract(
     "orders",
     key=("id",),
     shapes={"full": Shape.full(cost=100), "daily": Shape.window(size=timedelta(days=30), cost=10)},
     window_column="day",
-    schema=(Column("id", "int"), Column("day", "date"), Column("amount", "int")),
+    types={"id": "int", "day": "date"},
+    schema_hash=schema_hash,
 )
 window = contract.shape("daily").window_ending_at(datetime(2026, 10, 19, tzinfo=UTC), "date")
 deliveries = [
@@ -50,7 +64,7 @@ with DuckDBStore("landing.duckdb") as store:
         "movements",
         ("id",),
         {"full": Shape.full(), "changes": Shape.changes()},
-        schema=(Column("id", "int"), Column("amount", "int")),
+        types={"id": "int"},
     )
     for day, shape, since in [(12, "full", None), (19, "changes", datetime(2026, 10, 12, tzinfo=UTC))]:
         read_at = datetime(2026, 10, day, tzinfo=UTC)
@@ -59,7 +73,7 @@ with DuckDBStore("landing.duckdb") as store:
     for label, day, shape, rows, coverage, declared_count in deliveries:
         path = Path("drop") / f"orders-{day}.csv"
         with path.open("w", newline="", encoding="utf-8") as stream:
-            csv.writer(stream).writerows([("id", "day", "amount"), *rows])
+            csv.writer(stream).writerows([tuple(columns), *rows])
         boundary = datetime(2026, 10, day, tzinfo=UTC)
         manifest = contract.manifest(
             shape,
@@ -68,7 +82,8 @@ with DuckDBStore("landing.duckdb") as store:
             rows=declared_count,
             content_hash=sha256(path.read_bytes()).hexdigest(),
         )
-        receipt = deliver(store, contract, path, manifest, now=boundary)
+        path.with_suffix(path.suffix + ".json").write_text(manifest.to_json(), encoding="utf-8")
+        receipt = FileDrop(store, contract, columns=columns).ingest(path, now=boundary)
         ids = sorted(row["id"] for row in store.read("orders"))
         story.append(f"{label}: {receipt.outcome.value}, rows {ids}")
         if day == 19:
@@ -80,7 +95,7 @@ with DuckDBStore("landing.duckdb") as store:
             assert any(check.name == "row_count" and not check.passed for check in receipt.checks)
         assert ids == {18: [1, 2], 19: [1, 3], 20: [1, 3], 25: [3]}[day]
     print("\n".join(story))
-    replay = deliver(store, contract, path, manifest, now=boundary + timedelta(hours=1))
+    replay = FileDrop(store, contract, columns=columns).ingest(path, now=boundary + timedelta(hours=1))
     assert replay.identity == receipt.identity and replay.received_at == receipt.received_at
     print(f"Same file again: {replay.outcome.value}, rows [3]")
     ledger = store.load_ledger(contract)

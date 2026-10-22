@@ -2,7 +2,7 @@
 
 | Concept | Meaning |
 |---|---|
-| Contract | Receiver declaration of table, key, schema, admitted shapes and policy. |
+| Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, and the hash of the data contract's columns. |
 | Shape | Coverage, completeness, deletion signal and checkpoint; helpers include `full`, `window`, `changes`, `feed` and `append`. |
 | Manifest | One source read's shape, boundary, coverage, count and optional content digest. |
 | Gate | Fixed checks that turn a manifest and row outcomes into a publication decision. |
@@ -13,6 +13,11 @@
 | Claims | Regional evidence and weakest input dates; neither a common snapshot nor a guarantee about a joined result. |
 | Receipt | Accepted, rejected or replayed outcome, checks, receiver time and resulting evidence. |
 | Store | Holds and checks candidates, then publishes rows and evidence atomically against the expected head. |
+
+The data contract owns the columns. The delivery contract's `types` names exactly its key, window
+and optional cursor columns, with no extras. Its optional `schema_hash` is an opaque string from
+the data contract; the gate requires a matching manifest and candidate hash only when it is present.
+The core never computes a full schema.
 
 ## Source patterns
 

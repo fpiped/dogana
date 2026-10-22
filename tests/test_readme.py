@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shlex
@@ -30,6 +31,10 @@ def test_every_documented_block_runs_from_its_documented_directory(tmp_path, pag
             subprocess.run(
                 shlex.split(code), cwd=ROOT, env=environment, check=True, capture_output=True, text=True
             )
+        elif language == "json":
+            from dogana import Manifest
+
+            assert Manifest.from_json(code).to_dict() == json.loads(code)
         elif language == "python":
             scripts.append(code)
     example = tmp_path / "empty directory"

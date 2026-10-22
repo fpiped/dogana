@@ -41,13 +41,6 @@
         }
       ]
     },
-    "schema": {
-      "type": "array",
-      "items": {
-        "$ref": "urn:dogana:wire:1:Column"
-      },
-      "uniqueItems": true
-    },
     "max_shrink_fraction": {
       "anyOf": [
         {
@@ -82,6 +75,32 @@
           "type": "null"
         }
       ]
+    },
+    "types": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "enum": [
+          "int",
+          "float",
+          "str",
+          "bool",
+          "date",
+          "datetime"
+        ]
+      }
+    },
+    "schema_hash": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -91,11 +110,12 @@
     "key",
     "shapes",
     "window_column",
-    "schema",
     "max_shrink_fraction",
     "freshness",
     "start_at",
-    "cursor_column"
+    "cursor_column",
+    "types",
+    "schema_hash"
   ],
   "additionalProperties": false
 }

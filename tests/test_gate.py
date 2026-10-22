@@ -1,5 +1,4 @@
 from dataclasses import replace
-from functools import partial
 
 import pytest
 
@@ -18,10 +17,8 @@ from dogana import (
     Region,
     Transition,
 )
-from tests.support import FULL, SINCE, WINDOW, at, contract
-
-# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
-contract = partial(contract, schema=())
+from tests.support import FULL, SINCE, WINDOW, at
+from tests.support import accounting_contract as contract
 
 
 def outcomes(c, m, fail=None):
@@ -93,8 +90,8 @@ def test_apply_plans_name_the_store_operations_without_accessing_rows(shape, kwa
 
 
 def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_append():
-    shapes = {"full": FULL, "plant": WINDOW, "log": SINCE}
-    c = Contract("receipts", (), shapes, window_column="id", start_at=at(1))
+    shapes = {"full": FULL, "plant": replace(WINDOW, window_size=None), "log": SINCE}
+    c = Contract("receipts", (), shapes, window_column="id", types={"id": "int"}, start_at=at(1))
     whole = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
     plant = ApplyPlan.build(c, Manifest(c.table, "plant", at(18), window=(1, 1)))
     log = ApplyPlan.build(c, Manifest(c.table, "log", at(19), since=at(18)))
@@ -171,14 +168,14 @@ def test_invalid_full_delivery_cannot_hide_an_unexpected_programming_error(monke
 
 
 def test_timestamp_deliveries_request_cursor_interval_checks_only_when_declared():
-    from dogana import Column
 
     c = Contract(
         "events",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("changed_at", "datetime")),
+        types={"id": "int", "changed_at": "datetime"},
         cursor_column="changed_at",
+        schema_hash="declared-columns",
     )
     full_names = {r.name for r in Gate.requirements(c, Manifest(c.table, "full", at(18)))}
     patch_names = {r.name for r in Gate.requirements(c, Manifest(c.table, "since", at(19), since=at(18)))}
@@ -226,3 +223,19 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
     transition = Transition([Region()], [Region(complete_as_of=at(18), valid_as_of=at(18))], plan)
     assert Transition.from_json(transition.to_json()) == transition
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
+
+
+@pytest.mark.parametrize("digest", [None, "wrong"])
+def test_a_store_cannot_pass_a_manifest_hash_that_differs_from_the_contract(digest):
+    c = contract(schema_hash="opaque:columns")
+    m = Manifest(c.table, "full", at(18), schema_hash=digest)
+    receipt = Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(18))
+    assert not receipt.accepted
+    assert any(check.name == "schema_hash" and not check.passed for check in receipt.checks)
+
+
+def test_hashless_accounting_does_not_require_a_schema_check():
+    c = contract()
+    m = c.manifest("full", at(18))
+    assert "schema_hash" not in {r.name for r in Gate.requirements(c, m)}
+    assert Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(18)).accepted

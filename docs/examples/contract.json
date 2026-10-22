@@ -8,20 +8,7 @@
   ],
   "kind":"Contract",
   "max_shrink_fraction":0.5,
-  "schema":[
-    {
-      "kind":"Column",
-      "name":"id",
-      "type":"int",
-      "version":1
-    },
-    {
-      "kind":"Column",
-      "name":"value",
-      "type":"str",
-      "version":1
-    }
-  ],
+  "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
   "shapes":{
     "full":{
       "checkpoint":"none",
@@ -37,6 +24,9 @@
   },
   "start_at":null,
   "table":"stock",
+  "types":{
+    "id":"int"
+  },
   "version":1,
   "window_column":null
 }

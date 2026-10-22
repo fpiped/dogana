@@ -10,7 +10,6 @@ pytest.importorskip("duckdb")
 
 from dogana import (
     Checkpoint,
-    Column,
     Completeness,
     Contract,
     Coverage,
@@ -23,7 +22,9 @@ from dogana import (
 )
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
+from tests.support import schema_hash
 
+COLUMNS = {"id": "int"}
 BOUNDARY = datetime(2026, 10, 18, tzinfo=UTC)
 FULL = Shape(
     coverage=Coverage.ALL,
@@ -34,7 +35,7 @@ FULL = Shape(
 
 
 def _contract() -> Contract:
-    return Contract("files", ("id",), {"full": FULL}, schema=(Column("id", "int"),))
+    return Contract("files", ("id",), {"full": FULL}, types=COLUMNS, schema_hash=schema_hash(COLUMNS))
 
 
 def _delivery(path: Path, contract: Contract) -> Manifest:
@@ -58,7 +59,7 @@ def test_a_malformed_sidecar_is_a_serialization_error_without_publication(
     path.with_suffix(".csv.json").write_bytes(document)
     with DuckDBStore(":memory:") as store:
         with pytest.raises(SerializationError):
-            FileDrop(store, c).ingest(path, now=BOUNDARY)
+            FileDrop(store, c, columns=COLUMNS).ingest(path, now=BOUNDARY)
         assert store.receipts() == ()
         assert store.load_ledger(c).publication_id is None
 
@@ -70,7 +71,7 @@ def test_a_utf8_sidecar_preserves_the_manifest_and_submitted_source(tmp_path: Pa
     document = json.dumps(json.loads(manifest.to_json()), ensure_ascii=False)
     path.with_suffix(".csv.json").write_bytes(document.encode("utf-8"))
     with DuckDBStore(":memory:") as store:
-        receipt = FileDrop(store, c).ingest(path, now=BOUNDARY)
+        receipt = FileDrop(store, c, columns=COLUMNS).ingest(path, now=BOUNDARY)
         assert receipt.accepted, receipt.checks
         assert receipt.manifest == manifest
         assert receipt.source == str(path)
@@ -86,7 +87,7 @@ def test_supplied_receiver_time_controls_admission_and_receipt_freshness(
     _delivery(path, c)
     now = BOUNDARY + age
     with DuckDBStore(":memory:") as store:
-        receipt = FileDrop(store, c).ingest(path, now=now)
+        receipt = FileDrop(store, c, columns=COLUMNS).ingest(path, now=now)
         assert receipt.received_at == now
         assert receipt.accepted == (age >= timedelta())
         if age > c.freshness:
@@ -123,7 +124,7 @@ def test_an_escaping_file_or_sidecar_is_refused_before_reading(
     pattern = FilePattern(r"(?P<produced_at>.*)\.csv", shape="full")
     with DuckDBStore(":memory:") as store:
         monkeypatch.setattr(Path, "open", refuse_open)
-        drop = FileDrop(store, c, pattern, root=root if explicit_root else None)
+        drop = FileDrop(store, c, pattern, root=root if explicit_root else None, columns=COLUMNS)
         with pytest.raises(InvalidContract, match="escapes the drop root"):
             drop.ingest(path)
         assert store.receipts() == ()
@@ -145,7 +146,7 @@ def test_an_explicit_root_rejects_sibling_paths_and_directory_symlink_escapes(
         path = root / "nested" / path.name
     with DuckDBStore(":memory:") as store:
         with pytest.raises(InvalidContract, match="escapes the drop root"):
-            FileDrop(store, c, root=root).ingest(path)
+            FileDrop(store, c, root=root, columns=COLUMNS).ingest(path)
         assert store.receipts() == ()
 
 
@@ -162,7 +163,7 @@ def test_an_internal_symlink_preserves_the_submitted_filename_and_manifest(
         path.with_suffix(".csv.json").symlink_to(data.with_suffix(".csv.json"))
     pattern = FilePattern(r"(?P<produced_at>.*)\.csv", shape="full")
     with DuckDBStore(":memory:") as store:
-        receipt = FileDrop(store, c, pattern, root=tmp_path).ingest(path)
+        receipt = FileDrop(store, c, pattern, root=tmp_path, columns=COLUMNS).ingest(path)
         assert receipt.accepted, receipt.checks
         assert receipt.manifest == expected
         assert receipt.source == str(path)
@@ -187,7 +188,7 @@ def test_glob_characters_are_refused_before_reading_a_sidecar(
     with DuckDBStore(":memory:") as store:
         monkeypatch.setattr(Path, "read_text", refuse_read)
         with pytest.raises(InvalidContract, match="glob characters"):
-            FileDrop(store, c).ingest(path)
+            FileDrop(store, c, columns=COLUMNS).ingest(path)
         assert store.receipts() == ()
 
 
@@ -212,7 +213,7 @@ def test_a_plain_alias_cannot_hide_glob_characters_in_its_resolved_path(tmp_path
         pattern.manifest(path, _contract())
     with DuckDBStore(":memory:") as store:
         with pytest.raises(InvalidContract, match="glob characters"):
-            FileDrop(store, _contract(), pattern).ingest(path)
+            FileDrop(store, _contract(), pattern, columns=COLUMNS).ingest(path)
 
 
 @pytest.mark.parametrize("target", ["file", "sidecar"])
@@ -225,7 +226,7 @@ def test_directories_cannot_be_delivered_as_files_or_sidecars(tmp_path: Path, ta
         path.with_suffix(".csv.json").mkdir()
     with DuckDBStore(":memory:") as store:
         with pytest.raises(InvalidContract, match="regular file"):
-            FileDrop(store, _contract()).ingest(path)
+            FileDrop(store, _contract(), columns=COLUMNS).ingest(path)
         assert store.receipts() == ()
 
 
@@ -240,12 +241,14 @@ def test_every_filename_datetime_needs_an_offset_or_declared_timezone(
         deletions=Deletions.NONE,
         checkpoint=Checkpoint.TIMESTAMP,
     )
+    columns = {"id": "int", "at": "datetime"}
     c = Contract(
         "events",
         ("id",),
         {"recent": shape},
         window_column="at",
-        schema=(Column("id", "int"), Column("at", "datetime")),
+        types={"id": "int", "at": "datetime"},
+        schema_hash=schema_hash(columns),
     )
     values = {
         "produced_at": "2026-10-19T02:00:00+02:00",
@@ -286,7 +289,7 @@ def test_a_declared_timezone_does_not_override_an_explicit_offset_or_parse_gener
         deletions=Deletions.TOMBSTONE,
         checkpoint=Checkpoint.GENERATION,
     )
-    c = Contract("files", ("id",), {"feed": shape})
+    c = Contract("files", ("id",), {"feed": shape}, types={"id": "int"})
     pattern = FilePattern(
         r"(?P<produced_at>[^_]+)__(?P<since>[^_]+)__(?P<generation>[^_]+)__(?P<rows>0)\.csv",
         shape="feed",
@@ -299,6 +302,7 @@ def test_a_declared_timezone_does_not_override_an_explicit_offset_or_parse_gener
 
 
 def test_date_window_bounds_remain_dates_without_a_declared_timezone() -> None:
+    columns = {"id": "int", "day": "date"}
     c = Contract(
         "files",
         ("id",),
@@ -311,7 +315,8 @@ def test_date_window_bounds_remain_dates_without_a_declared_timezone() -> None:
             )
         },
         window_column="day",
-        schema=(Column("id", "int"), Column("day", "date")),
+        types={"id": "int", "day": "date"},
+        schema_hash=schema_hash(columns),
     )
     pattern = FilePattern(
         r"(?P<produced_at>[^_]+)__(?P<low>[^_]+)__(?P<high>[^_]+)__(?P<rows>0)\.csv", shape="daily"
@@ -330,6 +335,7 @@ def test_a_dst_gap_or_fold_requires_an_explicit_offset(wall_time: str) -> None:
 
 
 def test_a_window_derived_from_local_time_uses_utc_duration_across_dst() -> None:
+    columns = {"id": "int", "at": "datetime"}
     c = Contract(
         "files",
         ("id",),
@@ -343,7 +349,8 @@ def test_a_window_derived_from_local_time_uses_utc_duration_across_dst() -> None
             )
         },
         window_column="at",
-        schema=(Column("id", "int"), Column("at", "datetime")),
+        types={"id": "int", "at": "datetime"},
+        schema_hash=schema_hash(columns),
     )
     pattern = FilePattern(
         r"(?P<produced_at>.*)_(?P<rows>0)\.csv", shape="daily", timezone=ZoneInfo("Europe/Rome")

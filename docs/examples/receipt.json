@@ -96,20 +96,7 @@
       ],
       "kind":"Contract",
       "max_shrink_fraction":0.5,
-      "schema":[
-        {
-          "kind":"Column",
-          "name":"id",
-          "type":"int",
-          "version":1
-        },
-        {
-          "kind":"Column",
-          "name":"value",
-          "type":"str",
-          "version":1
-        }
-      ],
+      "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
       "shapes":{
         "full":{
           "checkpoint":"none",
@@ -125,12 +112,15 @@
       },
       "start_at":null,
       "table":"stock",
+      "types":{
+        "id":"int"
+      },
       "version":1,
       "window_column":null
     },
     "generation":null,
     "kind":"Ledger",
-    "publication_id":"7410632d3dbbd92b420536b24b2c96da2aebd428a177270e53d1f8a2bd1a385d",
+    "publication_id":"e10f4991b1e3c187800944a7d107cf6b2c8f02641ba397ff94db153d7b11e06d",
     "regions":[
       {
         "complete_as_of":{
@@ -167,7 +157,7 @@
     "window":null
   },
   "outcome":"accepted",
-  "publication_id":"7410632d3dbbd92b420536b24b2c96da2aebd428a177270e53d1f8a2bd1a385d",
+  "publication_id":"e10f4991b1e3c187800944a7d107cf6b2c8f02641ba397ff94db153d7b11e06d",
   "received_at":{
     "$datetime":"2026-10-18T01:00:00+00:00"
   },

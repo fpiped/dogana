@@ -1,20 +1,17 @@
 import ast
 import json
-from functools import partial
 from pathlib import Path
 
 import pytest
 
 from dogana import Contract, Ledger, Manifest, SerializationError
-from tests.support import SCHEMA, at, contract
-
-# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
-contract = partial(contract, schema=())
+from tests.support import COLUMNS, at
+from tests.support import accounting_contract as contract
 
 
 def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types():
-    c = contract()
     for window in [(1, 30), ("IT01", "IT01"), (at(18).date(), at(19).date()), (at(18), at(19))]:
+        c = contract(window_type=type(window[0]).__name__)
         m = Manifest(c.table, "daily", at(20), window=window, rows=2, schema_hash=c.schema_hash)
         ledger = Ledger(c).apply(m)
         for value in (c, m, ledger):
@@ -34,7 +31,7 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
     ],
 )
 def test_unsupported_or_invalid_wire_contracts_are_refused(change):
-    value = contract(schema=SCHEMA).to_dict()
+    value = contract(columns=COLUMNS).to_dict()
     value.update(change)
     with pytest.raises(SerializationError):
         Contract.from_dict(value)
@@ -91,9 +88,9 @@ def test_the_core_runs_in_an_isolated_package_with_reference_package_removed(tmp
 import sys
 sys.path.insert(0, sys.argv[1])
 from datetime import datetime, timezone
-from dogana import Column, Contract, Shape, Manifest, Ledger, Gate, Check, State
+from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
 shape = Shape(coverage='all', completeness='complete', deletions='absence', checkpoint='none')
-c = Contract('stock', ('id',), {'full': shape}, schema=(Column('id', 'int'),))
+c = Contract('stock', ('id',), {'full': shape}, types={'id': 'int'})
 m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
 checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
@@ -134,7 +131,6 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         ApplyPlan,
         Check,
         CheckRequirement,
-        Column,
         ExtractionRequest,
         Gate,
         Receipt,
@@ -151,7 +147,6 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
     checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
     values = (
-        Column("id", "int"),
         FULL,
         c,
         m,
@@ -169,7 +164,6 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         ExtractionRequest(c.table, "full", at(19)),
     )
     assert {type(value) for value in values} == {
-        Column,
         Shape,
         Contract,
         Manifest,
@@ -226,7 +220,7 @@ def test_numeric_spellings_and_default_values_do_not_fork_identity():
     assert integer.identity_json() == decimal.identity_json()
     assert integer.identity_dict()["cost"] == 2
     assert "cost" not in replace(integer, cost=1).identity_dict()
-    c = Contract("stock", ("id",), {"full": integer})
+    c = Contract("stock", ("id",), {"full": integer}, types={"id": "int"})
     assert "freshness" not in c.identity_dict()
     assert "max_shrink_fraction" not in c.identity_dict()
     assert replace(c, max_shrink_fraction=None).identity_dict()["max_shrink_fraction"] is None
@@ -340,3 +334,22 @@ def test_wire_json_preserves_integer_values_while_identity_uses_ecmascript_numbe
     assert Manifest.from_json(value.to_json()) == value
     assert value.identity_dict()["keys"] == [[2**68]]
     assert '"keys":[[295147905179352830000]]' in value.identity_json()
+
+
+@pytest.mark.parametrize("name", ["kind", "version"])
+def test_type_mapping_column_names_cannot_be_mistaken_for_wire_metadata(name):
+    from dogana import Shape
+
+    c = Contract("events", (name,), {"full": Shape.full()}, types={name: "str"})
+    assert Contract.from_json(c.to_json()) == c
+
+
+def test_removed_schema_and_column_wire_kind_are_refused():
+    import dogana
+    from dogana.wire import Wire
+
+    assert not hasattr(dogana, "Column")
+    with pytest.raises(SerializationError, match="unknown fields"):
+        Contract.from_dict(contract().to_dict() | {"schema": []})
+    with pytest.raises(SerializationError, match="unknown wire kind"):
+        Wire.from_dict({"kind": "Column", "version": 1, "name": "id", "type": "int"})

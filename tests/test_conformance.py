@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from dogana.conformance import StampedLedgerConformance, StoreConformance
-from tests.memory_store import CommitMemoryStore, MemoryStore
+from tests.memory_store import CommitMemoryStore, MemoryStore, RowSource
 
 
 class MemoryFactory:
@@ -17,8 +17,8 @@ class MemoryFactory:
     def make_store(self):
         return self.store_type()
 
-    def write_source(self, rows, schema):
-        return [dict(r) for r in rows]
+    def write_source(self, rows, columns):
+        return RowSource(rows, columns)
 
     def read_table(self, store, table):
         return store.state[0][table][0]
@@ -86,13 +86,15 @@ class DuckDBFactory:
 
         return DuckDBStore(self.folder / f"{uuid4().hex}.duckdb")
 
-    def write_source(self, rows, schema):
+    def write_source(self, rows, columns):
+        from dogana.reference._sources import _FileSource
+
         path = self.folder / f"{uuid4().hex}.csv"
         with path.open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=[c.name for c in schema])
+            writer = csv.DictWriter(stream, fieldnames=list(columns))
             writer.writeheader()
             writer.writerows(rows)
-        return path
+        return _FileSource(path, columns)
 
     def read_table(self, store, table):
         return store.read(table)

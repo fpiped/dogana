@@ -87,20 +87,14 @@ def test_a_replayed_delivery_retains_its_receipt_and_original_receiver_clock():
     assert store.receipts(c.table) == (first,)
 
 
-def test_a_full_publication_without_a_schema_is_refused_before_staging(monkeypatch):
+def test_a_full_publication_without_a_schema_hash_checks_the_bound_columns():
     store = MemoryStore()
-    c = replace(contract(), schema=())
-    manifest = Manifest(c.table, "full", at(18), rows=1)
-
-    def unexpected(*args):
-        pytest.fail("a schema-free publication cannot stage rows")
-
-    monkeypatch.setattr(store, "hold", unexpected)
-    receipt = deliver(store, c, object(), manifest, at(20))
-    assert not receipt.accepted
-    assert receipt.checks[0].name == "schema"
-    assert store.receipts(c.table) == (receipt,)
-    assert store.load_ledger(c).publication_id is None
+    c = replace(contract(), schema_hash=None)
+    manifest = c.manifest("full", at(18), rows=1)
+    receipt = deliver(store, c, [row(1)], manifest, at(20))
+    assert receipt.accepted
+    assert "schema_hash" not in {check.name for check in receipt.checks}
+    assert store.read(c.table) == [row(1)]
 
 
 def test_a_lost_accepted_receipt_cannot_be_replaced_by_another_acceptance():

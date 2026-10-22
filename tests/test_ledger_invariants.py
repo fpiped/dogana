@@ -14,6 +14,7 @@ CONTRACT = Contract(
     ("id",),
     {"full": FULL, "daily": WINDOW, "recent": RECENT, "since": SINCE},
     window_column="day",
+    types={"id": "int", "day": "date"},
 )
 START = datetime(2026, 1, 1, tzinfo=UTC)
 

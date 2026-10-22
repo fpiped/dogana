@@ -1,6 +1,5 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from functools import partial
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -18,10 +17,8 @@ from dogana import (
     next_extraction,
     plan_delivery,
 )
-from tests.support import FEED, FULL, RECENT, SCHEMA, SINCE, WINDOW, at, contract
-
-# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
-contract = partial(contract, schema=())
+from tests.support import FEED, FULL, RECENT, SINCE, WINDOW, at
+from tests.support import accounting_contract as contract
 
 
 def test_deletions_known_today_choose_the_cheapest_complete_shape_for_a_patched_region():
@@ -73,7 +70,7 @@ def test_the_next_changed_since_interval_starts_at_the_weakest_region_boundary()
 
 
 def test_the_next_rolling_window_uses_the_declared_width_and_column_type():
-    c = contract(schema=SCHEMA)
+    c = contract(window_type="date")
     request = next_extraction(Ledger(c), "daily", at(20))
     assert request.interval == ((at(20) - timedelta(days=29)).date(), at(20).date())
 
@@ -95,7 +92,7 @@ def test_a_tombstone_feed_can_advance_completeness_when_its_old_validity_already
 
 @pytest.mark.parametrize("window", [(0, 0), (at(18).date(), at(18).date()), (at(18), at(18))])
 def test_a_minimum_requirement_can_use_a_snapshot_later_than_newer_local_evidence(window):
-    c = contract(shapes={"full": FULL, "daily": WINDOW})
+    c = contract(window_type=type(window[0]).__name__, shapes={"full": FULL, "daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=window))
     request = plan_delivery(ledger, Requirement(c.table, at(19), at(19)))
@@ -124,7 +121,7 @@ def test_validity_can_require_a_later_read_even_when_completeness_is_already_suf
 
 
 def test_a_delayed_date_window_covers_every_date_since_the_previous_window():
-    c = contract(schema=SCHEMA, shapes={"daily": WINDOW})
+    c = contract(window_type="date", shapes={"daily": WINDOW})
     first = next_extraction(Ledger(c), "daily", at(19, 12))
     ledger = Ledger(c).apply(Manifest(c.table, first.shape, first.until, window=first.window))
     later = at(19, 12) + timedelta(days=30, hours=13)
@@ -136,7 +133,7 @@ def test_a_delayed_date_window_covers_every_date_since_the_previous_window():
 
 def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microsecond():
     daily = replace(WINDOW, window_size=timedelta(days=1))
-    c = contract(shapes={"daily": daily})
+    c = contract(window_type="datetime", shapes={"daily": daily})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
     request = next_extraction(ledger, "daily", at(21, 1))
     assert request.window == (at(19) + timedelta(microseconds=1), at(21, 1))
@@ -146,13 +143,13 @@ def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microseco
 
 def test_rolling_windows_use_coverage_bounds_rather_than_the_previous_read_time():
     daily = replace(WINDOW, window_size=timedelta(days=1))
-    c = contract(shapes={"daily": daily})
+    c = contract(window_type="datetime", shapes={"daily": daily})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(20), window=(at(18), at(19))))
     assert next_extraction(ledger, "daily", at(22)).window[0] == at(19) + timedelta(microseconds=1)
 
 
 def test_ordinary_rolling_overlap_is_preserved_when_runs_are_close_together():
-    c = contract(schema=SCHEMA, shapes={"daily": WINDOW})
+    c = contract(window_type="date", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(
         Manifest(c.table, "daily", at(19), window=((at(19) - timedelta(days=29)).date(), at(19).date()))
     )
@@ -160,29 +157,25 @@ def test_ordinary_rolling_overlap_is_preserved_when_runs_are_close_together():
     assert request.window == ((at(20) - timedelta(days=29)).date(), at(20).date())
 
 
-def test_a_schema_free_rolling_window_uses_the_date_domain_already_in_the_ledger():
-    c = contract(shapes={"daily": WINDOW})
+def test_hashless_rolling_windows_use_the_declared_date_domain():
+    c = contract(window_type="date", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18).date(), at(19).date())))
     request = next_extraction(ledger, "daily", at(20))
     assert request.window == ((at(20) - timedelta(days=29)).date(), at(20).date())
 
 
-def test_a_schema_free_date_domain_refuses_a_fractional_day_rolling_width():
-    c = contract(shapes={"daily": replace(WINDOW, window_size=timedelta(hours=12))})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18).date(), at(19).date())))
-    with pytest.raises(PlanningError, match="whole number of days"):
-        next_extraction(ledger, "daily", at(20))
+def test_a_date_domain_refuses_a_fractional_day_rolling_width_at_declaration():
+    with pytest.raises(InvalidContract, match="whole number of days"):
+        contract(window_type="date", shapes={"daily": replace(WINDOW, window_size=timedelta(hours=12))})
 
 
-def test_a_schema_free_integer_domain_refuses_a_duration_window():
-    c = contract(shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
-    with pytest.raises(PlanningError, match="date or datetime"):
-        next_extraction(ledger, "daily", at(20))
+def test_an_integer_domain_refuses_a_duration_window_at_declaration():
+    with pytest.raises(InvalidContract, match="date or datetime"):
+        Contract("orders", ("id",), {"daily": WINDOW}, window_column="day", types={"id": "int", "day": "int"})
 
 
 def test_an_explicit_window_keeps_its_bounds_and_must_match_the_declared_domain():
-    c = contract(schema=SCHEMA)
+    c = contract(window_type="date")
     window = (at(18).date(), at(19).date())
     assert next_extraction(Ledger(c), "daily", at(20), window=window).window == window
     with pytest.raises(InvalidContract, match="types differ"):
@@ -191,7 +184,12 @@ def test_an_explicit_window_keeps_its_bounds_and_must_match_the_declared_domain(
 
 def test_a_partial_complete_keyless_window_prevents_an_overlapping_append_request():
     c = Contract(
-        "events", (), {"full": FULL, "daily": WINDOW, "append": SINCE}, window_column="day", start_at=at(17)
+        "events",
+        (),
+        {"full": FULL, "daily": replace(WINDOW, window_size=None), "append": SINCE},
+        window_column="day",
+        types={"day": "int"},
+        start_at=at(17),
     )
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
     ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
@@ -341,7 +339,10 @@ def test_planner_values_normalize_dst_folds_containers_and_numeric_costs():
 
 @pytest.mark.parametrize("date_window", [False, True])
 def test_a_rolling_anchor_includes_an_open_previous_endpoint(date_window):
-    c = contract(shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
+    c = contract(
+        window_type="date" if date_window else "datetime",
+        shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))},
+    )
     endpoint = at(19).date() if date_window else at(19)
     ledger = Ledger(
         c,
@@ -354,33 +355,35 @@ def test_a_rolling_anchor_includes_an_open_previous_endpoint(date_window):
 
 
 def test_a_rolling_anchor_ignores_evidence_beyond_its_window_end():
-    c = contract(shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
+    c = contract(window_type="datetime", shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
     ledger = ledger.apply(Manifest(c.table, "daily", at(22), window=(at(25), at(26))))
     assert next_extraction(ledger, "daily", at(23)).window[0] == at(19) + timedelta(microseconds=1)
 
 
 def test_a_rolling_anchor_uses_the_newest_covered_endpoint():
-    c = contract(shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
+    c = contract(window_type="datetime", shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
     ledger = ledger.apply(Manifest(c.table, "daily", at(22), window=(at(21), at(22))))
     assert next_extraction(ledger, "daily", at(25)).window[0] == at(22) + timedelta(microseconds=1)
 
 
 def test_a_whole_domain_base_does_not_extend_a_rolling_window_to_its_read_time():
-    c = contract(shapes={"full": FULL, "daily": replace(WINDOW, window_size=timedelta(days=1))})
+    c = contract(
+        window_type="datetime", shapes={"full": FULL, "daily": replace(WINDOW, window_size=timedelta(days=1))}
+    )
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
     assert next_extraction(ledger, "daily", at(25)).window == (at(24), at(25))
 
 
 def test_a_one_date_window_includes_the_first_representable_date():
-    c = contract(schema=SCHEMA, shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
+    c = contract(window_type="date", shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
     request = next_extraction(Ledger(c), "daily", datetime.min.replace(tzinfo=UTC))
     assert request.window == (date.min, date.min)
 
 
 def test_a_rolling_window_outside_the_datetime_range_is_refused():
-    c = contract(shapes={"daily": WINDOW})
+    c = contract(window_type="datetime", shapes={"daily": WINDOW})
     with pytest.raises(PlanningError, match="range"):
         next_extraction(Ledger(c), "daily", datetime.min.replace(tzinfo=UTC))
 

@@ -32,8 +32,10 @@ delivery never raises a date above what it proves.
 
 dogana is a protocol, with this library as its reference. Two documents carry it.
 
-**The contract** is the receiver's declaration, written once per table: the key, the window column
-and the named shapes a delivery may take, each shape saying what such a delivery proves.
+**The contract** is the receiver's declaration, written once per table: the key, the window column,
+their types and the named shapes a delivery may take, each saying what such a delivery proves.
+The data contract owns the columns; the delivery contract references their hash as an optional
+opaque string. The core neither carries nor computes the full schema.
 
 ```python
 from datetime import timedelta
@@ -45,8 +47,14 @@ orders = Contract(
     key=("id",),
     shapes={"full": Shape.full(), "daily": Shape.window(size=timedelta(days=30))},
     window_column="day",
+    types={"id": "int", "day": "date"},
+    schema_hash="orders-columns-v1",
 )
 ```
+
+`types` must name exactly the key, window and optional cursor columns, with no extras.
+Here `orders-columns-v1` stands for a hash supplied by the data contract; the
+[quick start](docs/quickstart.md) computes one using the reference store's recipe.
 
 **The manifest** travels with each delivery and declares that one read: which shape, as of which
 source boundary, which window, how many rows, a hash of the content. On the wire it is plain JSON:
@@ -56,7 +64,7 @@ source boundary, which window, how many rows, a hash of the content. On the wire
  "produced_at": {"$datetime": "2026-10-19T00:00:00+00:00"},
  "window": [{"$date": "2026-09-20"}, {"$date": "2026-10-19"}],
  "rows": 1, "content_hash": "3b7f...", "since": null, "generation": null,
- "schema_hash": null, "keys": [], "tombstones": []}
+ "schema_hash": "orders-columns-v1", "keys": [], "tombstones": []}
 ```
 
 Who writes it depends on who controls the read. A sender that controls it drops the JSON next to
@@ -67,8 +75,8 @@ wrote it, only that the gate checks the rows against it.
 
 **The gate** compares the manifest with the contract (is this shape admitted, does the window fit
 the column, is the boundary later than what the ledger already holds) and the rows with the
-manifest (the count, the columns, every row inside the window, keys unique). A contradiction is
-refused as a whole and nothing is written.
+manifest (the count, the column hash when the contract supplies one, every row inside the window,
+keys unique). A contradiction is refused as a whole and nothing is written.
 
 **The ledger** folds each accepted manifest. A complete delivery sets both dates in its coverage.
 Rows changed since a timestamp move completeness only. Tombstones move validity back to their
@@ -112,8 +120,14 @@ orders = Contract(
     key=("id",),
     shapes={"full": Shape.full(), "daily": Shape.window(size=timedelta(days=30))},
     window_column="day",
+    types={"id": "int", "day": "date"},
 )
-movements = Contract("movements", key=("id",), shapes={"full": Shape.full(), "changes": Shape.changes()})
+movements = Contract(
+    "movements",
+    key=("id",),
+    shapes={"full": Shape.full(), "changes": Shape.changes()},
+    types={"id": "int"},
+)
 window = orders.shape("daily").window_ending_at(at(19), "date")
 orders_ledger = (
     Ledger(orders)
@@ -149,8 +163,13 @@ Inside whatever already writes your tables: a cron script, an Airflow task, a dl
 server, no daemon, no dependencies in the core. It never reads a source, never schedules, never
 transforms. The rows stay in your database and the ledger moves with them in one transaction. A
 DuckDB store and a file drop are included as reference implementations; a conformance suite lets
-you prove a store for your own warehouse. Until the first release, install from GitHub with
-`pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`.
+you prove a store for your own warehouse.
+
+After the first release, install with `pip install dogana`.
+The core has no dependencies. The `duckdb` extra adds the reference store the quick start uses; nothing in the core imports it.
+For the quick start, use `pip install 'dogana[duckdb]'`. No release is on PyPI yet; for now use
+`pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"` or the
+[checkout instructions](docs/quickstart.md).
 
 ## Who it is for
 

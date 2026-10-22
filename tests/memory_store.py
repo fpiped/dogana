@@ -15,17 +15,38 @@ from dogana import (
 )
 from dogana.contract import LOGICAL_TYPES, FullDelivery
 from dogana.errors import LedgerAhead, SerializationError
+from tests.support import schema_hash
+
+
+class RowSource(list):
+    def __init__(self, rows, columns=None):
+        super().__init__(dict(row) for row in rows)
+        self.columns = dict(columns) if columns is not None else self._infer_columns()
+
+    def _infer_columns(self):
+        if not self:
+            return {}
+        columns = {}
+        for name in self[0]:
+            types = {type(row[name]) for row in self if name in row and row[name] is not None}
+            columns[name] = next(
+                (name for name, kind in LOGICAL_TYPES.items() if types == {kind.python_type}),
+                "unsupported",
+            )
+        return columns
 
 
 def check_rows(contract, manifest, rows, previous):
-    names = tuple(c.name for c in contract.schema)
-    schema_ok = not names or (
-        manifest.schema_hash == contract.schema_hash
+    columns = rows.columns
+    schema_ok = contract.schema_hash is None or (
+        schema_hash(columns) == contract.schema_hash
+        and manifest.schema_hash == contract.schema_hash
         and all(
-            tuple(row) == names
+            tuple(row) == tuple(columns)
             and all(
-                row[c.name] is None or type(row[c.name]) is LOGICAL_TYPES[c.type].python_type
-                for c in contract.schema
+                kind in LOGICAL_TYPES
+                and (row[name] is None or type(row[name]) is LOGICAL_TYPES[kind].python_type)
+                for name, kind in columns.items()
             )
             for row in rows
         )
@@ -40,14 +61,17 @@ def check_rows(contract, manifest, rows, previous):
         )
 
     def key(row):
-        return tuple(row[k] for k in contract.key)
+        return tuple(row.get(k) for k in contract.key)
+
+    def typed(row, name):
+        return name in row and type(row[name]) is LOGICAL_TYPES[contract.types[name]].python_type
 
     live = [key(r) for r in rows]
     shape = contract.shape(manifest.shape)
     window, col = manifest.window, contract.window_column
 
     def inside(row):
-        return window is None or row[col] is not None and window[0] <= row[col] <= window[1]
+        return window is None or typed(row, col) and window[0] <= row[col] <= window[1]
 
     published = {key(r): r for r in previous}
     covered = [r for r in previous if inside(r)]
@@ -56,9 +80,10 @@ def check_rows(contract, manifest, rows, previous):
     outcomes = {
         "row_count": manifest.rows == len(rows),
         "schema_hash": schema_ok,
-        "key_integrity": len(set(live)) == len(live) and all(None not in k for k in live),
+        "key_integrity": all(typed(row, name) for row in rows for name in contract.key)
+        and len(set(live)) == len(live),
         "rows_in_window": all(inside(r) for r in rows),
-        "window_stability": col is None or all(r[col] is not None for r in rows),
+        "window_stability": col is None or all(typed(row, col) for row in rows),
         "named_keys": (
             (shape.coverage != "keys" and not manifest.keys or set(live) == set(manifest.keys))
             and not set(live).intersection(manifest.tombstones)
@@ -70,7 +95,7 @@ def check_rows(contract, manifest, rows, previous):
     }
     if any(r.name == "rows_in_interval" for r in requirements):
         outcomes["rows_in_interval"] = all(
-            r[cursor] is not None and manifest.since < r[cursor] <= manifest.produced_at for r in rows
+            typed(row, cursor) and manifest.since < row[cursor] <= manifest.produced_at for row in rows
         )
     return tuple(Check(r.name, outcomes[r.name]) for r in requirements)
 
@@ -159,15 +184,13 @@ class MemoryStore:
             return ledger
 
     def hold(self, source, manifest, contract):
-        rows = [dict(row) for row in source]
+        rows = RowSource(source, getattr(source, "columns", None))
         token = uuid4().hex
         self.candidates[token] = contract, manifest, rows
         return token
 
     def check(self, candidate, contract, manifest, requirements):
         with self.lock:
-            if not contract.schema:
-                raise InvalidContract("publication requires a declared schema")
             held = self.candidates.get(candidate)
             if held is None:
                 raise StoreError("checks require a candidate held by this store")

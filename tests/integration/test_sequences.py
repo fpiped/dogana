@@ -6,13 +6,12 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.support import at
+from tests.support import COLUMNS, at, schema_hash
 
 pytest.importorskip("duckdb")
 
 from dogana import (
     Checkpoint,
-    Column,
     Completeness,
     Contract,
     Coverage,
@@ -22,6 +21,7 @@ from dogana import (
     Region,
     Shape,
 )
+from dogana.reference._sources import _FileSource, _RowSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file
 
@@ -60,6 +60,7 @@ def invariants(before, after, manifest, shape):
                 )
 
 
+RECORD_COLUMNS = {"id": "int", "day": "int", "value": "str"}
 DECLARED = shapes()
 START = datetime(2026, 1, 1, tzinfo=UTC)
 KEYS = st.sets(st.integers(min_value=0, max_value=8), max_size=9)
@@ -80,7 +81,8 @@ def sequence_contract():
         key=("id",),
         shapes=DECLARED,
         window_column="day",
-        schema=(Column("id", "int"), Column("day", "int"), Column("value", "str")),
+        types={"id": "int", "day": "int"},
+        schema_hash=schema_hash(RECORD_COLUMNS),
         max_shrink_fraction=None,
     )
 
@@ -95,7 +97,7 @@ def baseline(store, c):
         schema_hash=c.schema_hash,
         generation="g0",
     )
-    receipt = store.deliver(c, rows, manifest, now=at(30))
+    receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
     assert receipt.accepted
     return receipt, {row["id"]: row for row in rows}
 
@@ -150,7 +152,7 @@ def test_every_admitted_shape_publishes_its_declared_row_effect(name, live, dele
     with DuckDBStore(":memory:") as store:
         first, previous = baseline(store, c)
         rows, manifest = attempt(c, first.ledger, 1, name, live, deleted, low, high, "valid")
-        receipt = store.deliver(c, rows, manifest, now=at(30))
+        receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         expected = expected_rows(previous, rows, manifest, c.shape(name))
         assert store.read(c.table) == [expected[key] for key in sorted(expected)]
@@ -177,7 +179,7 @@ def test_delivery_histories_preserve_rows_evidence_and_old_publications(attempts
                 assert store.load_ledger(c) == before
             else:
                 rows, manifest = attempt(c, before, step, name, live, deleted, low, high, issue)
-                receipt = store.deliver(c, rows, manifest, now=at(30))
+                receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
                 assert receipt.accepted is (issue == "valid"), receipt.checks
                 assert store.receipts(c.table) == (*retained, receipt)
                 if issue == "valid":
@@ -204,6 +206,7 @@ def test_delivery_histories_preserve_rows_evidence_and_old_publications(attempts
     )
 )
 def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(attempts):
+    columns = {"event": "str"}
     c = Contract(
         "events",
         key=(),
@@ -215,7 +218,7 @@ def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(att
                 checkpoint=Checkpoint.TIMESTAMP,
             )
         },
-        schema=(Column("event", "str"),),
+        schema_hash=schema_hash(columns),
         start_at=START,
     )
     events = []
@@ -223,7 +226,7 @@ def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(att
     with DuckDBStore(":memory:") as store:
         first = store.deliver(
             c,
-            [],
+            _RowSource([], columns),
             Manifest(
                 c.table,
                 shape="log",
@@ -248,7 +251,7 @@ def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(att
                 schema_hash=c.schema_hash,
             )
             rows = [{"event": value} for value in batch]
-            receipt = store.deliver(c, rows, manifest, now=at(30))
+            receipt = store.deliver(c, _RowSource(rows, columns), manifest, now=at(30))
             assert receipt.accepted is (offset == 0), receipt.checks
             assert store.receipts(c.table) == (*retained, receipt)
             if offset == 0:
@@ -277,10 +280,12 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
     c = contract()
     with DuckDBStore(":memory:") as store:
         source = csv_file(tmp_path, "base.csv", [row(1), row(2)])
-        first = store.deliver(c, source, sidecar(source, c, "full", 18, 2, generation="g1"), now=at(30))
+        first = store.deliver(
+            c, _FileSource(source, COLUMNS), sidecar(source, c, "full", 18, 2, generation="g1"), now=at(30)
+        )
         source = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
         manifest = sidecar(source, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),))
-        second = store.deliver(c, source, manifest, now=at(30))
+        second = store.deliver(c, _FileSource(source, COLUMNS), manifest, now=at(30))
         assert first.accepted and second.accepted
         bad_window = Manifest(
             c.table,
@@ -292,7 +297,7 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
         )
         broken = replace(manifest, produced_at=manifest.produced_at + timedelta(days=1), since="restored")
         for attempt in (first.manifest, bad_window, broken, manifest, bad_window, broken, first.manifest):
-            receipt = store.deliver(c, source, attempt, now=at(30))
+            receipt = store.deliver(c, _FileSource(source, COLUMNS), attempt, now=at(30))
             if attempt.identity == first.manifest.identity:
                 assert receipt == replace(first, outcome="replayed")
             elif attempt.identity == manifest.identity:

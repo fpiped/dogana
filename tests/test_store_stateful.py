@@ -7,17 +7,21 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
-from dogana import Column, Contract, Gate, Ledger, Manifest, Outcome, Receipt, Shape, StoreError, deliver
+from dogana import Contract, Gate, Ledger, Manifest, Outcome, Receipt, Shape, StoreError, deliver
 from dogana.errors import LedgerAhead, StampAhead
-from tests.memory_store import CommitMemoryStore, MemoryStore
+from tests.memory_store import CommitMemoryStore, MemoryStore, RowSource
+from tests.support import schema_hash
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 NOW = START + timedelta(days=1)
+COLUMNS = {"id": "int", "bucket": "int", "value": "int"}
 VALUES = st.dictionaries(st.integers(0, 8), st.integers(-9, 9), max_size=9)
 
 
 def rows_for(values: dict[int, int]) -> list[dict[str, int]]:
-    return [{"id": key, "bucket": key % 3, "value": value} for key, value in sorted(values.items())]
+    return RowSource(
+        [{"id": key, "bucket": key % 3, "value": value} for key, value in sorted(values.items())], COLUMNS
+    )
 
 
 class PublicationSequences(RuleBasedStateMachine):
@@ -36,14 +40,15 @@ class PublicationSequences(RuleBasedStateMachine):
                 "feed": Shape.feed(),
             },
             window_column="bucket",
-            schema=(Column("id", "int"), Column("bucket", "int"), Column("value", "int")),
+            types={"id": "int", "bucket": "int"},
+            schema_hash=schema_hash(COLUMNS),
             max_shrink_fraction=None,
         )
         self.tick = 0
         self.values: dict[int, int] = {}
         self.evidence = {bucket: (START, START) for bucket in range(3)}
         self.generation = "g0"
-        first = deliver(self.store, self.contract, [], self.full_manifest({}, START), NOW)
+        first = deliver(self.store, self.contract, rows_for({}), self.full_manifest({}, START), NOW)
         assert first.accepted
         self.accepted = [first]
         self.attempts = [first]

@@ -11,7 +11,8 @@ up to six fractional digits. Public serialization normalizes these values to UTC
 
 All version 1 fields are required, including nulls and defaults. Structured values and
 tagged scalars reject unknown fields. The `Contract.shapes` mapping accepts nonempty
-names, with each value checked against the Shape schema. Receipt carries only `outcome`
+names, with each value checked against the Shape schema. `Contract.types` maps only key,
+window and cursor columns to logical types; `schema_hash` references the external data contract. Receipt carries only `outcome`
 (`accepted`, `rejected` or `replayed`), with a transition for acceptance and replay.
 
 These schemas specify the wire structure, scalar domains and local constraints.

@@ -1,9 +1,11 @@
 """Inherit StoreConformance in pytest and supply a factory fixture."""
 
+import json
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from hashlib import sha256
 from threading import Event
 from typing import Any, Protocol, cast
 
@@ -12,7 +14,6 @@ import pytest
 from dogana import (
     Checkpoint,
     Claims,
-    Column,
     Completeness,
     Contract,
     Coverage,
@@ -57,14 +58,19 @@ FEED = Shape(
     deletions=Deletions.TOMBSTONE,
     checkpoint=Checkpoint.GENERATION,
 )
-SCHEMA = (Column("id", "int"), Column("day", "date"), Column("value", "str"))
+COLUMNS = {"id": "int", "day": "date", "value": "str"}
+
+
+def _schema_hash(columns: Mapping[str, str]) -> str:
+    pairs = json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":"))
+    return sha256(pairs.encode("ascii")).hexdigest()
 
 
 class StoreFactory(Protocol):
     """Transport and deliberate persistence faults supplied by the store's tests."""
 
     def make_store(self) -> Store: ...
-    def write_source(self, rows: Sequence[Mapping[str, Any]], schema: tuple[Column, ...]) -> object: ...
+    def write_source(self, rows: Sequence[Mapping[str, Any]], columns: Mapping[str, str]) -> object: ...
     def read_table(self, store: Store, table: str) -> list[dict[str, Any]]: ...
     def fail_after_rows(self, store: Store) -> AbstractContextManager[None]: ...
     def read_publication(self, store: Store, contract: Contract) -> tuple[list[dict[str, Any]], Ledger]: ...
@@ -96,8 +102,10 @@ def _contract(table: str = "moves", shapes: dict[str, Shape] | None = None, **kw
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "feed": FEED}
     window_column = "day" if any(s.coverage == "window" for s in shapes.values()) else None
     kwargs.setdefault("max_shrink_fraction", None)
+    kwargs.setdefault("schema_hash", _schema_hash(COLUMNS))
+    types = {"id": "int", **({"day": "date"} if window_column else {})}
     return Contract(
-        table=table, key=("id",), shapes=shapes, window_column=window_column, schema=SCHEMA, **kwargs
+        table=table, key=("id",), shapes=shapes, window_column=window_column, types=types, **kwargs
     )
 
 
@@ -128,6 +136,8 @@ class _StoreScenarios:
         rows: Sequence[Mapping[str, Any]],
         shape: str = "full",
         day: int = 18,
+        *,
+        columns: Mapping[str, str] = COLUMNS,
         **kwargs: Any,
     ) -> Receipt:
         manifest = Manifest(
@@ -138,7 +148,7 @@ class _StoreScenarios:
             schema_hash=contract.schema_hash,
             **kwargs,
         )
-        receipt = _submit(store, contract, factory.write_source(rows, contract.schema), manifest)
+        receipt = _submit(store, contract, factory.write_source(rows, columns), manifest)
         self._fold(store, contract)
         return receipt
 
@@ -153,6 +163,31 @@ class _StoreScenarios:
 
 class StoreConformance(_StoreScenarios):
     """Required publication, replay and atomicity obligations."""
+
+    @pytest.mark.parametrize("rows", [[], [_row(1)], [{**_row(1), "value": None}]])
+    def test_a_full_delivery_without_a_schema_hash_publishes_rows_and_evidence(
+        self, factory: StoreFactory, store: Store, rows: list[dict[str, Any]]
+    ) -> None:
+        c = _contract(schema_hash=None)
+        receipt = self._deliver(factory, store, c, rows)
+        assert receipt.accepted, receipt.checks
+        assert receipt.manifest.schema_hash is None
+        assert all(check.name != "schema_hash" for check in receipt.checks)
+        assert factory.read_table(store, c.table) == rows
+        assert store.load_ledger(c) == receipt.ledger
+        assert receipt.claims.complete_as_of == receipt.claims.valid_as_of == _at(18)
+        assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
+        assert store.receipts(c.table) == (receipt,)
+
+    def test_a_null_payload_value_keeps_its_declared_column_type(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = _contract()
+        rows = [{**_row(1), "value": None}]
+        receipt = self._deliver(factory, store, c, rows)
+        assert receipt.accepted, receipt.checks
+        assert any(check.name == "schema_hash" and check.passed for check in receipt.checks)
+        assert factory.read_table(store, c.table) == rows
 
     def test_a_week_of_erp_deliveries_proves_three_tables_rows_dates_receipts_and_claims(
         self, factory: StoreFactory, store: Store
@@ -250,7 +285,9 @@ class StoreConformance(_StoreScenarios):
             "null",
             "shrink",
             "missing_column",
+            "renamed_column",
             "retyped_column",
+            "invalid_value",
             "shape",
             "time_backwards",
         ],
@@ -270,11 +307,18 @@ class StoreConformance(_StoreScenarios):
             rows[1]["id"] = None
         elif problem == "shrink":
             rows = rows[:2]
-        source_schema = c.schema
+        columns = dict(COLUMNS)
         if problem == "missing_column":
-            source_schema = c.schema[:-1]
-            rows = [{col.name: row[col.name] for col in source_schema} for row in rows]
+            columns.pop("value")
+            rows = [{name: row[name] for name in columns} for row in rows]
+        elif problem == "renamed_column":
+            columns = {"id": "int", "day": "date", "label": "str"}
+            rows = [{"id": row["id"], "day": row["day"], "label": row["value"]} for row in rows]
         elif problem == "retyped_column":
+            columns["value"] = "int"
+            for row in rows:
+                row["value"] = 1
+        elif problem == "invalid_value":
             rows[0]["id"] = "not_an_integer"
         elif problem == "shape":
             shape = "not_admitted"
@@ -287,8 +331,10 @@ class StoreConformance(_StoreScenarios):
             **kwargs,
         )
         before = self._rows(factory, store, c.table)
-        refused = _submit(store, c, factory.write_source(rows, source_schema), manifest)
+        refused = _submit(store, c, factory.write_source(rows, columns), manifest)
         assert not refused.accepted
+        if problem in {"schema", "missing_column", "renamed_column", "retyped_column"}:
+            assert any(check.name == "schema_hash" and not check.passed for check in refused.checks)
         assert refused.publication_id == first.publication_id
         assert self._rows(factory, store, c.table) == before
         assert store.load_ledger(c) == first.ledger
@@ -312,7 +358,7 @@ class StoreConformance(_StoreScenarios):
         manifest = Manifest(
             table=c.table, shape=shape, produced_at=_at(19), rows=1, schema_hash=c.schema_hash, **kwargs
         )
-        source = factory.write_source(rows, c.schema)
+        source = factory.write_source(rows, COLUMNS)
         with factory.fail_after_rows(store):
             with pytest.raises(StoreError):
                 _submit(store, c, source, manifest)
@@ -354,10 +400,11 @@ class StoreConformance(_StoreScenarios):
     def test_append_requires_an_atomic_commit_and_replay_never_duplicates_events(
         self, factory: StoreFactory, store: Store
     ) -> None:
+        columns = {"event": "str"}
         c = Contract(
-            table="events", key=(), shapes={"log": SINCE}, schema=(Column("event", "str"),), start_at=_at(1)
+            table="events", key=(), shapes={"log": SINCE}, schema_hash=_schema_hash(columns), start_at=_at(1)
         )
-        source = factory.write_source([{"event": "one"}], c.schema)
+        source = factory.write_source([{"event": "one"}], columns)
         manifest = Manifest(
             table=c.table, shape="log", produced_at=_at(18), since=_at(1), rows=1, schema_hash=c.schema_hash
         )
@@ -366,7 +413,7 @@ class StoreConformance(_StoreScenarios):
         assert _submit(store, c, source, manifest) == replace(first, outcome=Outcome.REPLAYED)
         assert factory.read_table(store, c.table) == [{"event": "one"}]
         self._fold(store, c)
-        source = factory.write_source([{"event": "two"}], c.schema)
+        source = factory.write_source([{"event": "two"}], columns)
         second_manifest = replace(manifest, produced_at=_at(19), since=_at(18))
         with factory.fail_after_rows(store):
             with pytest.raises(StoreError):
@@ -461,15 +508,16 @@ class StoreConformance(_StoreScenarios):
     def test_an_event_stream_uses_contiguous_arrival_intervals_without_deduplicating_new_batches(
         self, factory: StoreFactory, store: Store
     ) -> None:
+        columns = {"event": "str", "occurred_at": "datetime"}
         c = Contract(
             "events",
             (),
             {"append": Shape.append()},
-            schema=(Column("event", "str"), Column("occurred_at", "datetime")),
+            schema_hash=_schema_hash(columns),
             start_at=_at(18),
         )
         event = {"event": "late", "occurred_at": _at(17)}
-        source = factory.write_source([event], c.schema)
+        source = factory.write_source([event], columns)
         manifest = c.manifest("append", _at(19), since=_at(18), rows=1)
         first = _submit(store, c, source, manifest)
         assert first.accepted
@@ -498,6 +546,7 @@ class StoreConformance(_StoreScenarios):
     def test_an_upsert_stream_lookback_recovers_a_late_commit_in_the_next_batch(
         self, factory: StoreFactory, store: Store
     ) -> None:
+        columns = {"id": "int", "updated_at": "datetime"}
         c = Contract(
             "updates",
             ("id",),
@@ -505,12 +554,13 @@ class StoreConformance(_StoreScenarios):
                 "full": Shape.full(),
                 "upserts": Shape.changes(lookback=timedelta(seconds=10)),
             },
-            schema=(Column("id", "int"), Column("updated_at", "datetime")),
+            types=columns,
+            schema_hash=_schema_hash(columns),
             cursor_column="updated_at",
         )
         start = _at(18)
         initial: dict[str, Any] = {"id": 1, "updated_at": start}
-        assert self._deliver(factory, store, c, [initial]).accepted
+        assert self._deliver(factory, store, c, [initial], columns=columns).accepted
         late: dict[str, Any] = {"id": 2, "updated_at": start + timedelta(seconds=3)}
         committed_at = start + timedelta(seconds=7)
         for seconds in (5, 10):
@@ -521,7 +571,7 @@ class StoreConformance(_StoreScenarios):
             visible = [initial, late] if committed_at <= until else [initial]
             rows = [r for r in visible if request.since < r["updated_at"] <= until]
             manifest = c.manifest("upserts", until, since=request.since, rows=len(rows))
-            receipt = _submit(store, c, factory.write_source(rows, c.schema), manifest)
+            receipt = _submit(store, c, factory.write_source(rows, columns), manifest)
             assert receipt.accepted, receipt.checks
             assert (receipt.claims.complete_as_of, receipt.claims.valid_as_of) == (until, start)
             assert self._rows(factory, store, c.table) == visible
@@ -628,12 +678,14 @@ class StoreConformance(_StoreScenarios):
     def test_empty_named_plant_exports_preserve_other_plants_and_unknown_history(
         self, factory: StoreFactory, store: Store
     ) -> None:
+        columns = {"id": "int", "plant": "str"}
         c = Contract(
             table="plants",
             key=("id",),
             shapes={"plant": WINDOW},
             window_column="plant",
-            schema=(Column("id", "int"), Column("plant", "str")),
+            types=columns,
+            schema_hash=_schema_hash(columns),
             max_shrink_fraction=None,
         )
         for day, name, rows in (
@@ -641,7 +693,9 @@ class StoreConformance(_StoreScenarios):
             (19, "DE01", [{"id": 2, "plant": "DE01"}]),
             (20, "IT01", []),
         ):
-            assert self._deliver(factory, store, c, rows, "plant", day, window=(name, name)).accepted
+            assert self._deliver(
+                factory, store, c, rows, "plant", day, columns=columns, window=(name, name)
+            ).accepted
         assert factory.read_table(store, c.table) == [{"id": 2, "plant": "DE01"}]
         ledger = store.load_ledger(c)
         assert ledger.claims(_at(20), window=("IT01", "IT01")).valid_as_of == _at(20)
@@ -664,7 +718,7 @@ class StoreConformance(_StoreScenarios):
                     rows=len(rows),
                     schema_hash=c.schema_hash,
                 )
-                pulled = _submit(pull, c, factory.write_source(rows, c.schema), manifest)
+                pulled = _submit(pull, c, factory.write_source(rows, COLUMNS), manifest)
                 assert pushed.ledger == pulled.ledger
                 assert pushed.checks == pulled.checks
                 assert self._rows(factory, store, c.table) == self._rows(factory, pull, c.table)
@@ -678,11 +732,13 @@ class StoreConformance(_StoreScenarios):
     def test_pulling_changed_rows_by_updated_at_keeps_unreported_deletions(
         self, factory: StoreFactory, store: Store
     ) -> None:
+        columns = {"id": "int", "updated_at": "datetime", "value": "str"}
         c = Contract(
             table="updates",
             key=("id",),
             shapes={"full": FULL, "since": SINCE},
-            schema=(Column("id", "int"), Column("updated_at", "datetime"), Column("value", "str")),
+            types={"id": "int"},
+            schema_hash=_schema_hash(columns),
         )
         source: list[dict[str, Any]] = [
             {"id": 1, "updated_at": _at(17), "value": "old"},
@@ -695,7 +751,7 @@ class StoreConformance(_StoreScenarios):
             else:
                 assert isinstance(request.since, datetime)
                 rows = [r for r in source if request.since <= r["updated_at"] <= request.until]
-            receipt = self._deliver(factory, store, c, rows, shape, day, since=request.since)
+            receipt = self._deliver(factory, store, c, rows, shape, day, columns=columns, since=request.since)
             assert receipt.accepted
             if shape == "full":
                 source = [
@@ -727,7 +783,7 @@ class StoreConformance(_StoreScenarios):
                 schema_hash=c.schema_hash,
                 content_hash=str(key),
             )
-            candidate = store.hold(factory.write_source([_row(key)], c.schema), manifest, c)
+            candidate = store.hold(factory.write_source([_row(key)], COLUMNS), manifest, c)
             checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
             receipt = Gate.evaluate(base, manifest, checks, now=_at(30))
             prepared.append((candidate, receipt))
@@ -751,11 +807,11 @@ class StoreConformance(_StoreScenarios):
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)], content_hash="original")
         corrected = replace(first.manifest, content_hash="corrected")
-        refused = _submit(store, c, factory.write_source([_row(2)], c.schema), corrected)
+        refused = _submit(store, c, factory.write_source([_row(2)], COLUMNS), corrected)
         assert not refused.accepted and not refused.replayed
         assert corrected.identity != first.manifest.identity
         accepted = _submit(
-            store, c, factory.write_source([_row(2)], c.schema), replace(corrected, produced_at=_at(19))
+            store, c, factory.write_source([_row(2)], COLUMNS), replace(corrected, produced_at=_at(19))
         )
         assert accepted.accepted and not accepted.replayed
         assert self._rows(factory, store, c.table) == [_row(2)]
@@ -777,8 +833,10 @@ class StoreConformance(_StoreScenarios):
     ) -> None:
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
-        manifest = replace(first.manifest, produced_at=_at(19), schema_hash="wrong")
-        refused = _submit(store, c, factory.write_source([_row(1)], c.schema), manifest)
+        manifest = replace(first.manifest, produced_at=_at(19))
+        columns = {"id": "int", "day": "date"}
+        source = factory.write_source([{"id": 1, "day": _at(18).date()}], columns)
+        refused = _submit(store, c, source, manifest)
         checks = {check.name: check for check in refused.checks}
         assert not checks["schema_hash"].passed
         for name in ("key_integrity", "window_stability"):
@@ -805,7 +863,7 @@ class StoreConformance(_StoreScenarios):
 
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
-        source = factory.write_source([_row(2)], c.schema)
+        source = factory.write_source([_row(2)], COLUMNS)
         manifest = replace(first.manifest, produced_at=_at(19))
         reading = Event()
 

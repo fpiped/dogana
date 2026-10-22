@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from hashlib import sha256
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 
-from .wire import InvalidContract, Wire, canonical_json, utc
+from .wire import InvalidContract, Wire, utc
 
 Scalar = str | int | date | datetime
 Window = tuple[Scalar, Scalar]
@@ -80,18 +79,6 @@ def scalar_compare(left: Scalar, right: Scalar) -> int:
             raise InvalidContract("bounds must contain only Unicode scalar values") from exc
         return (left > right) - (left < right)
     raise InvalidContract("values must be ordered scalars")
-
-
-@dataclass(frozen=True)
-class Column(Wire):
-    name: str
-    type: str
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        identifier(self.name)
-        if self.type not in LOGICAL_TYPES:
-            raise InvalidContract(f"Column.type={self.type!r} is unsupported")
 
 
 @dataclass(frozen=True)
@@ -243,7 +230,8 @@ class Contract(Wire):
     shapes: Mapping[str, Shape]
     _: KW_ONLY
     window_column: str | None = None
-    schema: tuple[Column, ...] = ()
+    types: Mapping[str, str] = field(default_factory=dict)
+    schema_hash: str | None = None
     max_shrink_fraction: float | None = 0.5
     freshness: timedelta = timedelta(days=7)
     start_at: datetime | None = None
@@ -263,30 +251,32 @@ class Contract(Wire):
             raise InvalidContract("a window shape needs exactly one window column")
         if self.window_column is not None:
             identifier(self.window_column)
-        names = [c.name for c in self.schema]
-        if len(set(names)) != len(names):
-            raise InvalidContract("schema columns must be distinct Column values")
         bound_columns = set(self.key)
         if self.window_column is not None:
             bound_columns.add(self.window_column)
-        if self.schema and not bound_columns <= set(names):
-            raise InvalidContract("key and window columns must be in the schema")
         if self.cursor_column is not None:
             identifier(self.cursor_column)
-            if not any(c.name == self.cursor_column and c.type == "datetime" for c in self.schema):
-                raise InvalidContract("cursor_column must name a datetime schema column")
+            bound_columns.add(self.cursor_column)
+        if set(self.types) != bound_columns:
+            raise InvalidContract("types must cover exactly the key, window and cursor columns")
+        for name, logical_type in self.types.items():
+            identifier(name)
+            if logical_type not in LOGICAL_TYPES:
+                raise InvalidContract(f"unsupported logical type {logical_type!r} for {name!r}")
+        if self.cursor_column is not None and self.types[self.cursor_column] != "datetime":
+            raise InvalidContract("cursor_column must have type datetime")
         if any(
-            not LOGICAL_TYPES[c.type].ordered
-            for c in self.schema
-            if c.name in self.key or c.name == self.window_column
+            not LOGICAL_TYPES[self.types[name]].ordered
+            for name in set(self.key) | ({self.window_column} if self.window_column else set())
         ):
             raise InvalidContract("key and window columns must use ordered scalar logical types")
-        if any(
-            c.name == self.window_column and c.type not in ("date", "datetime") for c in self.schema
-        ) and any(shape.window_size is not None for shape in self.shapes.values()):
+        window_type = self.types.get(self.window_column or "")
+        if window_type not in (None, "date", "datetime") and any(
+            shape.window_size is not None for shape in self.shapes.values()
+        ):
             raise InvalidContract("duration windows need a date or datetime column")
-        if any(c.name == self.window_column and c.type == "date" for c in self.schema) and any(
-            shape.window_size is not None and shape.window_size.total_seconds() % 86400
+        if window_type == "date" and any(
+            shape.window_size is not None and shape.window_size % timedelta(days=1)
             for shape in self.shapes.values()
         ):
             raise InvalidContract("DATE window_size must contain a whole number of days")
@@ -329,9 +319,7 @@ class Contract(Wire):
         names = set(self.key)
         if self.window_column is not None:
             names.add(self.window_column)
-        return {c.name: c.type for c in self.schema if c.name in names} == {
-            c.name: c.type for c in other.schema if c.name in names
-        }
+        return all(self.types[name] == other.types[name] for name in names)
 
     def __hash__(self) -> int:
         return hash(
@@ -340,17 +328,14 @@ class Contract(Wire):
                 self.key,
                 tuple(sorted(self.shapes.items())),
                 self.window_column,
-                self.schema,
+                tuple(sorted(self.types.items())),
+                self.schema_hash,
                 self.max_shrink_fraction,
                 self.freshness,
                 self.start_at,
                 self.cursor_column,
             )
         )
-
-    @property
-    def columns(self) -> Mapping[str, Column]:
-        return MappingProxyType({column.name: column for column in self.schema})
 
     def manifest(
         self,
@@ -380,10 +365,6 @@ class Contract(Wire):
         )
         manifest.check(self)
         return manifest
-
-    @property
-    def schema_hash(self) -> str:
-        return sha256(canonical_json([[c.name, c.type] for c in self.schema]).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -446,20 +427,17 @@ class Manifest(Wire):
         for group in (self.keys, self.tombstones):
             if any(len(key) != len(contract.key) for key in group):
                 raise InvalidContract("named keys must have the contract's width")
-        declared = contract.columns
-        if (
-            self.window is not None
-            and contract.window_column is not None
-            and contract.window_column in declared
-        ):
-            if type(self.window[0]) is not LOGICAL_TYPES[declared[contract.window_column].type].python_type:
-                raise InvalidContract("window bound types differ from the contract schema")
+        declared = contract.types
+        if self.window is not None:
+            assert contract.window_column is not None
+            if type(self.window[0]) is not LOGICAL_TYPES[declared[contract.window_column]].python_type:
+                raise InvalidContract("window bound types differ from the contract types")
         for key in (*self.keys, *self.tombstones):
-            if declared and any(
-                type(value) is not LOGICAL_TYPES[declared[name].type].python_type
+            if any(
+                type(value) is not LOGICAL_TYPES[declared[name]].python_type
                 for name, value in zip(contract.key, key, strict=True)
             ):
-                raise InvalidContract("named key types differ from the contract schema")
+                raise InvalidContract("named key types differ from the contract types")
         if shape.complete:
             return (
                 FullDelivery(self, shape) if self.window is None else WindowDelivery(self, shape, self.window)

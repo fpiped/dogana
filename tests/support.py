@@ -1,6 +1,8 @@
+import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
-from dogana import Checkpoint, Column, Completeness, Contract, Coverage, Deletions, Shape
+from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, Shape
 
 FULL = Shape(
     coverage=Coverage.ALL,
@@ -38,16 +40,40 @@ FEED = Shape(
     checkpoint=Checkpoint.GENERATION,
     cost=1,
 )
-SCHEMA = (Column("id", "int"), Column("day", "date"), Column("value", "str"))
+COLUMNS = {"id": "int", "day": "date", "value": "str"}
+
+
+def schema_hash(columns):
+    return sha256(
+        json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    ).hexdigest()
 
 
 def at(day: int, hour: int = 0) -> datetime:
     return datetime(2026, 10, day, hour, tzinfo=UTC)
 
 
-def contract(table="moves", *, shapes=None, schema=SCHEMA, **kwargs):
+def contract(table="moves", *, shapes=None, columns=COLUMNS, types=None, **kwargs):
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "recent": RECENT, "feed": FEED}
     windowed = any(s.coverage is Coverage.WINDOW for s in shapes.values())
-    return Contract(
-        table, ("id",), shapes, window_column="day" if windowed else None, schema=schema, **kwargs
-    )
+    bound = {"id"} | ({"day"} if windowed else set())
+    if kwargs.get("cursor_column") is not None:
+        bound.add(kwargs["cursor_column"])
+    if types is None:
+        types = {name: (columns or COLUMNS)[name] for name in bound}
+    kwargs.setdefault("schema_hash", schema_hash(columns) if columns is not None else None)
+    return Contract(table, ("id",), shapes, window_column="day" if windowed else None, types=types, **kwargs)
+
+
+def accounting_contract(table="moves", *, window_type="int", shapes=None, **kwargs):
+    from dataclasses import replace
+
+    shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "recent": RECENT, "feed": FEED}
+    if window_type in ("int", "str"):
+        shapes = {name: replace(shape, window_size=None) for name, shape in shapes.items()}
+    bound = {"id": "int"}
+    if any(shape.coverage is Coverage.WINDOW for shape in shapes.values()):
+        bound["day"] = window_type
+    kwargs.setdefault("columns", None)
+    kwargs.setdefault("types", bound)
+    return contract(table, shapes=shapes, **kwargs)

@@ -4,11 +4,12 @@ from time import sleep
 
 import pytest
 
-from tests.support import at
+from tests.support import COLUMNS, at
 
 pytest.importorskip("duckdb")
 
 from dogana import Ledger
+from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import contract
@@ -24,7 +25,11 @@ def test_threads_delivering_to_one_file_serialize_checks_and_publish_whole_state
     active = peak = 0
     try:
         base = csv_file(tmp_path, "base.csv", [row(1)])
-        assert stores[0].deliver(c, base, sidecar(base, c, "full", 18, 1), now=at(30)).accepted
+        assert (
+            stores[0]
+            .deliver(c, _FileSource(base, COLUMNS), sidecar(base, c, "full", 18, 1), now=at(30))
+            .accepted
+        )
         for store in stores:
             original = store.check
 
@@ -48,7 +53,9 @@ def test_threads_delivering_to_one_file_serialize_checks_and_publish_whole_state
 
             def deliver(i, barrier=barrier, paths=paths, manifests=manifests):
                 barrier.wait(timeout=5)
-                return stores[i % connections].deliver(c, paths[i], manifests[i], now=at(30))
+                return stores[i % connections].deliver(
+                    c, _FileSource(paths[i], COLUMNS), manifests[i], now=at(30)
+                )
 
             with ThreadPoolExecutor(max_workers=2) as pool:
                 receipts = list(pool.map(deliver, range(2)))

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Breaking pre-release change: remove `Contract.schema` and `Column`; require `Contract.types` to cover exactly the key, window and cursor columns, with an optional opaque `schema_hash` supplied by the data contract. Contract identities change; wire version remains 1.
+- Keep full column definitions outside the core. The reference column-hash recipe is unchanged, so existing schema hashes remain valid.
+- Require keyword-only `columns` on `FileDrop` for typed CSV and column hashing; infer types for row mappings in `DuckDBStore`.
 - Account for micro-batches committed from a stream with the existing shapes; tests cover CDC offsets, event intervals, lookback, restarts, concurrent consumers and 1,000 batches; no stream-processing claims.
 - Store regional evidence as sorted boundary cuts and expose Known or Unknown evidence internally.
 - Parse manifests into shape-specific deliveries and separate guards, date transitions, cursor rules and publication chaining.
@@ -13,7 +16,7 @@
 - Refuse undecodable rejected receipts and unexpected destination column order before publication.
 - Split reference row checks by requirement and share their SQL predicates.
 - Canonicalize identities with RFC 8785, exact binary64 inputs, UTF-8 output and UTF-16 key ordering.
-- Publish JSON Schema 2020-12 for all sixteen wire kinds and validate suite serialization against them.
+- Publish JSON Schema 2020-12 for all fifteen wire kinds and validate suite serialization against them.
 - Replace seeded loops with Hypothesis properties, an independent boundary oracle and crash/replay state machines.
 - Print and test regional evidence, a refused file and replay in the README example.
 - Considered: a DuckLake reference store as the executable table-format publication mechanism; deferred for the owner.
@@ -47,7 +50,7 @@
 - Report dependent checks as not evaluated when earlier validation prevents execution.
 - Distinguish declared delivery failures from storage errors and programming failures through a public error hierarchy.
 - Preserve successful commits across cleanup failures and release failed candidates and transactions.
-- Parse CSV with declared types and accept iterable row dictionaries in the reference store.
+- Parse CSV with `FileDrop.columns` and infer types for iterable row dictionaries in the reference store.
 - Derive file manifests from fixed shapes, optional counts and rolling bounds, with source descriptions in receipts.
 - Require explicit filename timezones and reject ambiguous or nonexistent local boundaries.
 - Refuse glob paths, drop-root escapes and implicit adoption of unmanaged tables.

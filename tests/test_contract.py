@@ -6,7 +6,6 @@ import pytest
 
 from dogana import (
     Checkpoint,
-    Column,
     Completeness,
     Contract,
     Coverage,
@@ -62,14 +61,14 @@ def test_a_source_cannot_declare_a_contradictory_shape(properties):
         {"key": ("id", "id")},
         {"max_shrink_fraction": -0.1},
         {"max_shrink_fraction": 1.1},
-        {"schema": (Column("other", "str"),)},
+        {"types": {"other": "str"}},
         {"table": "__dogana_ledgers"},
         {"table": "__DOGANA_ledgers"},
         {"freshness": timedelta(days=-1)},
     ],
 )
 def test_contract_parameters_must_describe_a_coherent_table(kwargs):
-    fields = {"table": "stock", "key": ("id",), "shapes": {"full": FULL}}
+    fields = {"table": "stock", "key": ("id",), "shapes": {"full": FULL}, "types": {"id": "int"}}
     fields.update(kwargs)
     with pytest.raises(InvalidContract):
         Contract(**fields)
@@ -77,7 +76,7 @@ def test_contract_parameters_must_describe_a_coherent_table(kwargs):
 
 def test_a_contract_copies_mutable_input_and_freezes_its_public_declarations():
     shapes = {"full": FULL}
-    c = Contract("stock", ("id",), shapes)
+    c = Contract("stock", ("id",), shapes, types={"id": "int"})
     shapes.clear()
     assert c.shape("full") == FULL
     with pytest.raises(TypeError):
@@ -130,7 +129,13 @@ def test_append_only_history_has_an_explicit_start_and_a_keyless_full_export_nee
     assert log.start_at == at(1)
     with pytest.raises(InvalidContract, match="start_at"):
         Contract("events", (), {"log": SINCE})
-    receipts = Contract("receipts", (), {"full": FULL, "plant": WINDOW}, window_column="plant")
+    receipts = Contract(
+        "receipts",
+        (),
+        {"full": FULL, "plant": replace(WINDOW, window_size=None)},
+        window_column="plant",
+        types={"plant": "str"},
+    )
     assert receipts.start_at is None
     with pytest.raises(InvalidContract, match="start_at"):
         Contract("receipts", (), {"full": FULL}, start_at=at(1))
@@ -153,7 +158,7 @@ def test_date_windows_cannot_request_fractional_calendar_days():
 @pytest.mark.parametrize("column_type", ["int", "str"])
 def test_a_duration_cannot_define_a_rolling_window_over_integer_or_string_partitions(column_type):
     with pytest.raises(InvalidContract, match="date or datetime"):
-        contract(schema=(Column("id", "int"), Column("day", column_type), Column("value", "str")))
+        contract(types={"id": "int", "day": column_type})
 
 
 def test_shrink_protection_is_enabled_by_default_and_only_none_disables_it():
@@ -179,20 +184,21 @@ def test_lookback_cannot_change_generation_or_complete_read_semantics(shape, loo
         replace(shape, lookback=lookback)
 
 
-def test_a_cursor_column_must_explicitly_name_a_datetime_schema_column():
-    schema = (Column("id", "int"), Column("changed_at", "datetime"))
-    c = Contract("stock", ("id",), {"since": SINCE}, schema=schema, cursor_column="changed_at")
+def test_a_cursor_column_must_explicitly_name_a_datetime_type():
+    types = {"id": "int", "changed_at": "datetime"}
+    c = Contract("stock", ("id",), {"since": SINCE}, types=types, cursor_column="changed_at")
     assert c.cursor_column == "changed_at"
-    for invalid in ((), (Column("id", "int"),), (Column("id", "int"), Column("changed_at", "date"))):
-        with pytest.raises(InvalidContract, match="cursor_column"):
-            replace(c, schema=invalid)
+    for invalid in ({}, {"id": "int"}, {"id": "int", "changed_at": "date"}):
+        with pytest.raises(InvalidContract, match="cursor"):
+            replace(c, types=invalid)
 
 
 def test_history_compatibility_binds_only_table_key_window_and_their_types():
     original = contract()
     evolved = replace(
         original,
-        schema=tuple(reversed(original.schema)) + (Column("changed_at", "datetime"),),
+        types={**original.types, "changed_at": "datetime"},
+        schema_hash="new-columns",
         freshness=timedelta(days=1),
         max_shrink_fraction=None,
         cursor_column="changed_at",
@@ -201,18 +207,12 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
     assert original.compatible_with(evolved)
     assert evolved.compatible_with(original)
     assert original.identity != evolved.identity
-    changed_value_type = replace(
-        original, schema=tuple(Column(c.name, "float") if c.name == "value" else c for c in original.schema)
-    )
-    assert original.compatible_with(changed_value_type)
+    assert original.compatible_with(replace(original, schema_hash=None))
     for incompatible in (
         replace(original, table="other"),
         replace(original, key=("day", "id")),
-        replace(
-            original, schema=tuple(Column(c.name, "str") if c.name == "id" else c for c in original.schema)
-        ),
-        replace(original, schema=()),
-        replace(original, window_column=None, shapes={"full": FULL}),
+        replace(original, types={**original.types, "id": "str"}),
+        replace(original, window_column=None, shapes={"full": FULL}, types={"id": "int"}),
     ):
         assert not original.compatible_with(incompatible)
 
@@ -223,7 +223,9 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         ("key", "id"),
         ("key", {"id"}),
         ("key", {"id": 1}),
-        ("schema", {"id": "int"}),
+        ("types", [("id", "int")]),
+        ("types", {"id": 1}),
+        ("schema_hash", 1),
         ("shapes", [("full", FULL)]),
         ("shapes", {1: FULL}),
         ("freshness", 5),
@@ -272,15 +274,17 @@ def test_manifest_constructor_rejects_invalid_types_without_needing_a_contract(f
 
 def test_list_inputs_are_copied_into_immutable_typed_values():
     key = ["id"]
-    schema = [Column("id", "int")]
-    c = Contract("stock", key, {"full": FULL}, schema=schema)
+    types = {"id": "int"}
+    c = Contract("stock", key, {"full": FULL}, types=types)
     live_keys = [[1], [2]]
     m = Manifest("stock", "full", at(18), keys=live_keys)
     key.clear()
-    schema.clear()
+    types.clear()
     live_keys[0].append(3)
     assert c.key == ("id",)
-    assert c.schema == (Column("id", "int"),)
+    assert c.types == {"id": "int"}
+    with pytest.raises(TypeError):
+        c.types["id"] = "str"
     assert m.keys == ((1,), (2,))
     assert hash(c) == hash(Contract.from_json(c.to_json()))
     assert hash(m) == hash(Manifest.from_json(m.to_json()))
@@ -397,3 +401,57 @@ def test_invalid_shape_vocabulary_identifies_the_property_and_value(property, va
     with pytest.raises(InvalidContract) as error:
         replace(FULL, **{property: value})
     assert f"Shape.{property}" in str(error.value) and repr(value) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "types", [{}, {"id": "int", "extra": "str"}, {"id": "decimal"}, {"id": "bool"}, {"id": "float"}]
+)
+def test_types_cover_exactly_the_bound_columns_with_valid_ordered_types(types):
+    with pytest.raises(InvalidContract):
+        Contract("stock", ("id",), {"full": FULL}, types=types)
+
+
+def test_one_type_covers_a_column_shared_by_key_window_and_cursor():
+    c = Contract(
+        "events",
+        ("at",),
+        {"daily": WINDOW, "since": SINCE},
+        window_column="at",
+        cursor_column="at",
+        types={"at": "datetime"},
+    )
+    assert c.types == {"at": "datetime"}
+    assert c.manifest("daily", at(18), window=(at(17), at(18))).schema_hash is None
+
+
+@pytest.mark.parametrize("digest", [None, "", "opaque:data-contract:v2"])
+def test_manifest_construction_carries_the_optional_opaque_data_contract_hash(digest):
+    c = Contract("stock", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=digest)
+    assert c.manifest("full", at(18)).schema_hash == digest
+    assert Contract.from_json(c.to_json()) == c
+
+
+def test_unbound_accounting_needs_no_types_or_data_contract_hash():
+    c = Contract("events", (), {"full": FULL})
+    assert c.types == {} and c.schema_hash is None
+    with pytest.raises(InvalidContract, match="exactly"):
+        replace(c, types={"payload": "str"})
+
+
+def test_type_mapping_order_changes_neither_contract_identity_nor_hash():
+    c = contract()
+    reordered = replace(c, types=dict(reversed(list(c.types.items()))))
+    assert c == reordered and c.identity == reordered.identity and hash(c) == hash(reordered)
+
+
+@pytest.mark.parametrize(
+    "logical_type,value", [("int", 1), ("str", "one"), ("date", at(18).date()), ("datetime", at(18))]
+)
+def test_named_keys_and_tombstones_use_the_declared_types_without_a_schema_hash(logical_type, value):
+    c = Contract("events", ("id",), {"feed": FEED}, types={"id": logical_type})
+    for field in ("keys", "tombstones"):
+        valid = Manifest(c.table, "feed", at(19), since="g0", generation="g1", **{field: ((value,),)})
+        valid.check(c)
+        wrong = "wrong" if logical_type != "str" else 1
+        with pytest.raises(InvalidContract, match="named key types"):
+            replace(valid, **{field: ((wrong,),)}).check(c)

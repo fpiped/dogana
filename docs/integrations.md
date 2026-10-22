@@ -21,8 +21,9 @@ cursor column may include the start. See the [incremental API](https://dlthub.co
 
 A stateful resource beside the ledger can lose data: it advances its own cursor during extraction,
 the gate rejects the load, then the next extraction skips rows the ledger still needs. Keep one
-progress owner and retain the normalized candidate for retries. The exact schema check also requires
-projecting loader metadata columns away or declaring them consistently in the contract.
+progress owner and retain the normalized candidate for retries. When a schema hash is supplied,
+its exact column check requires projecting loader metadata columns away or declaring them
+consistently in the data contract.
 
 A transaction may stamp `updated_at=09:00:00` and commit at `09:00:07`, after a read ending at
 `09:00:05`. The absent row is invisible to the gate. Keyed `Shape.lookback` subtracts a duration from
@@ -164,9 +165,23 @@ to `Gate.evaluate` as additional checks. Persist their results in the surroundin
 Freshness and volume checks alone cannot establish deletion completeness; source reconciliation can
 supply independent evidence that a manifest omitted something.
 
-Project an existing data contract's table, key and types into `Contract`, adding the delivery shapes
-and source guarantees. Governance fields, owner identity, signatures and service-level objectives
-stay in that contract system. There is no shipped ODCS carrier or separate namespace field.
+The data contract owns the columns; the delivery contract references their hash. Project its table
+and key into `Contract`, add the delivery shapes and source guarantees, and put exactly the key,
+window and cursor columns in `Contract.types`, with no extras. Obtain the optional `schema_hash`
+from the ODCS document, dbt model or hand-written column list. It is opaque to the core, which
+never carries or computes the full schema. The gate compares the manifest and candidate hashes
+with it only when it is present.
+
+For an ODCS schema object, traverse `properties` in declared column order, normalize each
+`logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`, and form ordered `[name, type]`
+pairs from each property's `name` and normalized type. Resolve physical or nested types in the
+receiver. Compute SHA-256 over
+`json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`, excluding document
+metadata. The reference store and file drop use this unchanged recipe, so existing column hashes
+remain valid. Other stores must agree with their receivers on the opaque hash.
+
+Governance fields, owner identity, signatures and service-level objectives stay in the data contract
+system. There is no shipped ODCS carrier or separate namespace field.
 
 A sender sidecar, receiver filename pattern or controlled extractor can produce the manifest.
 All three remain declarations. Owning the extractor does not make its boundary or coverage true by

@@ -7,18 +7,19 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from dogana import Column, Contract, Gate, Ledger, Manifest, deliver
+from dogana import Contract, Gate, Ledger, Manifest, deliver
 from dogana.errors import InconsistentPublication, StoreError
+from dogana.reference._sources import _FileSource, _RowSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
-from tests.support import FULL, SINCE, at, contract
+from tests.support import COLUMNS, FULL, SINCE, at, contract, schema_hash
 
 
-def publish(store, tmp_path, rows, *, c=None, day=18, shape="full", **kwargs):
+def publish(store, tmp_path, rows, *, c=None, columns=COLUMNS, day=18, shape="full", **kwargs):
     c = c or contract()
-    path = csv_file(tmp_path, f"{shape}-{day}.csv", rows, tuple(col.name for col in c.schema))
+    path = csv_file(tmp_path, f"{shape}-{day}.csv", rows, columns)
     manifest = sidecar(path, c, shape, day, len(rows), **kwargs)
-    return deliver(store, c, path, manifest, at(30))
+    return deliver(store, c, _FileSource(path, columns), manifest, at(30))
 
 
 @pytest.mark.parametrize("name", ["*.csv", "?.csv", "[ab].csv", "{one,two}.csv", "*.parquet"])
@@ -28,7 +29,7 @@ def test_a_delivered_path_never_expands_to_other_files(tmp_path, name):
     csv_file(tmp_path, "other.csv", [row(2)])
     with DuckDBStore(":memory:") as store:
         manifest = sidecar(supplied, c, "full", 18, 1)
-        receipt = deliver(store, c, supplied, manifest, at(20))
+        receipt = deliver(store, c, _FileSource(supplied, COLUMNS), manifest, at(20))
         assert not receipt.accepted
         assert "glob" in receipt.checks[-1].detail
         assert store.load_ledger(c) == Ledger(c)
@@ -49,17 +50,19 @@ def test_existing_untracked_tables_require_explicit_adoption(tmp_path):
 
 
 def test_declared_csv_types_preserve_numeric_strings_nulls_and_integral_floats(tmp_path):
+    columns = {"id": "str", "amount": "float", "nullable": "int"}
     c = Contract(
         "typed",
         ("id",),
         {"full": FULL},
-        schema=(Column("id", "str"), Column("amount", "float"), Column("nullable", "int")),
+        types={"id": "str"},
+        schema_hash=schema_hash(columns),
     )
     path = tmp_path / "typed.csv"
     path.write_text("id,amount,nullable\n001,3,\n002,4,\n")
     m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:") as store:
-        receipt = deliver(store, c, path, m, at(20))
+        receipt = deliver(store, c, _FileSource(path, columns), m, at(20))
         assert receipt.accepted
         assert receipt.source == str(path)
         assert store.read(c.table) == [
@@ -95,7 +98,7 @@ def test_a_held_csv_can_be_checked_twice_and_published_once(tmp_path):
     path = csv_file(tmp_path, "incoming.csv", rows)
     manifest = sidecar(path, c, "full", 18, len(rows))
     with DuckDBStore(":memory:") as store:
-        candidate = store.hold(path, manifest, c)
+        candidate = store.hold(_FileSource(path, COLUMNS), manifest, c)
         requirements = Gate.requirements(c, manifest)
         first = store.check(candidate, c, manifest, requirements)
         repeated = store.check(candidate, c, manifest, requirements)
@@ -157,7 +160,7 @@ def test_cached_checks_cannot_be_reused_after_the_base_moves(tmp_path, rebase):
         first = publish(store, tmp_path, [row(1), row(2)])
         path = csv_file(tmp_path, "held.csv", [row(1)])
         manifest = sidecar(path, c, "full", 20, 1)
-        candidate = store.hold(path, manifest, c)
+        candidate = store.hold(_FileSource(path, COLUMNS), manifest, c)
         checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
         assert all(check.passed for check in checks)
         latest = publish(store, tmp_path, [row(i) for i in range(10)], day=19)
@@ -229,12 +232,17 @@ def test_one_batched_delete_applies_many_composite_tombstones(tmp_path):
     from tests.integration.test_crashes import StatementFault
     from tests.support import FEED
 
+    columns = {"a": "int", "b": "str"}
     c = Contract(
-        "pairs", ("a", "b"), {"full": FULL, "feed": FEED}, schema=(Column("a", "int"), Column("b", "str"))
+        "pairs",
+        ("a", "b"),
+        {"full": FULL, "feed": FEED},
+        types={"a": "int", "b": "str"},
+        schema_hash=schema_hash(columns),
     )
     rows = [{"a": i, "b": str(i)} for i in range(500)]
     with DuckDBStore(":memory:") as store:
-        assert publish(store, tmp_path, rows, c=c, generation="g1").accepted
+        assert publish(store, tmp_path, rows, c=c, columns=columns, generation="g1").accepted
         trace = StatementFault(store.connection)
         store.connection = trace
         m = Manifest(
@@ -247,7 +255,7 @@ def test_one_batched_delete_applies_many_composite_tombstones(tmp_path):
             schema_hash=c.schema_hash,
             tombstones=tuple((i, str(i)) for i in range(499)),
         )
-        assert deliver(store, c, [], m, at(20)).accepted
+        assert deliver(store, c, _RowSource([], columns), m, at(20)).accepted
         deletes = [s for s in trace.statements if s.startswith('DELETE FROM "pairs"')]
         assert len(deletes) == 2
         assert "unnest" in deletes[-1]
@@ -258,8 +266,9 @@ def test_schema_evolution_retains_each_original_publication(tmp_path):
     c = contract()
     with DuckDBStore(":memory:") as store:
         first = publish(store, tmp_path, [row(1)], c=c)
-        changed = replace(c, schema=(*c.schema, Column("extra", "str")), freshness=timedelta(days=10))
-        second = publish(store, tmp_path, [{**row(2), "extra": "new"}], c=changed, day=19)
+        columns = {**COLUMNS, "extra": "str"}
+        changed = replace(c, schema_hash=schema_hash(columns), freshness=timedelta(days=10))
+        second = publish(store, tmp_path, [{**row(2), "extra": "new"}], c=changed, columns=columns, day=19)
         assert second.accepted
         assert store.read(c.table, first.publication_id) == [row(1)]
         assert store.read(c.table, second.publication_id) == [{**row(2), "extra": "new"}]
@@ -267,26 +276,36 @@ def test_schema_evolution_retains_each_original_publication(tmp_path):
 
 
 def test_keyless_replacement_closes_replaced_history_versions(tmp_path):
-    c = Contract("events", (), {"full": FULL}, schema=(Column("event", "str"),), max_shrink_fraction=None)
+    columns = {"event": "str"}
+    c = Contract("events", (), {"full": FULL}, schema_hash=schema_hash(columns), max_shrink_fraction=None)
     with DuckDBStore(":memory:") as store:
-        first = publish(store, tmp_path, [{"event": "old"}, {"event": "old"}], c=c)
-        second = publish(store, tmp_path, [{"event": "new"}], c=c, day=19)
+        first = publish(store, tmp_path, [{"event": "old"}, {"event": "old"}], c=c, columns=columns)
+        second = publish(store, tmp_path, [{"event": "new"}], c=c, columns=columns, day=19)
         assert store.read(c.table, first.publication_id) == [{"event": "old"}, {"event": "old"}]
         assert store.read(c.table, second.publication_id) == [{"event": "new"}]
 
 
 def test_timestamp_rows_are_checked_against_the_declared_extraction_interval(tmp_path):
+    columns = {"id": "int", "updated": "datetime"}
     c = Contract(
         "updates",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("updated", "datetime")),
+        types={"id": "int", "updated": "datetime"},
+        schema_hash=schema_hash(columns),
         cursor_column="updated",
     )
     with DuckDBStore(":memory:") as store:
-        publish(store, tmp_path, [{"id": 1, "updated": at(18)}], c=c)
+        publish(store, tmp_path, [{"id": 1, "updated": at(18)}], c=c, columns=columns)
         rejected = publish(
-            store, tmp_path, [{"id": 2, "updated": at(18)}], c=c, shape="since", day=19, since=at(18)
+            store,
+            tmp_path,
+            [{"id": 2, "updated": at(18)}],
+            c=c,
+            columns=columns,
+            shape="since",
+            day=19,
+            since=at(18),
         )
         assert not rejected.accepted
         assert next(check for check in rejected.checks if check.name == "rows_in_interval").passed is False
@@ -302,20 +321,50 @@ def test_wrapper_default_uses_the_receiver_clock():
         assert now <= receipt.received_at < future.produced_at
 
 
-def test_row_mappings_without_a_declared_schema_cannot_be_published():
-    c = Contract("rows", ("id",), {"full": FULL})
+@pytest.mark.parametrize("manifest_hash", [None, "sender-only-hash"])
+def test_row_mappings_publish_without_a_contract_schema_hash(manifest_hash):
+    c = Contract("rows", ("id",), {"full": FULL}, types={"id": "int"})
     rows = [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}]
-    m = Manifest(c.table, "full", at(18), rows=2)
+    m = Manifest(c.table, "full", at(18), rows=2, schema_hash=manifest_hash)
     with DuckDBStore(":memory:") as store:
         receipt = deliver(store, c, iter(rows), m, at(20))
-        assert not receipt.accepted
-        assert store.load_ledger(c) == Ledger(c)
+        assert receipt.accepted, receipt.checks
+        assert not any(check.name == "schema_hash" for check in receipt.checks)
+        assert store.read_publication(c) == (rows, receipt.ledger)
         assert store.receipts(c.table) == (receipt,)
         assert not store._candidates
 
 
+@pytest.mark.parametrize("rows", [[], [{"id": 1, "amount": None}]])
+def test_explicit_row_columns_preserve_empty_and_all_null_candidate_types(rows):
+    columns = {"id": "int", "amount": "float"}
+    c = Contract("amounts", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
+    manifest = c.manifest("full", at(18), rows=len(rows))
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, c, _RowSource(rows, columns), manifest, at(20))
+        assert receipt.accepted, receipt.checks
+        assert store.read_publication(c) == (rows, receipt.ledger)
+        assert dict(store._description(c.table)) == {"id": "BIGINT", "amount": "DOUBLE"}
+
+
+@pytest.mark.parametrize("incoming", [[{"id": 1, "renamed": "new"}], [{"id": 1, "value": 7}]])
+def test_candidate_payload_renames_and_retypes_fail_the_external_schema_hash(incoming):
+    columns = {"id": "int", "value": "str"}
+    c = Contract("items", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
+    original = [{"id": 1, "value": "old"}]
+    with DuckDBStore(":memory:") as store:
+        first = deliver(store, c, original, c.manifest("full", at(18), rows=1), at(20))
+        assert first.accepted, first.checks
+        receipt = deliver(store, c, incoming, c.manifest("full", at(19), rows=1), at(20))
+        assert not receipt.accepted
+        assert not next(check for check in receipt.checks if check.name == "schema_hash").passed
+        assert store.read_publication(c) == (original, first.ledger)
+        assert store.receipts(c.table) == (first, receipt)
+
+
 def test_adopting_a_table_with_reordered_columns_refuses_publication():
-    c = Contract("pairs", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("amount", "int")))
+    columns = {"id": "int", "amount": "int"}
+    c = Contract("pairs", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:", adopt=True) as store:
         store.connection.execute("CREATE TABLE pairs(amount BIGINT, id BIGINT)")
@@ -330,12 +379,15 @@ def test_adopting_a_table_with_reordered_columns_refuses_publication():
 
 @pytest.mark.parametrize("shape", ["full", "since"])
 @pytest.mark.parametrize("after_check", [False, True])
-def test_reordering_published_columns_refuses_publication_without_swapping_values(shape, after_check):
+@pytest.mark.parametrize("change", ["reorder", "rename", "retype"])
+def test_changing_published_columns_refuses_publication_without_losing_history(shape, after_check, change):
+    columns = {"id": "int", "amount": "int"}
     c = Contract(
         "pairs",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("amount", "int")),
+        types={"id": "int"},
+        schema_hash=schema_hash(columns),
         max_shrink_fraction=None,
     )
     original = [{"id": 1, "amount": 99}, {"id": 2, "amount": 70}]
@@ -357,12 +409,19 @@ def test_reordering_published_columns_refuses_publication_without_swapping_value
             checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
             checked = Gate.evaluate(first.ledger, manifest, checks, now=at(20))
             assert checked.accepted
-        store.connection.execute("CREATE OR REPLACE TABLE pairs AS SELECT amount, id FROM pairs")
+        statements = {
+            "reorder": "CREATE OR REPLACE TABLE pairs AS SELECT amount, id FROM pairs",
+            "rename": "ALTER TABLE pairs RENAME COLUMN amount TO total",
+            "retype": "ALTER TABLE pairs ALTER COLUMN amount TYPE VARCHAR",
+        }
+        store.connection.execute(statements[change])
+        changed_rows = store.read(c.table)
         with pytest.raises(StoreError, match="published column order or types differ"):
             if after_check:
                 store.publish(candidate, checked)
             else:
                 deliver(store, c, incoming, manifest, at(20))
+        assert store.read(c.table) == changed_rows
         assert store.read_publication(c) == (original, first.ledger)
         assert store.read(c.table, first.publication_id) == original
         assert store.receipts(c.table) == (first,)
@@ -371,14 +430,13 @@ def test_reordering_published_columns_refuses_publication_without_swapping_value
 
 
 def test_timezone_less_csv_datetime_values_use_utc(tmp_path):
-    c = Contract(
-        "updates", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("updated", "datetime"))
-    )
+    columns = {"id": "int", "updated": "datetime"}
+    c = Contract("updates", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     path = tmp_path / "updates.csv"
     path.write_text("id,updated\n1,2026-10-18 00:00:00\n")
     manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:") as store:
-        assert deliver(store, c, path, manifest, at(20)).accepted
+        assert deliver(store, c, _FileSource(path, columns), manifest, at(20)).accepted
         assert store.read(c.table) == [{"id": 1, "updated": at(18)}]
 
 
@@ -405,10 +463,11 @@ def test_aborting_an_unknown_candidate_cannot_drop_a_published_table(tmp_path):
 def test_evolved_history_cannot_collide_with_another_user_table():
     from hashlib import sha256
 
+    columns = {"id": "int", "value": "str"}
     original = Contract(
-        "items", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("value", "str"))
+        "items", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns)
     )
-    evolved = replace(original, schema=(*original.schema, Column("extra", "str")))
+    evolved = replace(original, schema_hash=schema_hash({**columns, "extra": "str"}))
     with DuckDBStore(":memory:") as store:
         first = Manifest(original.table, "full", at(18), rows=1, schema_hash=original.schema_hash)
         assert deliver(store, original, [{"id": 1, "value": "old"}], first, at(20)).accepted
@@ -426,18 +485,24 @@ def test_evolved_history_cannot_collide_with_another_user_table():
 
 @pytest.mark.parametrize("source_kind", ["csv", "rows"])
 def test_fractional_keys_cannot_be_rounded_into_another_published_key(tmp_path, source_kind):
+    columns = {"id": "int", "value": "str"}
     c = Contract(
         "amounts",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("value", "str")),
+        types={"id": "int"},
+        schema_hash=schema_hash(columns),
     )
     original = [{"id": 2, "value": "original"}]
     with DuckDBStore(":memory:") as store:
         first = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
         published = deliver(store, c, original, first, at(20))
         rows = [{"id": 1.6, "value": "replacement"}]
-        source = csv_file(tmp_path, "fraction.csv", rows, ("id", "value")) if source_kind == "csv" else rows
+        source = (
+            _FileSource(csv_file(tmp_path, "fraction.csv", rows, columns), columns)
+            if source_kind == "csv"
+            else rows
+        )
         changed = Manifest(c.table, "since", at(19), since=at(18), rows=1, schema_hash=c.schema_hash)
         receipt = deliver(store, c, source, changed, at(20))
         assert not receipt.accepted
@@ -511,13 +576,15 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
 
 
 def test_schema_evolution_removes_replaced_rows_before_converting_survivors():
+    columns = {"id": "int", "value": "str"}
     original = Contract(
         "amounts",
         ("id",),
         {"full": FULL, "since": SINCE},
-        schema=(Column("id", "int"), Column("value", "str")),
+        types={"id": "int"},
+        schema_hash=schema_hash(columns),
     )
-    changed = replace(original, schema=(Column("id", "int"), Column("value", "int")))
+    changed = replace(original, schema_hash=schema_hash({"id": "int", "value": "int"}))
     with DuckDBStore(":memory:") as store:
         first = Manifest(original.table, "full", at(18), rows=1, schema_hash=original.schema_hash)
         published = deliver(store, original, [{"id": 1, "value": "old"}], first, at(20))
@@ -532,7 +599,8 @@ def test_schema_evolution_removes_replaced_rows_before_converting_survivors():
 
 def test_nested_arrow_values_fail_schema_checks_as_a_rejected_delivery():
     pa = pytest.importorskip("pyarrow")
-    c = Contract("amounts", ("id",), {"full": FULL}, schema=(Column("id", "int"), Column("amount", "int")))
+    columns = {"id": "int", "amount": "int"}
+    c = Contract("amounts", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:") as store:
         receipt = deliver(store, c, pa.table({"id": [1], "amount": [[2]]}), manifest, at(20))
@@ -551,17 +619,55 @@ def test_invalid_retained_history_is_an_operational_failure(tmp_path, operation)
             store.receipts(c.table) if operation == "receipts" else store.repair(c)
 
 
-def test_primitive_checks_refuse_to_publish_without_a_schema(tmp_path):
-    from dogana.errors import InvalidContract
-
-    c = Contract("rows", ("id",), {"full": FULL})
-    path = csv_file(tmp_path, "rows.csv", [{"id": 1}], ("id",))
+def test_primitive_checks_publish_typed_csv_without_a_contract_schema_hash(tmp_path):
+    columns = {"id": "int"}
+    c = Contract("rows", ("id",), {"full": FULL}, types={"id": "int"})
+    path = csv_file(tmp_path, "rows.csv", [{"id": 1}], columns)
     manifest = Manifest(c.table, "full", at(18), rows=1)
     with DuckDBStore(":memory:") as store:
-        candidate = store.hold(path, manifest, c)
-        try:
-            with pytest.raises(InvalidContract, match="publishing requires a declared schema"):
-                store.check(candidate, c, manifest, Gate.requirements(c, manifest))
-        finally:
-            store.abort(candidate)
-        assert store.load_ledger(c) == Ledger(c)
+        candidate = store.hold(_FileSource(path, columns), manifest, c)
+        requirements = Gate.requirements(c, manifest)
+        assert not any(check.name == "schema_hash" for check in requirements)
+        checks = store.check(candidate, c, manifest, requirements)
+        receipt = Gate.evaluate(store.load_ledger(c), manifest, checks, now=at(20))
+        assert receipt.accepted, receipt.checks
+        store.publish(candidate, receipt)
+        assert store.read_publication(c) == ([{"id": 1}], receipt.ledger)
+        assert store.receipts(c.table) == (receipt,)
+        assert not store._candidates and store._transaction is None
+
+
+def test_csv_header_renaming_cannot_hide_schema_drift(tmp_path):
+    columns = {"id": "int", "id_1": "str"}
+    c = Contract("items", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
+    path = tmp_path / "renamed.csv"
+    path.write_text("id,id\n1,value\n", encoding="utf-8")
+    manifest = c.manifest("full", at(18), rows=1)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, c, _FileSource(path, columns), manifest, at(20))
+        assert not receipt.accepted
+        check = next(check for check in receipt.checks if check.name == "schema_hash")
+        assert not check.passed and "header" in check.detail
+        assert store.load_ledger(c).publication_id is None
+
+
+@pytest.mark.parametrize("hashed", [False, True])
+def test_changed_candidate_types_cannot_recast_surviving_published_rows(hashed):
+    columns = {"id": "int", "value": "str"}
+    original = Contract(
+        "items",
+        ("id",),
+        {"full": FULL, "since": SINCE},
+        types={"id": "int"},
+        schema_hash=schema_hash(columns) if hashed else None,
+    )
+    changed = replace(original, schema_hash=schema_hash({"id": "int", "value": "int"}) if hashed else None)
+    before = [{"id": 1, "value": "one"}, {"id": 2, "value": "two"}]
+    with DuckDBStore(":memory:") as store:
+        first = deliver(store, original, before, original.manifest("full", at(18), rows=2), at(20))
+        assert first.accepted
+        manifest = changed.manifest("since", at(19), since=at(18), rows=1)
+        receipt = deliver(store, changed, [{"id": 1, "value": 7}], manifest, at(20))
+        assert not receipt.accepted
+        assert store.read_publication(original) == (before, first.ledger)
+        assert store.receipts(original.table) == (first, receipt)
