@@ -40,6 +40,7 @@ their representable minima and maxima; empty exterior intervals are discarded. A
 plant codes does not close the rest of the string domain; whole-table evidence requires a full read.
 
 An empty `key` means rows have no identity. Complete shapes replace their coverage wholesale.
+Keyless rows form a multiset: equal events retain separate occurrences.
 Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
 `start_at` bounding retained history. This declares that the source only appends and never deletes
 or revises retained events. Named-key coverage, tombstones and generation checkpoints require keys.
@@ -62,8 +63,10 @@ table-wide, so window generation feeds are forbidden. These rules admit twelve s
 Shapes also carry nonnegative relative `cost` (default one), optional positive `window_size` and
 optional `lookback` durations. `window_size` is a planning hint, not a push-window width constraint.
 Rolling durations require date or datetime windows. DATE widths are whole days including both ends:
-thirty days ending October 19 start September 20. Datetime windows include both ends of the duration.
-`lookback` is allowed only on timestamp shapes in keyed contracts; it extends a planned read back
+thirty days ending October 19 start September 20. Datetime windows include both ends of the elapsed UTC duration.
+Timestamp resolution is one microsecond; DATE planning uses UTC calendar dates. Without a declared
+window schema type, rolling planning uses datetime bounds; a DATE window requires its schema type.
+`lookback` is nonnegative and allowed only on timestamp shapes in keyed contracts; it extends a planned read back
 from the weakest covered completeness boundary. Keyless appends cannot overlap.
 
 ## Manifest
@@ -269,7 +272,7 @@ window sizes, lookback, admitted shapes and nonbinding schema columns. Each acce
 the contract used for that decision. The full contract, including policy with normalized numeric
 spelling, participates in the chain; only binding differences cause history refusal.
 `Ledger.with_contract(contract)` verifies compatibility and preserves regions, generation and head.
-Reconstruction uses each accepted receipt's historical contract before applying the requested compatible contract.
+Reconstruction uses each accepted receipt's historical contract, then the requested compatible contract.
 
 ## Versioned JSON
 
@@ -279,20 +282,25 @@ as strings, mappings as objects. Missing or unknown fields, unsupported versions
 wire types, overflowing tags and naive datetimes raise `SerializationError` before normalization.
 
 Dates use `{"$date":"2026-10-18"}`, UTC datetimes
-`{"$datetime":"2026-10-18T00:00:00+00:00"}`, durations `{"$seconds":604800.0}`. Canonical wire JSON
+`{"$datetime":"2026-10-18T00:00:00+00:00"}`, durations `{"$seconds":604800}`. Canonical wire JSON
 uses sorted keys, compact separators and ASCII escapes. Identity is SHA-256 of the UTF-8 identity
 form: recursively omit `version` and fields equal to defaults; sort keys/tombstones lexically by
 each tuple's compact canonical JSON (`[10]` before `[2]`); normalize integral floats to integers
 and datetimes to UTC `+00:00`. Always exclude `Receipt.replayed`, even when true, so replay preserves
-the original receipt identity. `identity_dict()` and `identity_json()` expose this form. Do not hash sidecar bytes.
+the original receipt identity. `identity_dict()` and `identity_json()` expose this form.
+Do not hash sidecar bytes.
+UTC datetimes omit fractional seconds when zero, otherwise use six digits. Finite fractional numbers
+use Python 3's shortest round-trip float spelling. Costs convert to float only without value loss.
+Durations encode integral seconds exactly, or fractional seconds only when float conversion preserves
+microseconds; otherwise construction fails. Typed strings reject lone Unicode surrogates.
 Compatible future optional fields at defaults preserve identity; semantic changes need explicit
 migration. Unknown wire versions are refused even when their identity form would be compatible.
 
 `to_dict/from_dict` and `to_json/from_json` round-trip nested values. A ledger embeds contract,
 regions, generation and publication head; a receipt embeds its decision and resulting ledger.
 [Contract](examples/contract.json), [manifest](examples/manifest.json), [ledger](examples/ledger.json)
-and [receipt](examples/receipt.json) are executable wire examples. Identity fixtures specify exact
-bytes and hashes for independent implementations.
+and [receipt](examples/receipt.json) are executable wire examples.
+[Identity vectors](examples/identity-vectors.json) specify exact canonical forms and hashes for independent implementations.
 
 ## Boundaries
 

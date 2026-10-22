@@ -38,6 +38,7 @@ def test_the_protocol_receipt_replays_to_the_documented_ledger():
 
 def test_example_identities_match_fixed_independently_specified_hashes():
     expected = json.loads((EXAMPLES / "identity-vectors.json").read_text())["examples"]
+    assert {path.stem for path in EXAMPLES.glob("*.json")} == {*expected, "identity-vectors"}
     for name, cls in (
         ("contract", Contract),
         ("manifest", Manifest),
@@ -45,7 +46,7 @@ def test_example_identities_match_fixed_independently_specified_hashes():
         ("receipt", Receipt),
     ):
         value = cls.from_json((EXAMPLES / f"{name}.json").read_text())
-        assert value.identity == expected[name]
+        assert value.identity == expected[name] == (EXAMPLES / f"{name}.identity").read_text().strip()
 
 
 def test_identity_vectors_fix_canonical_bytes_and_hashes():

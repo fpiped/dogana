@@ -1,257 +1,186 @@
 # dogana
 
-Customs for data integrations. A Python library that records what each delivery proves about a
-table, so every reader knows where a missing row means a deleted row, and as of when.
+A Python library that records which source rows a delivery accounts for, and through which date
+it accounts for deletions. Use it for full exports, rolling windows and change feeds that leave
+old rows behind.
 
-The core has no dependencies and performs no I/O. It validates declarations, keeps the ledger and
-decides what a store must do. Extraction stays with your extractor, rows with your database,
-scheduling with your orchestrator.
+An ERP exports the last 30 days every morning and everything on Sunday. Monday's file proves that
+an invoice missing inside those 30 days was deleted. It says nothing about a March invoice that
+also disappeared. That row stays in the landing table until a full export removes it.
 
-## The problem
+A **region** is an interval on one declared column, such as invoice date. The ledger, a record of
+these regions, keeps two dates for each:
 
-An ERP exports the last 30 days of invoices every morning and the whole table on Sunday. Monday's
-file lacks an invoice dated last week: it was deleted, and the file proves it. The same morning an
-invoice from March was also deleted at the ERP, but March is outside the window, so the file says
-nothing about it. The row stays in your landing table until Sunday.
+- `complete_as_of`: every source row live in the region at this boundary is present.
+- `valid_as_of`: deletions are accounted for through this boundary; later deleted rows may remain.
 
-Between full refreshes, a reader needs to know which regions may retain deleted rows and which
-have never arrived. Otherwise "items with no movement", which asks for items absent from the
-movements table, silently drops the items whose last movement is a ghost row.
+Equal dates mean the region matches the source at that instant. A complete window advances both
+inside its bounds. A keyed change feed without deletions advances completeness alone.
 
-dogana keeps that record as two dates per region of a table:
+`Claims` reports these dates and a state. Call `ledger.claims(now=...)` with the required current
+time: `unknown` means no evidence, `complete` means equal fresh dates, `patched` means newer
+completeness than deletion knowledge, and `expired` means completeness exceeds the freshness limit.
+The default limit is seven days. Set `freshness` to the feed cadence plus expected arrival slack.
+State describes dated evidence, not a promise that today's source has not changed.
 
-- `complete_as_of`: no source row is missing in the region as of that read.
-- `valid_as_of`: no deleted row remains in the region as of that read.
-
-A complete window advances both inside the window and nothing outside it. Rows changed since a
-timestamp, without a delete signal, advance only completeness. One invariant governs every
-transition: **a delivery never raises a date above what it proves**.
+Whole-table dates are the earliest region dates, lower bounds on evidence. Different regions or
+tables may describe different source instants. `Claims.combine` reports the weakest input dates;
+it does not certify a joined result or create a common snapshot.
 
 ## Try it
 
-Python 3.11 or later. The reference store uses DuckDB.
+Python 3.11 or later. No release is published yet. With uv and an active virtual environment, run
+this installation command **from the source checkout** containing `pyproject.toml`:
 
 ```sh
-uv pip install -e '.[dev,duckdb]'
+uv pip install -e '.[duckdb]'
 ```
 
-The script below writes three CSV files with JSON sidecar manifests into a drop folder and ingests
-them: Sunday's full export, Monday's 30-day window, and the next Sunday's full export. Run it in an
-empty directory.
+Then use that environment's Python to run the script below in any empty directory.
+
+A `Contract` declares the table key, schema and allowed delivery shapes. A `Shape` describes
+coverage, whether the read is complete, how deletions appear and its checkpoint, the previous read boundary or source cursor. Complete shapes
+use missing rows as deletions and need no checkpoint. A `Manifest` declares one read's boundary,
+window and row count. The gate checks it against the contract and candidate rows. A store publishes
+accepted rows and the ledger together; a `Receipt` records the decision and checks.
+
+This example delivers Sunday's full export, Monday's complete window, then the next Sunday's full
+export. It uses fixed receiver times so the result is reproducible. Production callers pass their
+actual receiver clock as `now`.
 
 ```python
 import csv
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
-from dogana import Column, Contract, Manifest, Shape
+from dogana import Column, Contract, Manifest, Shape, deliver
 from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop
 
+full = Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none", cost=100)
+daily = Shape(
+    coverage="window", completeness="complete", deletions="absence", checkpoint="none",
+    cost=10, window_size=timedelta(days=30),
+)
 contract = Contract(
-    "orders",
-    key=("id",),
-    shapes={
-        "full": Shape("all", "complete", "absence", "none", cost=100),
-        "daily": Shape("window", "complete", "absence", "none", cost=10, window_size=timedelta(days=30)),
-    },
-    window_column="day",
+    "orders", key=("id",), shapes={"full": full, "daily": daily}, window_column="day",
     schema=(Column("id", "int"), Column("day", "date"), Column("amount", "int")),
 )
-
 window = (date(2026, 9, 20), date(2026, 10, 19))
 deliveries = [
     (18, "full", [(1, "2026-09-01", 100), (2, "2026-10-18", 200)], None),
     (19, "daily", [(3, "2026-10-19", 300)], window),
     (25, "full", [(3, "2026-10-19", 300)], None),
 ]
-
-drop = Path("drop")
-drop.mkdir()
+Path("drop").mkdir()
 history = []
 with DuckDBStore("landing.duckdb") as store:
     for day, shape, rows, coverage in deliveries:
-        path = drop / f"orders-{day}.csv"
-        with path.open("w", newline="") as stream:
+        path = Path("drop") / f"orders-{day}.csv"
+        with path.open("w", newline="", encoding="utf-8") as stream:
             csv.writer(stream).writerows([("id", "day", "amount"), *rows])
+        boundary = datetime(2026, 10, day, tzinfo=UTC)
         manifest = Manifest(
-            "orders",
-            shape,
-            datetime(2026, 10, day, tzinfo=timezone.utc),
-            window=coverage,
-            rows=len(rows),
-            schema_hash=contract.schema_hash,
+            "orders", shape, boundary, window=coverage, rows=len(rows),
+            schema_hash=contract.schema_hash, content_hash=sha256(path.read_bytes()).hexdigest(),
         )
-        path.with_suffix(".csv.json").write_text(manifest.to_json())
-
-        receipt = FileDrop(store, contract).ingest(path)
-        assert receipt.accepted
-
+        receipt = deliver(store, contract, path, manifest, now=boundary)
+        assert receipt.accepted and not receipt.replayed
         ledger = store.load_ledger(contract)
-        claims = ledger.claims(manifest.produced_at)
-        history.append((day, claims.complete_as_of.date(), claims.valid_as_of.date()))
-        assert [row["id"] for row in store.read("orders")] == {18: [1, 2], 19: [1, 3], 25: [3]}[day]
+        claims = ledger.claims(now=boundary)
+        history.append((day, claims.complete_as_of.day, claims.valid_as_of.day))
+        ids = sorted(row["id"] for row in store.read("orders", receipt.publication_id))
+        assert ids == {18: [1, 2], 19: [1, 3], 25: [3]}[day]
+    replay = deliver(store, contract, path, manifest, now=boundary + timedelta(hours=1))
+    assert replay.replayed and replay.identity == receipt.identity
+    assert replay.received_at == receipt.received_at
 
-assert history == [
-    (18, date(2026, 10, 18), date(2026, 10, 18)),
-    (19, date(2026, 10, 18), date(2026, 10, 18)),
-    (25, date(2026, 10, 25), date(2026, 10, 25)),
-]
+assert history == [(18, 18, 18), (19, 18, 18), (25, 25, 25)]
+assert ledger.claims(now=boundary, window=window).valid_as_of.day == 25
+assert ledger.claims(now=boundary + timedelta(days=8)).state.value == "expired"
+print("Success: the window kept the older row; the full export removed it; replay changed nothing.")
 ```
 
-Sunday 18 establishes both dates everywhere. Monday's window deletes order 2 but keeps order 1
-outside it. The whole table reports the 18th: the table dates are the earliest region dates, a lower bound
-that every region satisfies. Sunday 25 removes
-order 1 and moves both dates everywhere to the 25th.
+Monday removes order 2 inside the window and retains order 1 outside it. The aggregate dates stay
+at October 18 because that is the oldest regional evidence. Sunday 25 removes order 1 and advances
+both dates everywhere.
 
-Ask for the window alone and the answer changes:
+The default `max_shrink_fraction=0.5` rejects complete deliveries removing more than half the rows
+in their coverage. For an intentional larger deletion, change that policy explicitly; `None`
+disables it. The guard is a per-delivery limit, not proof that an export is complete.
 
-```python
-assert ledger.claims(manifest.produced_at, window=window).valid_as_of.date() == date(2026, 10, 25)
-```
+The manifest is testimony. A truncated file with a self-consistent count can still pass; counting
+rows at the receiver does not discover missing source rows. `content_hash` distinguishes corrected
+payloads. A different digest at an already accepted source boundary is a new, stale delivery and
+is refused, so corrections need a new truthful read boundary. Replays preserve the original receipt
+and set `replayed=True`. Receipts also carry receiver `received_at` and optional `source` details.
 
-Every receipt stays readable. A file that contradicts its manifest (rows
-outside the window, a wrong count, a column gone) is refused, leaves rows and ledger untouched, and
-still gets a receipt that says why.
+## Request the next read
 
-## Without a store
-
-An existing loader can use the core alone. Here the published rows, stamp, ledger and receipts
-share one in-memory state; replacing that state publishes them together.
-
-```python
-from dogana import Check, Gate, Ledger, Operation
-
-memory_contract = Contract(
-    "items",
-    ("id",),
-    {"full": Shape("all", "complete", "absence", "none")},
-    schema=(Column("id", "int"),),
-)
-memory_state = ([], Ledger(memory_contract), (), None)
-candidate_rows = [{"id": 1}, {"id": 2}]
-memory_manifest = Manifest(
-    "items",
-    "full",
-    datetime(2026, 10, 18, tzinfo=timezone.utc),
-    rows=2,
-    schema_hash=memory_contract.schema_hash,
-)
-
-published_rows, memory_ledger, receipts, stamp = memory_state
-assert stamp == memory_ledger.publication_id
-memory_manifest.check(memory_contract)
-requirements = Gate.requirements(memory_contract, memory_manifest)
-results = {
-    "row_count": len(candidate_rows) == memory_manifest.rows,
-    "schema_hash": memory_manifest.schema_hash == memory_contract.schema_hash
-    and all(tuple(row) == ("id",) and type(row["id"]) is int for row in candidate_rows),
-    "key_integrity": len({row["id"] for row in candidate_rows}) == len(candidate_rows)
-    and all(row["id"] is not None for row in candidate_rows),
-}
-checks = tuple(Check(r.name, results[r.name]) for r in requirements)
-memory_receipt = Gate.evaluate(memory_ledger, memory_manifest, checks)
-if memory_receipt.accepted:
-    for action in memory_receipt.transition.plan.actions:
-        assert action.operation is Operation.REPLACE_ALL
-        published_rows = list(candidate_rows)
-memory_state = (
-    published_rows,
-    memory_receipt.ledger,
-    receipts + (memory_receipt,),
-    memory_receipt.publication_id,
-)
-assert memory_receipt.accepted and memory_state[0] == candidate_rows
-assert Ledger.from_receipts(memory_contract, memory_state[2]) == memory_state[1]
-```
-
-A production loader meets four obligations:
-
-- Checks before rows.
-- Rows and ledger move together, including stamp and receipt.
-- Receipts are kept, including rejections.
-- Replay returns the stored receipt.
-
-Run `dogana.conformance.StoreConformance` against your store; [reference](docs/reference.md) shows
-the factory and fault hooks. The example above handles a full replacement only.
-
-## The concepts, in the order you meet them
-
-| Term | What it is |
-|---|---|
-| Contract | One table: key, schema, admitted delivery shapes, optional window column. |
-| Shape | How a delivery was produced: coverage (all, window, keys), completeness (complete, changed only), deletion signal (absence, tombstone, none), checkpoint (generation, timestamp, none). Twelve combinations are valid. |
-| Manifest | What one delivery claims: its shape, the source read boundary, window, count, schema hash. Written by the sender as a sidecar, derived from a file name, or produced by your own extraction. |
-| Gate | Checks the claim against the contract and the rows against the claim. Accept or reject, never partially. |
-| Ledger | Disjoint regions of the window column's domain, each with the two dates. Never delivered regions stay visible as unknown. |
-| State | Per region: unknown, complete, patched (deleted rows may remain), expired (older than the freshness limit). |
-| Claims | What a reader may rely on, for a table or a set of tables: the earliest dates and the state of every region. A query inherits them when it is monotone; under negation the two dates swap roles for the negated input. |
-| Receipt | The audit record: manifest, checks, transition, resulting claims, publication identity. The ledger can be rebuilt from receipts. |
-
-The [protocol](docs/protocol.md) defines every term and transition. It is the authority; the code
-follows it.
-
-## Pull mode
-
-When you control the read, the ledger runs backwards. Ask what a reader needs and get the cheapest
-admitted read that proves it, or the next interval for a rolling shape:
+A `Requirement` states minimum evidence dates and optional coverage. The planner chooses an admitted
+read by relative `cost`, breaking ties by shape name. Here the cheaper window suffices:
 
 ```python
 from dogana import Requirement, next_extraction, plan_delivery
 
-until = datetime(2026, 10, 26, tzinfo=timezone.utc)
+until = datetime(2026, 10, 26, tzinfo=UTC)
 needed = (date(2026, 10, 1), date(2026, 10, 26))
 request = plan_delivery(ledger, Requirement("orders", until, until, window=needed))
-assert request.shape == "daily" and request.window == needed
-
+assert request is not None and request.shape == "daily" and request.window == needed
 rolling = next_extraction(ledger, "daily", until)
 assert rolling.interval == (date(2026, 9, 27), date(2026, 10, 26))
+print("Success: the planner selected a complete window.")
 ```
 
-The request goes to your extractor. What comes back passes through the same gate as a pushed file,
-so push and pull produce the same ledger for the same deliveries.
+Your extractor fulfills the request; its result passes through the same `deliver` function.
+A scheduler's logical date is not the source read boundary. Keyed timestamp shapes may declare
+`lookback` to overlap reads for late commits; this mitigates bounded lag without proving completeness.
+An optional contract `cursor_column` lets the store check row timestamps against the interval.
 
-## Common source patterns
+## Source patterns
 
-| Source | Shapes | What the ledger says |
+A checkpoint is the previous read boundary: a timestamp or an opaque source cursor called a
+generation. A tombstone explicitly names a deleted key. Generations are table-wide.
+
+| Source | Declaration | Evidence |
 |---|---|---|
-| Nightly full export | all, complete, absence | Both dates advance everywhere. |
-| Daily window plus weekly full | window and all, complete, absence | Both advance only inside the window; the weekly full resets the rest. |
-| Rows changed since updated_at, weekly full | all, changed only, none, timestamp | Completeness advances daily; validity waits for Sunday. |
-| One export per plant | window with equal endpoints, complete, absence | Each plant has its own dates; undelivered plants are unknown. |
-| Change feed with tombstones | keys, changed only, tombstone, generation | Both advance from a continuous base; a broken chain is refused until a full export. |
-| Append-only event log, no key | all, changed only, none, timestamp | Contiguous intervals from a declared start. |
+| Nightly full export | Complete, all, absence | Both dates advance everywhere. |
+| Daily window and weekly full | Complete, window and all, absence | Both advance inside each delivery's coverage. |
+| Rows changed since `updated_at` | Changed-only, all, none, timestamp | Completeness advances; deletion knowledge waits. |
+| One export per plant | Complete singleton windows | Each plant has its own dates; whole-table claims remain unknown without a full read. |
+| Feed with tombstones | Changed-only, keys, tombstone, generation | A continuous exact base remains exact; a broken cursor needs a full reset. |
+| Keyless append-only log | Changed-only, all, none, timestamp; `start_at` | The source declares retained events immutable and never deleted, so contiguous appends advance both dates. |
+
+## Reading and extending
+
+For "items with no movement", a retained deleted movement hides an item. With exact items and
+patched movements at the same boundary, this anti-join can omit true answers. Negation reverses
+which input guarantee matters. Exact aggregates and joins across different dates need more than
+the minimum reported date. The [protocol](docs/protocol.md) defines these limits and every transition.
+
+The core uses only the standard library. It emits plans and drives store primitives; reference
+packages perform I/O. An existing loader can use the [six-call path](docs/reference.md#without-a-store)
+and provide its own atomic publication. Store authors can run `dogana.conformance.StoreConformance`.
+See [reference implementations](docs/reference.md), [integrations](docs/integrations.md) and
+[architecture](docs/architecture.md).
 
 ## What it is not
 
-- Not a pipeline. It never reads a source. dlt, Airbyte, Spark or a shell script do that.
-- Not a scheduler. Dagster or Airflow decide when; dogana says what is due and why.
-- Not a quality monitor. Soda or Great Expectations test row values; dogana tracks what a delivery proved.
-- Not a store. Rows live in DuckDB, Postgres, Iceberg or DuckLake. The store executes plans the core emits as values.
+- SQLMesh tracks processed model intervals; dogana records what incoming source deliveries establish about rows and deletions.
+- Iceberg snapshots identify committed table versions; dogana describes source evidence within each version.
+- dbt snapshots track row history; dogana records whether the incoming coverage can justify absence as deletion.
+- A watermark table stores a last-seen cursor; dogana also tracks coverage, deletion knowledge and refused deliveries.
+- A pipeline, scheduler or quality monitor: extraction, timing and business-value rules remain with their owners.
 
-The DuckDB store and file drop are reference implementations.
-[Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg, DuckLake,
-Dagster and the observability tools. [Architecture](docs/architecture.md) explains the
-design and what it borrows from projects that got these questions right.
+If log-based change data capture already preserves every insert, update and deletion, this ledger
+may add little. There is no daemon or command-line interface. DuckDB and file drop are reference
+implementations, not a catalog of production warehouse connectors.
 
-## Who should not use it
+## Grounding and status
 
-If every source uses log-based CDC with soft deletes, your replica already captures absence.
-Both dates would stay equal; this ledger adds little.
-
-## Grounding
-
-Razniewski and Nutt formalise partial databases with table completeness statements: the available
-table holds every ideal row satisfying a condition. Motro splits integrity into completeness (no
-missing rows) and validity (no rows that should be gone). A row deleted at the source but still in
-your table is a validity failure, not a completeness one. That is why there are two dates and not
-one.
-
-## Status
-
-Protocol version 1, no release yet. 308 tests cover transitions, JSON, planning, runnable README
-examples and store obligations. A conformance suite proves a store; DuckDB and file drop are
-reference implementations. Contract evolution remains open.
+The two dates adapt table completeness and validity to source history, per region and per read
+boundary. They distinguish missing live rows from retained deleted rows. Protocol version 1 is
+unreleased; compatible policy changes preserve history, while key and window bindings cannot change.
 
 ## Licence
 

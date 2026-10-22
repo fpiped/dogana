@@ -1,0 +1,45 @@
+# Changelog
+
+## Unreleased
+
+- Define source declarations, store checks and atomic publication as separate trust boundaries.
+- Require receiver time for gate decisions and delivery; reject future source boundaries.
+- Record receipt arrival time, source, checked base and an explicit replay marker.
+- Preserve original receipt identity and arrival time when replay returns an acceptance.
+- Move delivery orchestration into the core over storage primitives, including receipt lookup and publication stamps.
+- Remove accepted identities from embedded ledgers; keep replay history in the store's receipt index.
+- Limit atomic publication to transactions or table-format commits carrying durable receipts and expected-parent checks.
+- Bind candidate checks and publication to the same base; refuse stale cached plans and automatic rebase.
+- Retain accepted receipts in publication order and read rows with evidence from one publication.
+- Fail closed on missing publication evidence and repair ledgers only against a matching row stamp.
+- Treat publication stamps as association labels, not content checksums.
+- Normalize canonical identity defaults, numeric spelling, UTC times and key ordering; publish fixed identity vectors.
+- Exclude the replay marker from receipt identity and distinguish wire compatibility from identity compatibility.
+- Add optional manifest content hashes so corrected payloads cannot masquerade as accepted replays.
+- Raise shrink protection to a default of one half, with explicit disabling and per-delivery limits.
+- Permit compatible contract changes while preserving table, key and window bindings in history.
+- Keep full historical contract identities in the publication chain, including policy settings.
+- Restrict generations to one table-wide cursor and forbid window generation feeds.
+- Allow timestamp tombstones to repair validity when their checkpoint covers the deletion gap.
+- Require keyless append continuity at every covered boundary and reject nonempty zero-length intervals.
+- Declare retained keyless events immutable and never deleted, explaining why append advances validity.
+- Add optional cursor columns and timestamp row checks over `(since, produced_at]`.
+- Add keyed timestamp lookback to mitigate bounded late commits without claiming completeness proof.
+- Anchor rolling reads to existing evidence and choose feasible boundaries beyond requirement minima.
+- Normalize datetime bounds and keys before comparison; enforce declared window types and representable-domain adjacency.
+- Admit keys moving into a window while retaining source immutability as the guarantee against unseen moves out.
+- Report dependent checks as not evaluated when earlier validation prevents execution.
+- Distinguish declared delivery failures from storage errors and programming failures through a public error hierarchy.
+- Preserve successful commits across cleanup failures and release failed candidates and transactions.
+- Parse CSV with declared types and accept iterable row dictionaries in the reference store.
+- Derive file manifests from fixed shapes, optional counts and rolling bounds, with source descriptions in receipts.
+- Require explicit filename timezones and reject ambiguous or nonexistent local boundaries.
+- Refuse glob paths, drop-root escapes and implicit adoption of unmanaged tables.
+- Retain changed row versions and commit metadata instead of copying every published table.
+- Exercise both transaction and atomic-commit stores through the shared conformance suite.
+- Define combined claims as input-date bounds, with common-time and negation limits for queries.
+- State deterministic ordered folding, store replay idempotency and regional commutativity without claiming a join-semilattice.
+- Document a dlt store design that gates one load, with one cursor owner and explicit endpoint handling.
+- Add dbt freshness and singular-test recipes, SQLMesh positioning and inspectable store metadata.
+- Run every README block with explicit checkout installation, an empty example directory and visible success output.
+- Keep Python 3.11+, standard-library core boundaries, strict typing and protocol-first contribution rules.

@@ -1,120 +1,103 @@
 # Architecture
 
-How dogana is built and why. The [protocol](protocol.md) defines the semantics; this page explains
-the shape of the code and the decisions behind it.
+The [protocol](protocol.md) defines semantics. This page explains the boundaries that keep them
+independent of extraction and storage.
 
-## One verb
+## Evidence as values
 
-A data system has three verbs. Load moves bytes from a source into landing tables. Transform
-derives tables from tables. Publish decides what readers see and what they may conclude from it.
-dogana owns the third verb and refuses the other two.
+A contract declares what a source promises. A manifest declares what one read contains. The ledger
+records two source-evidence dates per region: completeness and deletion knowledge. Plans describe
+row operations, checks report candidate predicates, and receipts retain decisions with their base
+publication. These values can be validated and serialized without opening a database.
 
-The ledger is derived from the contract and accepted manifests. Receipts retain the original
-check outcomes and rejected attempts; those audit inputs cannot be recovered from accepted
-manifests alone. Rows and check execution belong to the store. Schedules belong to the caller.
-The core accepts evidence as values and derives decisions without performing I/O.
+The core uses only the Python standard library. Contract validation, interval arithmetic, planning
+and gate decisions are pure operations over frozen values. `dogana.deliver` owns the orchestration:
+it calls a supplied store's primitives, but knows no SQL engine, extractor or scheduler. All concrete
+I/O lives in reference packages or the caller's implementation. Dependency direction is inward;
+removing reference packages leaves validation, accounting and claims usable.
 
-## Rules, not implementations
+`cursor_column` exposes a timestamp predicate to storage without putting row access in the core.
+The gate requires every named result; the store must implement the predicate correctly. This exact
+check set is not a plug-in API for arbitrary business-quality checks.
 
-The core is `contract`, `ledger`, `gate`, `planner`, `wire`: pure functions over frozen values,
-standard library only. It emits values that say what must be done (a plan, a list of checks, a
-receipt) and never does it. Whoever writes rows meets the four store obligations of the protocol:
-checks before rows, rows and ledger together, receipts kept, replay returns the stored receipt.
+## One publication
 
-Those obligations are stated as rules because they can be checked mechanically. `dogana.conformance`
-is the check: the same scenarios (a week of files, a contradictory file, a crash after the rows
-changed, a replay, an out-of-order window) run against any store facade that delivers, loads a ledger, lists receipts and repairs it. A store
-that passes has met the contract, whoever wrote it. The product is the rule and its test. A warehouse team
-writes its store the way it writes everything else, then runs the suite.
+A publication binds candidate rows, checks against a base, resulting rows, ledger, stamp and accepted
+receipt. It becomes visible in one transaction or one table-format commit. The latter carries the
+full receipt, or references a receipt already durable before the commit. A hash pointing at a record
+that might never be written cannot recover a publication.
 
-Two reference implementations live in `dogana.reference`, installed under extras: a DuckDB store and
-a file drop that derives a manifest from a filename. They exist so the protocol has a running
-example, the README runs, and the conformance suite has a subject. They are fixtures that happen
-to be usable, not warehouse support.
+The commit compares its current head with `receipt.base_publication_id`. If another writer moved
+that head, the prepared plan and check results are stale. Retry must start from the new base;
+it cannot silently rebase an old acceptance. `execute` may prepare changes in a transaction or defer
+them to `publish`, which has the receipt needed for a table-format commit.
 
-Dependencies point inward. The reference imports the core; the core imports only the standard library. A test deletes
-the reference package and proves the core still validates, applies and answers.
+Ordered row, receipt and ledger writes are not a third atomicity mechanism. A crash between them can
+make replay report success while the ledger still describes older rows. An accounting-only caller
+must supply atomic publication itself before claiming that rows and evidence agree.
 
-## Atomicity: three mechanisms and one guard
+The six store obligations are checks before rows, atomic publication, comparison against the checked
+base, ordered durable receipts, idempotent replay and publication-consistent reads. These apply per
+manifest and per table. A coherent multi-table snapshot needs external transaction or coordination
+support; combining minimum dates does not create one.
 
-The one invariant a store cannot delegate to the core is that rows and the fact about the rows move
-together. The protocol admits three ways to keep it: one transaction when rows and ledger share an
-engine; the table format's commit when rows live in Iceberg, Delta or DuckLake, with the receipt
-identity in the snapshot metadata; ordering plus idempotency when neither exists, which is enough
-for every plan except append.
+## What the stamp detects
 
-The guard that makes a violation visible is the publication stamp. The ledger's `publication_id`
-is a hash chain; the store writes it next to the rows in the same step as the rows; `load_ledger`
-compares the two and refuses deliveries while they differ. A crash between rows and ledger, or rows
-replaced behind the gate, becomes a refused delivery with a reason instead of a wrong answer.
+A publication identity hashes the preceding head, full contract identity and manifest identity.
+The store writes that identity beside the rows as their stamp. Comparing ledger and stamp detects a
+ledger lagging a committed publication, or external publication that moved the stamp. It is an
+association check, not a content checksum: edits that retain the stamp, lost rejected receipts and
+joint loss of all evidence remain outside its detection model.
 
-## Values, not calls
+Accepted receipts in publication order rebuild the ledger and chain. Repair is allowed only when
+the reconstructed head matches the row stamp. Reconstructing evidence does not reconstruct rows;
+historical reads require retained row versions. A missing ledger with surviving publication evidence
+is a recovery problem, not permission to start a new history.
 
-- `ApplyPlan`: an ordered tuple of `Action` values (`replace_all`, `replace_window`, `upsert`,
-  `tombstone`, `append`). Any store with transactions can execute it; none needs to know why.
-- `CheckRequirement` and `Check`: the gate names the row checks; the store returns one outcome per
-  name; the gate decides. A missing, duplicate or unexpected outcome is a rejection, so a store
-  cannot skip a check by accident.
-- `Receipt`: the decision as data, with the transition before and after. The accepted receipts in
-  order reconstruct the ledger.
+## Replay and bounded ledger state
 
-Values can be serialised, compared, replayed and tested without a database. Every value carries
-`version` and `kind` and has a JSON form in the protocol.
+The ledger contains contract, regions, generation and publication head. Accepted identities live in
+the store's receipt index. Core delivery looks up an accepted identity before preflight and returns
+the original receipt marked `replayed=True`, with unchanged receipt identity and receiver time.
+This keeps each embedded ledger proportional to region count instead of accumulated deliveries.
+Large key enumerations can still make individual manifests and receipts large.
 
-## Write, audit, publish
+Manifest identity describes the declaration, including optional `content_hash`. Without that digest,
+a different payload under an identical declaration is indistinguishable from replay. A corrected
+digest makes a new delivery, which must still satisfy source-time monotonicity. Sidecar bytes are
+not the identity input: the frozen identity form normalizes values and omits defaults and version.
+The replay flag is always excluded from receipt identity.
 
-Every delivery checks candidate rows before publication. A transaction or format commit makes
-rows and evidence visible atomically. An ordered store instead uses idempotent replay and refuses
-ledger reads until its publication stamp agrees. This is the write-audit-publish boundary.
-dogana adds what the pattern leaves to each team: the audit is scoped by what the delivery claims
-(a window delivery is checked inside its window), the publish writes a receipt, and the ledger
-records what the publication proved.
+## An ordered fold
 
-## Idempotency by identity
+`Ledger.apply(manifest)` advances accounting under continuity and time constraints. It is deterministic
+for the same ordered input history, but does not itself detect replay. Delivery idempotency belongs
+to the receipt lookup and atomic publication sequence.
 
-A manifest's identity is the hash of its canonical JSON. An accepted identity applied again returns
-the original receipt and changes nothing, however many deliveries came in between. A corrected file
-needs a corrected manifest, which has a different identity. Senders can resend, orchestrators can
-rerun, nothing doubles.
+Regions split at coverage boundaries and merge when adjacent evidence agrees. Unknown gaps remain
+visible. Disjoint admissible windows commute on regional evidence; their publication hashes retain
+order. This fold is not a join-semilattice or a conflict-free merge of concurrent ledgers. An older
+whole-table export after a newer window is rejected entirely to keep row replacement and evidence
+consistent, even though part of its evidence could have been useful.
 
-## The ledger is a fold
+Completeness and validity are conditional source guarantees, not properties inferred from row count.
+Keyless append raises both dates only because its contract declares immutable, never-deleted events.
+Timestamp lookback mitigates late commits within a bound; it does not verify that no change was missed.
 
-`Ledger.apply(manifest)` is a pure function from a ledger to a ledger. Regions split exactly at the
-delivery's bounds, dates move only where the delivery proves them, and adjacent regions with
-identical evidence merge back. Because the function is pure, the suite fuzzes it: random sequences
-of full, windowed and changed-since deliveries, with the invariants checked after each step
-(regions partition the domain, validity never exceeds completeness, untouched regions never move,
-touched regions carry exactly the delivery's date).
+## Implementations and limits
 
-## Who should not use it
+DuckDB and file drop make the protocol executable. The DuckDB store stages candidates, commits rows
+and evidence together and retains changed row versions for publication reads. It is a reference
+implementation with table scans and retained history, not a production connector catalog.
+The conformance suite exercises the same obligations against transaction and table-format models.
+Its scenarios help catch mistakes; passing them is not proof of every possible implementation.
 
-A team whose every source arrives through log-based change data capture with soft deletes already
-holds a faithful copy; both dates would always be equal and dogana would record nothing new. The
-library is for the other feeds: files on SFTP, APIs that answer "changed since", exports that are
-full on Sunday and windowed on weekdays, append-only logs.
+Existing data-contract schemas can supply the table, key and types. The delivery rules add semantics
+that ordinary schema and quality declarations do not express. Until a carrier is implemented, callers
+must project those fields into `Contract`; claiming there is no schema duplication would be false.
+Governance ownership, signatures and producer credentials remain outside this protocol.
 
-## What is borrowed, and from whom
-
-dlt: the drop-in library model, no daemon, a function call that works in a notebook or a task, and
-state stored next to the data so a lost working directory loses nothing. dbt: declarative intent
-(a shape) from which the library derives the mechanics (plan and checks), and full refresh as the
-universal escape hatch, here made visible as a date. mosaico: immutable layers finalised once and a
-catalog rebuildable from durable storage. Iceberg and Delta: snapshot isolation and a per-commit
-metadata slot, where the receipt identity goes. Iceberg also shows the distribution model:
-a specification plus one reference library, implementations elsewhere.
-
-## Why Python and why no dependencies
-
-The core's work is validation, interval arithmetic and hashing; the hot path is in the store that
-executes the plan. The people who adopt a delivery ledger write Python, and every neighbour is
-Python. No runtime dependencies means the core can be vendored and audited in an afternoon.
-
-## Non-goals, stated so they stay stated
-
-- No scheduler, watcher or daemon. The library is called; it never wakes up.
-- No second rule language. Row rules belong to Soda, Great Expectations or SQL.
-- No parallel contract schema. The delivery contract complements a data contract; it does not
-  restate it.
-- Reference implementations only. A store is written by the team that owns the warehouse and proved by the
-  conformance suite.
-- No platform. If a feature needs a server to exist, it belongs in another project.
+Python fits the surrounding extraction and warehouse libraries. Validation, hashing and interval
+arithmetic stay small; row operations execute in the store. The project has no scheduler, watcher,
+daemon, command-line interface, quality language or service. One window column gives one dimension
+of evidence; plant-by-date regions need a different representation.

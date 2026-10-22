@@ -1,98 +1,172 @@
 # Reference implementations
 
-These make the protocol executable. Their constraints belong to these implementations, not to the
-protocol.
+The [protocol](protocol.md) defines required behavior. This page describes the shipped DuckDB and
+file-drop implementations and how to supply your own storage.
 
 ## DuckDB store
 
-The DuckDB reference implementation holds the incoming CSV or Parquet file in a temporary candidate.
-It checks the candidate before a transaction changes the published table. Rows, publication stamp,
-ledger and receipt commit together. Unexpected exceptions and interrupts abort the candidate before
-propagating. Cleanup failure after commit returns the committed receipt for handled I/O errors;
-resubmission returns it after an interrupt.
+`DuckDBStore(path, adopt=False)` accepts a CSV or Parquet path, an iterable of row dictionaries,
+or an Arrow table when PyArrow is installed.
+`hold(source, manifest, contract)` stages the candidate with declared types. CSV values are parsed
+using the contract schema, not inferred from whether a particular file happens to contain decimals
+or nulls. Parquet retains its physical schema for validation. Successful candidates normalize to
+BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. CSV datetime values without an offset
+are interpreted as UTC by the store session; include offsets when the source uses another timezone.
+This CSV convention does not relax the requirement for aware datetimes in core values and manifests.
 
-`__dogana_publications` holds the row stamp. `load_ledger` raises `InconsistentPublication` when it
-differs from the ledger, naming the ahead side. `repair(contract)` folds receipts and restores a lost
-or stale ledger only when the result matches the stamp. A ledger ahead of the stamp requires a new
-complete whole-table delivery. A window or replay cannot repair rows. Lost ledger and stamp records
-with retained receipts also require a new complete delivery, continuing the retained chain. Unknown
-stamps or incomplete receipt chains require investigation.
+Call `dogana.deliver(store, contract, source, manifest, now)` with the actual receiver time.
+The store's `deliver` convenience uses the same core sequence. Rows, ledger, stamp and receipt commit
+in one transaction. A rejected receipt changes none of the published rows or evidence. `StoreError`
+means storage failed; it is not a rejection of the declaration. Unexpected failures roll back and
+release candidates. If a commit succeeded before cleanup failed, retry finds the committed receipt.
 
-Row versions in `__dogana_history_<table>` support `read(..., publication_id=...)`. Each version has
-its first publication sequence and exclusive end sequence. Keyed publications compare live rows
-with active versions using null-safe equality. Unchanged rows survive without copies. Append adds
-candidate events, including equal events. History grows with changed rows; comparisons still scan
-the table. Stored receipt JSON replaces accepted-identity lists with internal prefix counts over
-the receipt index. `receipts()` restores the public wire value. The current ledger retains all
-accepted identities; requesting every full receipt materializes their historical prefixes.
-Existing whole-table snapshot publications remain readable; new publications create no such copies.
-Older databases without stamps require a new complete delivery before ordinary delivery resumes.
+An existing destination table without publication evidence is refused unless `adopt=True` is
+explicitly chosen. Adoption does not certify its existing rows; establish evidence with a complete
+read. The `__dogana_` prefix is reserved regardless of case. Registered table spelling must remain
+consistent because DuckDB identifiers are case-insensitive while protocol identities are not.
 
-Stores for the same resolved file share a process-local lock across checks and publication.
-Two threads using one instance or two instances serialize; an older overlapping delivery gets a
-rejected receipt. Reads and ledger loads use the same lock. Independent processes remain subject
-to DuckDB's file locking. Direct SQL writers must coordinate with the store. A stamp cannot detect
-a writer that changes rows without changing the stamp.
+Stores on the same resolved file share a process-local lock. Checks and publication serialize;
+reads cannot observe an unfinished transaction. Use one writer process per DuckDB file. External
+SQL writers must coordinate with the store. A direct row edit that leaves the stamp unchanged is
+not detectable by stamp comparison.
 
-Contracts cannot change within a published table's history. The `__dogana_` namespace is reserved
-regardless of case. A spelling alias of a table registered by a ledger, stamp or receipt is refused:
-DuckDB identifiers ignore case, while core table identities preserve it. The `duckdb` extra includes
-`pytz`, needed by DuckDB's client when returning timezone-aware columns.
+`read(table, publication_id=None)` returns row dictionaries; pass a receipt's publication identity
+to read its version. Pair that version with the receipt's ledger, recomputing claims with today's
+`now`. Loading current rows and current claims separately can cross a publication boundary.
+`receipts(table=None)` returns persisted decisions in order, including rejections. A returned replay
+is marked `replayed=True` and preserves original identity and `received_at`; it is not another commit.
+This is a decision history, not a journal of every call or operational exception.
+
+## Internal tables and ledger JSON
+
+These tables are implementation details, useful for inspection and SQL consumers:
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `__dogana_ledgers` | `table_name`, `document` | Current canonical ledger JSON. |
+| `__dogana_receipts` | `receipt_id`, `table_name`, `manifest_id`, `accepted`, `publication_id`, `document` | Persisted decision JSON and lookup indexes. |
+| `__dogana_publications` | `table_name`, `publication_id` | Current row publication stamp. |
+| `__dogana_commits` | `publication_id`, `table_name`, `manifest_id`, `base_publication_id`, `receipt_id`, `sequence`, `history_table`, `columns` | Accepted publication order and row-version metadata. |
+| `__dogana_history_<table>` | Declared row columns, `__dogana_from`, `__dogana_until` | Row versions, with inclusive start and exclusive end publication sequences. |
+
+`document` in the ledger table contains `version`, `kind`, `contract`, `regions`, `generation` and
+`publication_id`. It has no accepted-identity array. Every region contains `low`, `high`, `low_open`,
+`high_open`, `complete_as_of` and `valid_as_of`. Unknown dates and unbounded endpoints are JSON null;
+a datetime is `{"$datetime":"2026-10-18T00:00:00+00:00"}` and a date is
+`{"$date":"2026-10-18"}`. Contract and region values also carry `version` and `kind`.
+The [complete ledger fixture](examples/ledger.json) is executable JSON.
+
+Create this DuckDB view to expose dates without discarding unknown regions or endpoint flags:
+
+```sql
+create or replace view dogana_regions as
+select l.table_name,
+       json_extract_string(l.document, '$.publication_id') as publication_id,
+       r.key::integer as region_index,
+       json_extract(r.value, '$.low') as low,
+       json_extract(r.value, '$.high') as high,
+       json_extract(r.value, '$.low_open')::boolean as low_open,
+       json_extract(r.value, '$.high_open')::boolean as high_open,
+       json_extract_string(r.value, '$.complete_as_of."$datetime"')::timestamptz as complete_as_of,
+       json_extract_string(r.value, '$.valid_as_of."$datetime"')::timestamptz as valid_as_of
+from __dogana_ledgers l,
+     json_each(l.document, '$.regions') r;
+```
+
+The view reads current ledger evidence. It does not fix a publication for later queries or calculate
+freshness. SQL `min` ignores nulls, so require every region's date to be non-null before aggregating.
+The [dbt recipes](integrations.md#dbt) use that rule and refuse a missing ledger too.
+
+History tables receive a schema-derived suffix when column changes require a new physical layout.
+History stores changed row versions instead of copying the whole table on every publication.
+Keyed updates compare rows with null-safe equality; unchanged rows keep their version. Equal
+keyless events retain their multiplicity. History grows with changes and has no automatic retention
+policy; comparison still scans published rows. Accepted-receipt lookup carries replay history outside
+the ledger, so embedded ledger size depends on regions rather than the number of deliveries.
+
+## Recovery and contract changes
+
+`load_ledger` raises `InconsistentPublication` when ledger, retained receipts and row stamp disagree.
+`repair(contract)` folds accepted receipts and restores a missing or stale ledger only if the
+reconstructed head equals the stamp. Missing accepted receipts or an unknown stamp require
+investigation. A newer complete whole-table read can replace untrusted rows while continuing a
+recoverable history; a window or replay cannot repair them. Never edit a stamp to make it agree.
+Rebuilding a receipt prefix restores evidence only, not the historical rows.
+
+Use a compatible new `Contract` to change freshness, shrink policy, costs or other nonbinding fields.
+`Ledger.with_contract` enforces unchanged table, key and window bindings, including their types.
+Receipts preserve the contract used for each decision. Establish changed row schemas with a complete
+whole-table delivery so retained rows have defined values under the new schema. A source restoration
+can invalidate an unchanged timestamp checkpoint: request a genuinely complete read instead of
+continuing from its old numeric value. Opaque generation tokens must distinguish source incarnations.
 
 ## File drop
 
-The file-drop reference implementation accepts CSV or Parquet paths. `<file>.json` is an optional
-sidecar. Without it, a full-match filename expression supplies `produced_at` and optionally `shape`,
-`rows`, `low`, `high`, `since`, `generation` and `schema_hash`.
+`FileDrop(store, contract, pattern=None, root=None).ingest(path, now=None)` accepts CSV or Parquet files.
+The sidecar is `<file>.json`, for example `orders.csv.json`. Without it, `FilePattern` derives a
+manifest using a full-match filename expression. It requires `produced_at` and either a named
+`shape` group or a fixed `shape` argument. Optional groups include `rows`, `low`, `high`, `since`,
+`generation` and `schema_hash`. The file drop supplies receiver time at ingestion unless `now` is explicitly supplied.
 
-`FilePattern(expression, shape="daily")` declares the shape once when the filename omits it.
-Conflicting fixed and filename shapes are refused, as is a missing shape. Without a `rows` group,
-CSV records are counted, including quoted newlines; Parquet counting requires `dogana[duckdb]`.
-`pattern.manifest(path, contract)` needs the file path when counting, and accepts a filename alone
-when its groups carry the count.
-
-Without bounds groups, a window derives its closed interval from `window_size`, ending at the UTC
-`produced_at` boundary. Thirty DATE days ending October 19 start September 20. Datetime bounds span
-the exact duration. A window without bounds or a duration is refused; bounds groups come in pairs.
-Explicit bounds use the window column's logical type. Filename dates without an offset mean UTC.
-The schema hash defaults to the contract's hash and is checked against the file.
-
-File arrival order is delivery order. CSV inference reads all rows. Header-only CSVs use declared
-types; empty Parquet retains its physical schema. Successful candidates normalize to BIGINT, DOUBLE,
-VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. Missing or retyped columns are refused. There is no watcher,
-file mover or scheduler.
-
-## Prove a store
-
-Install `dogana[dev]` for pytest. `dogana.conformance` imports the core, the standard library and
-pytest, with no DuckDB dependency. In your pytest module:
+For filenames such as `orders_2026-10-19.csv`, declare the timezone instead of assuming one:
 
 ```python
-import pytest
-from dogana.conformance import StoreConformance
-from your_project.testing import WarehouseFactory
+from datetime import UTC
+from dogana.reference.files import FilePattern
 
-
-class TestWarehouse(StoreConformance):
-    @pytest.fixture
-    def factory(self, tmp_path, monkeypatch):
-        return WarehouseFactory(tmp_path, monkeypatch)
+pattern = FilePattern(r"orders_(?P<produced_at>\d{4}-\d{2}-\d{2})\.csv", shape="daily", timezone=UTC)
 ```
 
-Implement `StoreFactory`: `make_store()`, `write_source(rows, schema)` and
-`read_table(store, table)` supply the transport. `atomic_append` declares whether a transaction
-or format commit makes append safe. Three hooks inject faults against disposable storage:
+Naive filename timestamps without a declared timezone are refused. Ambiguous or nonexistent local
+times need an explicit offset. DATE windows use UTC calendar dates. Missing bounds derive a closed
+window from the shape's `window_size`; explicit bounds must appear as a pair and match the schema.
+Thirty DATE days ending October 19 start September 20. A window lacking both bounds and duration
+is refused. The duration is not a restriction on explicitly declared push windows.
 
-- `fail_after_rows(store)`: a context manager interrupting one publication after rows change.
-- `set_ledger(store, ledger)`: overwrite only the ledger.
-- `set_stamp(store, table, id)`: overwrite only the stamp, or remove it for `None`.
+Without a `rows` group, CSV records are counted, including quoted newlines; Parquet counting needs
+the DuckDB extra. Path-based receipts identify the source. Filename derivation does not add a content hash;
+compute one and include it in a supplied manifest when payload identity is required. Count and hash
+describe the received file, not whether it contains all source rows.
+Literal regular files are required; glob characters are refused. Resolved files and sidecars must
+remain inside the drop root, including through symlinks. With no root, the submitted file's parent
+is the boundary. These checks are not a sandbox or a resource quota: limit input size and memory
+at the caller. Compressed Parquet can expand far beyond its file size. There is no watcher or mover.
 
-The store facade exposes `deliver`, `load_ledger`, `receipts(table)` in persistence order, and
-`repair`. Optional `close()` releases it after each test; candidate staging methods are unnecessary.
+## Without a Store
 
-Scenarios cover a week of ERP deliveries, rows, dates, receipts, claims, contradictory deliveries,
-generation breaks, overlapping windows, push/pull equivalence, schema contradictions, shrink boundaries,
-replay, atomic failure or idempotent retry, append refusal
-and both stamp mismatches. Completed deliveries rebuild the ledger from receipts. The repository
-runs this suite against DuckDB, an in-memory implementation that swaps its whole state, and an
-ordered implementation that writes rows, receipt and ledger separately and refuses append.
+An existing loader can use the gate without implementing `Store`. For a new, structurally valid
+manifest after accepted-receipt lookup, the publication path is six calls:
+
+```python
+ledger = load_consistent_ledger(contract)
+requirements = Gate.requirements(contract, manifest)
+outcomes = check_candidate(source, contract, manifest, requirements)
+receipt = Gate.evaluate(ledger, manifest, outcomes, now=now, source=description)
+pending_rows = execute_if_accepted(source, receipt)
+commit_or_record(pending_rows, receipt)
+```
+
+`Gate` comes from `dogana`; the other functions are your loader's primitives. Load a ledger whose
+head matches the rows, check the candidate against that base, and execute only an accepted plan.
+`commit_or_record` compares the current head with `receipt.base_publication_id` and commits rows,
+ledger, stamp and acceptance together, or persists the rejection without changing published state.
+Preflight malformed declarations with `Gate.preflight(ledger, manifest, now=now)` and record their
+rejection through `Gate.evaluate`. Abort open work on errors. Before this path, return an existing
+accepted receipt on replay without executing its plan again. Using the core for accounting without
+an atomic publication mechanism gives no guarantee that the evidence describes the visible rows.
+
+## Check a store
+
+Install the `dev` extra and run `dogana.conformance.StoreConformance` against a `StoreFactory`.
+The suite depends on pytest, not DuckDB. A factory supplies `make_store()`, `write_source(rows, schema)`
+and `read_table(store, table)`, with fault hooks `fail_after_rows(store)`, `set_ledger(store, ledger)`,
+`set_stamp(store, table, id)`, `remove_ledger(store, table)` and `pause_after_rows(store)`.
+`read_publication(store, contract)` supplies rows and ledger from one publication for read-isolation
+checks. Tests exercise both transaction and table-format commit mechanisms.
+Ordered writes are not a conforming alternative.
+
+Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale bases,
+atomic failures, publication mismatches and reconstruction. Passing provides evidence for these
+cases; it does not prove a store implementation under every failure or establish source truth.
+The core `Store` protocol requires storage primitives, not a `deliver` or `read` method. A factory
+can adapt its store's transport and read API to the suite.
