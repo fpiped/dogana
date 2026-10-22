@@ -1,69 +1,122 @@
-from datetime import datetime
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta
+from itertools import product
 
 import pytest
 
-from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, InvalidContract, Manifest, Shape
-
-FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
-WINDOW = Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
-SINCE = Shape(Coverage.ALL, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.TIMESTAMP)
-FEED = Shape(Coverage.KEYS, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION)
-
-
-def test_the_fourteen_valid_shapes_and_no_other():
-    valid = 0
-    for coverage in Coverage:
-        for completeness in Completeness:
-            for deletions in Deletions:
-                for checkpoint in Checkpoint:
-                    try:
-                        Shape(coverage, completeness, deletions, checkpoint)
-                        valid += 1
-                    except InvalidContract:
-                        pass
-    assert valid == 14
+from dogana import (
+    Checkpoint,
+    Column,
+    Completeness,
+    Contract,
+    Coverage,
+    Deletions,
+    InvalidContract,
+    Manifest,
+    Shape,
+)
+from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
-@pytest.mark.parametrize("shape", [
-    (Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.TIMESTAMP),
-    (Coverage.ALL, Completeness.COMPLETE, Deletions.TOMBSTONE, Checkpoint.NONE),
-    (Coverage.ALL, Completeness.CHANGED_ONLY, Deletions.ABSENCE, Checkpoint.TIMESTAMP),
-    (Coverage.ALL, Completeness.CHANGED_ONLY, Deletions.NONE, Checkpoint.NONE),
-    (Coverage.KEYS, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE),
-])
-def test_shapes_the_protocol_refuses(shape):
+def test_the_fourteen_semantic_shapes_and_no_other_are_admitted():
+    valid = []
+    for properties in product(Coverage, Completeness, Deletions, Checkpoint):
+        try:
+            valid.append(Shape(*properties))
+        except InvalidContract:
+            pass
+    assert len(valid) == 14
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        ("all", "complete", "absence", "timestamp"),
+        ("all", "complete", "tombstone", "none"),
+        ("all", "changed_only", "absence", "timestamp"),
+        ("all", "changed_only", "none", "none"),
+        ("keys", "complete", "absence", "none"),
+    ],
+)
+def test_a_source_cannot_declare_a_contradictory_shape(properties):
     with pytest.raises(InvalidContract):
-        Shape(*shape)
+        Shape(*properties)
 
 
-def test_a_contract_binds_its_shapes_to_the_table_identity():
-    Contract("moves", ("id",), {"daily": WINDOW, "weekly": FULL}, window_column="day")
-    Contract("events", (), {"log": SINCE})
-    for args in [
-        ("t", ("id",), {}, None),
-        ("t", ("id",), {"daily": WINDOW}, None),
-        ("t", ("id",), {"full": FULL}, "day"),
-        ("t", (), {"full": FULL}, None),
-        ("t", (), {"feed": FEED}, None),
-    ]:
-        with pytest.raises(InvalidContract):
-            Contract(*args)
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"shapes": {}},
+        {"shapes": {"daily": WINDOW}},
+        {"window_column": "day"},
+        {"key": ()},
+        {"key": ("id", "id")},
+        {"max_shrink_fraction": -0.1},
+        {"max_shrink_fraction": 1.1},
+        {"schema": (Column("other", "str"),)},
+        {"table": "__dogana_ledgers"},
+        {"freshness": timedelta(days=-1)},
+    ],
+)
+def test_contract_parameters_must_describe_a_coherent_table(kwargs):
+    fields = {"table": "stock", "key": ("id",), "shapes": {"full": FULL}}
+    fields.update(kwargs)
+    with pytest.raises(InvalidContract):
+        Contract(**fields)
 
 
-def test_a_manifest_must_name_an_admitted_shape_and_match_it():
-    c = Contract("t", ("id",), {"full": FULL, "daily": WINDOW, "feed": FEED}, window_column="day")
-    at = datetime(2026, 10, 22, 8)
-    assert Manifest("t", "full", at).check(c) is FULL
-    assert Manifest("t", "daily", at, window=(1, 30)).check(c) is WINDOW
-    assert Manifest("t", "feed", at, since="g41").check(c) is FEED
-    for manifest in [
-        Manifest("other", "full", at),
-        Manifest("t", "monthly", at),
-        Manifest("t", "full", at, window=(1, 30)),
-        Manifest("t", "daily", at),
-        Manifest("t", "daily", at, window=(30, 1)),
-        Manifest("t", "feed", at),
-        Manifest("t", "full", at, since="g41"),
-    ]:
-        with pytest.raises(InvalidContract):
-            manifest.check(c)
+def test_a_contract_copies_mutable_input_and_freezes_its_public_declarations():
+    shapes = {"full": FULL}
+    c = Contract("stock", ("id",), shapes)
+    shapes.clear()
+    assert c.shape("full") == FULL
+    with pytest.raises(TypeError):
+        c.shapes["feed"] = FEED
+    with pytest.raises(FrozenInstanceError):
+        c.table = "other"
+
+
+def test_a_manifest_for_an_unadmitted_source_shape_is_refused_before_rows_are_read():
+    with pytest.raises(InvalidContract, match="admits no shape"):
+        Manifest("moves", "surprise", at(18)).check(contract())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"table": "other"},
+        {"window": (1, 3)},
+        {"since": at(17)},
+        {"rows": -1},
+        {"rows": True},
+        {"tombstones": ((1,),)},
+    ],
+)
+def test_a_full_export_manifest_cannot_contradict_its_contract(kwargs):
+    fields = {"table": "moves", "shape": "full", "produced_at": at(18)}
+    fields.update(kwargs)
+    with pytest.raises(InvalidContract):
+        Manifest(**fields).check(contract())
+
+
+@pytest.mark.parametrize("window", [None, (30, 1), (1, "2"), (True, False)])
+def test_window_manifests_need_ordered_bounds_of_one_type(window):
+    with pytest.raises(InvalidContract):
+        Manifest("moves", "daily", at(18), window=window).check(contract())
+
+
+def test_source_read_boundaries_must_include_a_timezone():
+    with pytest.raises(InvalidContract, match="timezone-aware"):
+        Manifest("stock", "full", datetime(2026, 10, 18))
+
+
+def test_generation_feeds_must_issue_the_cursor_the_next_read_will_use():
+    with pytest.raises(InvalidContract, match="generation tokens"):
+        Manifest("moves", "feed", at(19), since="g1").check(contract())
+
+
+def test_append_only_history_has_an_explicit_start_instead_of_an_impossible_full_export():
+    log = Contract("events", (), {"log": SINCE}, start_at=at(1))
+    assert log.start_at == at(1)
+    with pytest.raises(InvalidContract):
+        Contract("events", (), {"log": SINCE})

@@ -1,0 +1,29 @@
+"""I/O boundaries implemented by optional adapters."""
+
+from typing import Protocol
+
+from .contract import Contract, Manifest
+from .gate import ApplyPlan, Check, CheckRequirement, Receipt
+from .ledger import Ledger
+from .planner import ExtractionRequest
+
+
+class Store(Protocol):
+    def hold(self, source: object, manifest: Manifest) -> str: ...
+    def check(
+        self,
+        candidate: str,
+        contract: Contract,
+        manifest: Manifest,
+        requirements: tuple[CheckRequirement, ...],
+    ) -> tuple[Check, ...]: ...
+    def execute(self, candidate: str, plan: ApplyPlan) -> None: ...
+    def publish(self, candidate: str, receipt: Receipt) -> None: ...
+    def abort(self, candidate: str) -> None: ...
+    def read(self, table: str, publication_id: str | None = None) -> object: ...
+    def load_ledger(self, contract: Contract) -> Ledger: ...
+    def save_receipt(self, receipt: Receipt) -> None: ...
+
+
+class Extractor(Protocol):
+    def extract(self, contract: Contract, request: ExtractionRequest) -> tuple[Manifest, object]: ...

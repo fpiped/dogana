@@ -1,86 +1,170 @@
-"""The delivery contract of a table, the shapes it admits and the manifest of one delivery.
-See docs/protocol.md."""
+"""Receiver declarations and source claims, independent of rows and storage."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
-from typing import Any
+import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from enum import StrEnum
+from hashlib import sha256
+from types import MappingProxyType
+
+from .wire import InvalidContract, Wire, utc
+
+Scalar = str | int | date | datetime
+Window = tuple[Scalar, Scalar]
 
 
-class Coverage(str, Enum):
+class Coverage(StrEnum):
     ALL = "all"
     WINDOW = "window"
     KEYS = "keys"
 
 
-class Completeness(str, Enum):
+class Completeness(StrEnum):
     COMPLETE = "complete"
     CHANGED_ONLY = "changed_only"
 
 
-class Deletions(str, Enum):
+class Deletions(StrEnum):
     ABSENCE = "absence"
     TOMBSTONE = "tombstone"
     NONE = "none"
 
 
-class Checkpoint(str, Enum):
+class Checkpoint(StrEnum):
     GENERATION = "generation"
     TIMESTAMP = "timestamp"
     NONE = "none"
 
 
-class InvalidContract(ValueError):
-    """The declaration or the manifest is not one the protocol admits."""
+def identifier(value: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise InvalidContract("identifiers must contain letters, digits or underscores")
+    if value.startswith("__dogana_"):
+        raise InvalidContract("the __dogana_ prefix is reserved")
+
+
+def bounds(value: Window | None) -> Window | None:
+    if value is None:
+        return None
+    if len(value) != 2 or type(value[0]) is not type(value[1]):
+        raise InvalidContract("a window has two bounds of one scalar type")
+    if type(value[0]) not in (str, int, date, datetime):
+        raise InvalidContract("window bounds must be strings, integers, dates or datetimes")
+    low, high = value
+    if isinstance(low, datetime):
+        low, high = utc(low), utc(high)
+    if high < low:
+        raise InvalidContract("window high before low")
+    return low, high
 
 
 @dataclass(frozen=True)
-class Shape:
-    """How one kind of delivery is produced: the four properties and the rules that bind them."""
+class Column(Wire):
+    name: str
+    type: str
 
+    def __post_init__(self):
+        identifier(self.name)
+        if self.type not in ("int", "float", "str", "bool", "date", "datetime"):
+            raise InvalidContract("unsupported logical column type")
+
+
+@dataclass(frozen=True)
+class Shape(Wire):
     coverage: Coverage
     completeness: Completeness
     deletions: Deletions
     checkpoint: Checkpoint
+    cost: float = 1
+    window_size: timedelta | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self):
+        for name, enum in (
+            ("coverage", Coverage),
+            ("completeness", Completeness),
+            ("deletions", Deletions),
+            ("checkpoint", Checkpoint),
+        ):
+            object.__setattr__(self, name, enum(getattr(self, name)))
         if self.complete != (self.checkpoint is Checkpoint.NONE):
-            raise InvalidContract("a delivery is complete exactly when it has no checkpoint")
-        if self.complete and self.deletions is not Deletions.ABSENCE:
-            raise InvalidContract("a complete delivery signals deletions by absence")
-        if not self.complete and self.deletions is Deletions.ABSENCE:
-            raise InvalidContract("absence proves nothing in a changed-only delivery")
+            raise InvalidContract("complete deliveries have no checkpoint; changed-only deliveries have one")
+        if self.complete != (self.deletions is Deletions.ABSENCE):
+            raise InvalidContract("only complete deliveries signal deletions by absence")
         if self.coverage is Coverage.KEYS and self.complete:
-            raise InvalidContract("a delivery of named keys is complete only for those keys")
+            raise InvalidContract("named-key coverage describes a change stream")
+        if type(self.cost) not in (int, float) or not 0 <= self.cost < float("inf"):
+            raise InvalidContract("cost must be finite and nonnegative")
+        if self.window_size is not None and (
+            self.coverage is not Coverage.WINDOW
+            or not isinstance(self.window_size, timedelta)
+            or self.window_size <= timedelta(0)
+        ):
+            raise InvalidContract("a positive window_size belongs to a window shape")
 
     @property
     def complete(self) -> bool:
         return self.completeness is Completeness.COMPLETE
 
-    @property
-    def append_only(self) -> bool:
-        return not self.complete and self.deletions is Deletions.NONE
-
 
 @dataclass(frozen=True)
-class Contract:
-    """A table's identity and the named shapes its deliveries may take."""
-
+class Contract(Wire):
     table: str
     key: tuple[str, ...]
-    shapes: dict[str, Shape] = field(compare=True)
+    shapes: Mapping[str, Shape]
     window_column: str | None = None
+    schema: tuple[Column, ...] = ()
+    max_shrink_fraction: float | None = None
+    freshness: timedelta = timedelta(days=7)
+    start_at: datetime | None = None
 
-    def __post_init__(self) -> None:
-        if not self.shapes:
-            raise InvalidContract("a contract admits at least one shape")
+    def __post_init__(self):
+        identifier(self.table)
+        object.__setattr__(self, "key", tuple(self.key))
+        object.__setattr__(self, "schema", tuple(self.schema))
+        object.__setattr__(self, "shapes", MappingProxyType(dict(self.shapes)))
+        if not self.shapes or not all(
+            isinstance(s, Shape) and isinstance(n, str) and n for n, s in self.shapes.items()
+        ):
+            raise InvalidContract("a contract admits at least one named shape")
+        for name in self.key:
+            identifier(name)
+        if len(set(self.key)) != len(self.key):
+            raise InvalidContract("duplicate key column")
         windowed = any(s.coverage is Coverage.WINDOW for s in self.shapes.values())
         if windowed != (self.window_column is not None):
-            raise InvalidContract("a window shape needs the window column; without one the column is meaningless")
-        if not self.key and not all(s.append_only for s in self.shapes.values()):
-            raise InvalidContract("without a key a delivery can only append")
+            raise InvalidContract("a window shape needs exactly one window column")
+        if self.window_column is not None:
+            identifier(self.window_column)
+        names = [c.name for c in self.schema if isinstance(c, Column)]
+        if len(names) != len(self.schema) or len(set(names)) != len(names):
+            raise InvalidContract("schema columns must be distinct Column values")
+        if self.schema and not set((*self.key, *([self.window_column] if windowed else []))) <= set(names):
+            raise InvalidContract("key and window columns must be in the schema")
+        if not isinstance(self.freshness, timedelta) or self.freshness < timedelta(0):
+            raise InvalidContract("freshness must be a nonnegative duration")
+        if self.max_shrink_fraction is not None and (
+            type(self.max_shrink_fraction) not in (int, float) or not 0 <= self.max_shrink_fraction <= 1
+        ):
+            raise InvalidContract("max_shrink_fraction must be between zero and one")
+        if self.start_at is not None:
+            object.__setattr__(self, "start_at", utc(self.start_at))
+        if not self.key:
+            if self.start_at is None or any(
+                s.complete
+                or s.deletions is not Deletions.NONE
+                or s.checkpoint is not Checkpoint.TIMESTAMP
+                or s.coverage is Coverage.KEYS
+                for s in self.shapes.values()
+            ):
+                raise InvalidContract(
+                    "append-only history needs start_at and timestamp shapes without deletes"
+                )
+        elif self.start_at is not None:
+            raise InvalidContract("start_at belongs to append-only history")
 
     def shape(self, name: str) -> Shape:
         try:
@@ -88,29 +172,62 @@ class Contract:
         except KeyError:
             raise InvalidContract(f"{self.table} admits no shape named {name!r}") from None
 
+    @property
+    def schema_hash(self) -> str:
+        value = [(c.name, c.type) for c in self.schema]
+        return sha256(json.dumps(value, separators=(",", ":")).encode()).hexdigest()
+
 
 @dataclass(frozen=True)
-class Manifest:
-    """What one delivery claims. `window` bounds are inclusive and compared on the contract's column."""
-
+class Manifest(Wire):
     table: str
     shape: str
     produced_at: datetime
-    window: tuple[Any, Any] | None = None
-    since: Any = None
+    window: Window | None = None
+    since: str | datetime | None = None
     generation: str | None = None
     rows: int | None = None
     schema_hash: str | None = None
+    keys: tuple[tuple[Scalar, ...], ...] = ()
+    tombstones: tuple[tuple[Scalar, ...], ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "produced_at", utc(self.produced_at))
+        if isinstance(self.since, datetime):
+            object.__setattr__(self, "since", utc(self.since))
+        object.__setattr__(self, "keys", tuple(tuple(k) for k in self.keys))
+        object.__setattr__(self, "tombstones", tuple(tuple(k) for k in self.tombstones))
+        if self.window is not None:
+            object.__setattr__(self, "window", tuple(self.window))
 
     def check(self, contract: Contract) -> Shape:
-        """The shape of the claim against the contract; the rows are the adapter's business."""
         if self.table != contract.table:
-            raise InvalidContract(f"manifest for {self.table} offered to the contract of {contract.table}")
+            raise InvalidContract("manifest table differs from contract")
         shape = contract.shape(self.shape)
         if (shape.coverage is Coverage.WINDOW) != (self.window is not None):
-            raise InvalidContract("a window manifest for a window shape, and only then")
-        if self.window is not None and self.window[1] < self.window[0]:
-            raise InvalidContract("window high before low")
+            raise InvalidContract("only a window shape supplies a window")
+        bounds(self.window)
         if shape.complete != (self.since is None):
-            raise InvalidContract("a changed-only delivery states what it changed since; a complete one does not")
+            raise InvalidContract("only changed-only deliveries supply since")
+        if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(self.since, datetime):
+            raise InvalidContract("timestamp checkpoints must be datetimes")
+        if shape.checkpoint is Checkpoint.GENERATION and (
+            not isinstance(self.since, str) or not self.since or not self.generation
+        ):
+            raise InvalidContract("generation feeds require nonempty since and generation tokens")
+        if self.generation is not None and (not isinstance(self.generation, str) or not self.generation):
+            raise InvalidContract("generation must be a nonempty string")
+        if self.rows is not None and (type(self.rows) is not int or self.rows < 0):
+            raise InvalidContract("rows must be a nonnegative integer")
+        if self.schema_hash is not None and not isinstance(self.schema_hash, str):
+            raise InvalidContract("schema_hash must be a string")
+        if self.tombstones and shape.deletions is not Deletions.TOMBSTONE:
+            raise InvalidContract("only tombstone shapes carry deleted keys")
+        for group in (self.keys, self.tombstones):
+            if len(set(group)) != len(group) or any(
+                len(k) != len(contract.key) or not k or any(v is None for v in k) for k in group
+            ):
+                raise InvalidContract("named keys must be unique, non-null and have the contract's width")
+        if set(self.keys) & set(self.tombstones):
+            raise InvalidContract("a key cannot be both live and deleted")
         return shape
