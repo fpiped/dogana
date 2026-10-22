@@ -19,6 +19,7 @@ from dogana import (
     Receipt,
     Shape,
     State,
+    next_extraction,
 )
 
 FULL = Shape("all", "complete", "absence", "none")
@@ -175,7 +176,21 @@ class StoreConformance:
             assert surface.valid_as_of == _at(day if day in (18, 25) else 18)
         assert sum(len(store.receipts(c.table)) for c in contracts) == 25
 
-    @pytest.mark.parametrize("problem", ["window", "count", "schema", "duplicate", "null", "shrink"])
+    @pytest.mark.parametrize(
+        "problem",
+        [
+            "window",
+            "count",
+            "schema",
+            "duplicate",
+            "null",
+            "shrink",
+            "missing_column",
+            "retyped_column",
+            "shape",
+            "time_backwards",
+        ],
+    )
     def test_a_contradictory_delivery_keeps_the_previous_publication(self, factory, store, problem):
         c = _contract(max_shrink_fraction=0.25)
         first = self._deliver(factory, store, c, [_row(i) for i in range(4)])
@@ -188,16 +203,24 @@ class StoreConformance:
             rows[1]["id"] = None
         elif problem == "shrink":
             rows = rows[:2]
+        source_schema = c.schema
+        if problem == "missing_column":
+            source_schema = c.schema[:-1]
+            rows = [{col.name: row[col.name] for col in source_schema} for row in rows]
+        elif problem == "retyped_column":
+            rows[0]["id"] = "not_an_integer"
+        elif problem == "shape":
+            shape = "not_admitted"
         manifest = Manifest(
             c.table,
             shape,
-            _at(19),
+            _at(17) if problem == "time_backwards" else _at(19),
             rows=len(rows) + (problem == "count"),
             schema_hash="wrong" if problem == "schema" else c.schema_hash,
             **kwargs,
         )
         before = self._rows(factory, store, c.table)
-        refused = store.deliver(c, factory.write_source(rows, c.schema), manifest)
+        refused = store.deliver(c, factory.write_source(rows, source_schema), manifest)
         assert not refused.accepted
         assert refused.publication_id == first.publication_id
         assert self._rows(factory, store, c.table) == before
@@ -278,6 +301,24 @@ class StoreConformance:
         assert first.accepted
         assert store.deliver(c, source, manifest) == first
         assert factory.read_table(store, c.table) == [{"event": "one"}]
+        self._fold(store, c)
+        source = factory.write_source([{"event": "two"}], c.schema)
+        second_manifest = replace(manifest, produced_at=_at(19), since=_at(18))
+        with factory.fail_after_rows(store):
+            try:
+                failed = store.deliver(c, source, second_manifest)
+                assert not failed.accepted
+            except OSError:
+                pass
+        assert store.load_ledger(c) == first.ledger
+        assert factory.read_table(store, c.table) == [{"event": "one"}]
+        self._fold(store, c)
+        second = store.deliver(c, source, second_manifest)
+        assert second.accepted
+        assert store.deliver(c, object(), second_manifest) == second
+        gap = store.deliver(c, source, replace(second_manifest, produced_at=_at(20), since=_at(17)))
+        assert not gap.accepted
+        assert factory.read_table(store, c.table) == [{"event": "one"}, {"event": "two"}]
         self._fold(store, c)
 
     def test_stamp_ahead_refuses_until_receipts_repair_the_lost_ledger(self, factory, store):
@@ -400,3 +441,84 @@ class StoreConformance:
         assert not receipt.accepted
         assert store.receipts(c.table) == (receipt,)
         self._fold(store, c)
+
+    @pytest.mark.parametrize("remaining,accepted", [(3, True), (2, False)])
+    def test_a_complete_export_respects_the_exact_shrink_fraction(self, factory, store, remaining, accepted):
+        c = _contract(max_shrink_fraction=0.7)
+        first = self._deliver(factory, store, c, [_row(i) for i in range(10)])
+        receipt = self._deliver(factory, store, c, [_row(i) for i in range(remaining)], day=19)
+        assert receipt.accepted is accepted
+        assert len(factory.read_table(store, c.table)) == (remaining if accepted else 10)
+        assert store.load_ledger(c) == (receipt.ledger if accepted else first.ledger)
+
+    def test_empty_named_plant_exports_preserve_other_plants_and_unknown_history(self, factory, store):
+        c = Contract(
+            "plants", ("id",), {"plant": WINDOW}, "plant", (Column("id", "int"), Column("plant", "str"))
+        )
+        for day, name, rows in (
+            (18, "IT01", [{"id": 1, "plant": "IT01"}]),
+            (19, "DE01", [{"id": 2, "plant": "DE01"}]),
+            (20, "IT01", []),
+        ):
+            assert self._deliver(factory, store, c, rows, "plant", day, window=(name, name)).accepted
+        assert factory.read_table(store, c.table) == [{"id": 2, "plant": "DE01"}]
+        ledger = store.load_ledger(c)
+        assert ledger.claims(_at(20), window=("IT01", "IT01")).valid_as_of == _at(20)
+        assert ledger.claims(_at(20), window=("US01", "US01")).state is State.UNKNOWN
+
+    def test_push_and_pull_publish_the_same_rows_ledger_and_receipt(self, factory, store):
+        c = _contract(shapes={"full": FULL, "since": SINCE})
+        pull = factory.make_store()
+        try:
+            for day, shape, rows, since in ((18, "full", [_row(1)], None), (19, "since", [_row(2)], _at(18))):
+                pushed = self._deliver(factory, store, c, rows, shape, day, since=since)
+                request = next_extraction(pull.load_ledger(c), shape, _at(day))
+                manifest = Manifest(
+                    c.table,
+                    request.shape,
+                    request.until,
+                    since=request.since,
+                    rows=len(rows),
+                    schema_hash=c.schema_hash,
+                )
+                pulled = pull.deliver(c, factory.write_source(rows, c.schema), manifest)
+                assert pushed == pulled
+                assert self._rows(factory, store, c.table) == self._rows(factory, pull, c.table)
+                assert store.load_ledger(c) == pull.load_ledger(c)
+                self._fold(pull, c)
+        finally:
+            close = getattr(pull, "close", None)
+            if close is not None:
+                close()
+
+    def test_pulling_changed_rows_by_updated_at_keeps_unreported_deletions(self, factory, store):
+        c = Contract(
+            "updates",
+            ("id",),
+            {"full": FULL, "since": SINCE},
+            schema=(Column("id", "int"), Column("updated_at", "datetime"), Column("value", "str")),
+        )
+        source = [
+            {"id": 1, "updated_at": _at(17), "value": "old"},
+            {"id": 2, "updated_at": _at(18), "value": "initial"},
+        ]
+        for day, shape in ((18, "full"), (19, "since")):
+            request = next_extraction(store.load_ledger(c), shape, _at(day))
+            rows = (
+                source
+                if shape == "full"
+                else [r for r in source if request.since <= r["updated_at"] <= request.until]
+            )
+            receipt = self._deliver(factory, store, c, rows, shape, day, since=request.since)
+            assert receipt.accepted
+            if shape == "full":
+                source = [
+                    {"id": 2, "updated_at": _at(19), "value": "updated"},
+                    {"id": 3, "updated_at": _at(19), "value": "new"},
+                ]
+        assert factory.read_table(store, c.table) == [
+            {"id": 1, "updated_at": _at(17), "value": "old"},
+            *source,
+        ]
+        assert receipt.claims.complete_as_of == _at(19)
+        assert receipt.claims.valid_as_of == _at(18)

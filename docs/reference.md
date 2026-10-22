@@ -91,7 +91,8 @@ The store facade exposes `deliver`, `load_ledger`, `receipts(table)` in persiste
 `repair`. Optional `close()` releases it after each test; candidate staging methods are unnecessary.
 
 Scenarios cover a week of ERP deliveries, rows, dates, receipts, claims, contradictory deliveries,
-generation breaks, overlapping windows, replay, atomic failure or idempotent retry, append refusal
+generation breaks, overlapping windows, push/pull equivalence, schema contradictions, shrink boundaries,
+replay, atomic failure or idempotent retry, append refusal
 and both stamp mismatches. Completed deliveries rebuild the ledger from receipts. The repository
 runs this suite against DuckDB, an in-memory implementation that swaps its whole state, and an
 ordered implementation that writes rows, receipt and ledger separately and refuses append.

@@ -63,8 +63,9 @@ Values can be serialised, compared, replayed and tested without a database. Ever
 
 ## Write, audit, publish
 
-Every delivery follows the pattern lakehouse teams call write-audit-publish: rows land in a
-candidate, checks run against the candidate, and one atomic step makes the candidate visible.
+Every delivery checks candidate rows before publication. A transaction or format commit makes
+rows and evidence visible atomically. An ordered store instead uses idempotent replay and refuses
+ledger reads until its publication stamp agrees. This is the write-audit-publish boundary.
 dogana adds what the pattern leaves to each team: the audit is scoped by what the delivery claims
 (a window delivery is checked inside its window), the publish writes a receipt, and the ledger
 records what the publication proved.
