@@ -312,3 +312,76 @@ def test_an_append_only_log_has_no_keys_and_replay_does_not_duplicate_events(tmp
             assert store.deliver(c, path, m) == receipt
         assert store.read(c.table) == [{"event": "event18"}, {"event": "event19"}]
         assert len(store.receipts()) == 2
+
+
+def test_a_window_that_moves_a_published_key_between_regions_requires_a_full_export(tmp_path):
+    c = contract()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1, 18)])
+        m = sidecar(path, c, "full", 18, 1)
+        assert store.deliver(c, path, m).accepted
+        path = csv_file(tmp_path, "moved.csv", [row(1, 19)])
+        m = sidecar(path, c, "daily", 19, 1, window=(at(19).date(), at(19).date()))
+        refused = store.deliver(c, path, m)
+        assert not refused.accepted
+        assert any(x.name == "window_stability" and not x.passed for x in refused.checks)
+        assert store.read(c.table) == [row(1, 18)]
+        m = replace(m, shape="full", window=None)
+        assert store.deliver(c, path, m).accepted
+        assert store.read(c.table) == [row(1, 19)]
+
+
+def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):
+    from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
+
+    feed = Shape(Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION)
+    c = contract(shapes={"full": FULL, "feed_window": feed})
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1, 18), row(2, 19)])
+        m = sidecar(path, c, "full", 19, 2, generation="g1")
+        first = store.deliver(c, path, m)
+        path = csv_file(tmp_path, "delete.csv", [])
+        m = sidecar(
+            path,
+            c,
+            "feed_window",
+            20,
+            0,
+            window=(at(19).date(), at(19).date()),
+            since="g1",
+            generation="g2",
+            tombstones=((1,),),
+        )
+        receipt = store.deliver(c, path, m)
+        assert not receipt.accepted
+        assert any(x.name == "named_keys" and not x.passed for x in receipt.checks)
+        assert store.read(c.table) == [row(1, 18), row(2, 19)]
+        assert store.load_ledger(c) == first.ledger
+
+
+def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
+    c = contract()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "new.csv", [row(1, 19, value="new")])
+        m = sidecar(path, c, "daily", 21, 1, window=(at(18).date(), at(20).date()))
+        first = store.deliver(c, path, m)
+        assert first.accepted
+        path = csv_file(tmp_path, "old.csv", [row(1, 19, value="old")])
+        m = sidecar(path, c, "daily", 20, 1, window=(at(17).date(), at(19).date()))
+        refused = store.deliver(c, path, m)
+        assert not refused.accepted
+        assert store.read(c.table) == [row(1, 19, value="new")]
+        assert store.load_ledger(c) == first.ledger
+
+
+def test_a_changed_key_enumeration_must_match_the_file_and_never_hide_live_tombstones(tmp_path):
+    c = contract(shapes={"full": FULL, "feed": FEED})
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        m = sidecar(path, c, "full", 18, 1, generation="g1")
+        assert store.deliver(c, path, m).accepted
+        path = csv_file(tmp_path, "feed.csv", [row(2)])
+        for keys, tombstones in [(((3,),), ()), ((), ((2,),))]:
+            m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", keys=keys, tombstones=tombstones)
+            assert not store.deliver(c, path, m).accepted
+        assert store.read(c.table) == [row(1)]

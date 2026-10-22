@@ -144,6 +144,12 @@ class Contract(Wire):
             raise InvalidContract("schema columns must be distinct Column values")
         if self.schema and not set((*self.key, *([self.window_column] if windowed else []))) <= set(names):
             raise InvalidContract("key and window columns must be in the schema")
+        if any(
+            c.type not in ("int", "str", "date", "datetime")
+            for c in self.schema
+            if c.name in self.key or c.name == self.window_column
+        ):
+            raise InvalidContract("key and window columns must use ordered scalar logical types")
         if not isinstance(self.freshness, timedelta) or self.freshness < timedelta(0):
             raise InvalidContract("freshness must be a nonnegative duration")
         if self.max_shrink_fraction is not None and (
@@ -157,7 +163,7 @@ class Contract(Wire):
                 s.complete
                 or s.deletions is not Deletions.NONE
                 or s.checkpoint is not Checkpoint.TIMESTAMP
-                or s.coverage is Coverage.KEYS
+                or s.coverage is not Coverage.ALL
                 for s in self.shapes.values()
             ):
                 raise InvalidContract(
@@ -228,6 +234,19 @@ class Manifest(Wire):
                 len(k) != len(contract.key) or not k or any(v is None for v in k) for k in group
             ):
                 raise InvalidContract("named keys must be unique, non-null and have the contract's width")
+        types = {"int": int, "str": str, "date": date, "datetime": datetime}
+        declared = {c.name: c.type for c in contract.schema}
+        for key in (*self.keys, *self.tombstones):
+            if any(type(value) not in (str, int, date, datetime) for value in key):
+                raise InvalidContract("named key components must be ordered scalars")
+            if declared and any(
+                type(value) is not types[declared[name]]
+                for name, value in zip(contract.key, key, strict=True)
+            ):
+                raise InvalidContract("named key types differ from the contract schema")
+            for value in key:
+                if isinstance(value, datetime):
+                    utc(value)
         if set(self.keys) & set(self.tombstones):
             raise InvalidContract("a key cannot be both live and deleted")
         return shape

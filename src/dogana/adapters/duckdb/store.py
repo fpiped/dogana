@@ -155,6 +155,11 @@ class DuckDBStore:
         schema_ok = (
             bool(contract.schema) and actual == expected and manifest.schema_hash == contract.schema_hash
         )
+        if schema_ok:
+            casts = ", ".join(
+                f"CAST({_quote(c.name)} AS {_TYPES[c.type]}) AS {_quote(c.name)}" for c in contract.schema
+            )
+            db.execute(f"CREATE OR REPLACE TEMP TABLE {source} AS SELECT {casts} FROM {source}")
         checks = {
             "row_count": Check(
                 "row_count",
@@ -188,6 +193,24 @@ class DuckDBStore:
                 valid = invalid == 0
             checks["rows_in_window"] = Check(
                 "rows_in_window", valid, "all rows must be inside the closed window"
+            )
+        if contract.window_column is not None:
+            stable = False
+            if schema_ok:
+                col = _quote(contract.window_column)
+                stable = db.execute(f"SELECT count(*) FROM {source} WHERE {col} IS NULL").fetchone()[0] == 0
+                shape = contract.shape(manifest.shape)
+                if self._exists(contract.table) and not (shape.complete and shape.coverage is Coverage.ALL):
+                    match = " AND ".join(f"p.{_quote(k)}=c.{_quote(k)}" for k in contract.key)
+                    moved = db.execute(
+                        f"SELECT count(*) FROM {_quote(contract.table)} p JOIN {source} c ON {match} "
+                        f"WHERE p.{col} IS DISTINCT FROM c.{col}"
+                    ).fetchone()[0]
+                    stable &= moved == 0
+            checks["window_stability"] = Check(
+                "window_stability",
+                stable,
+                "window values must be non-null and stable for existing keys outside a full replacement",
             )
         if any(r.name == "named_keys" for r in requirements):
             matches = False

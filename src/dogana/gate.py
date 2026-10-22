@@ -113,6 +113,8 @@ class Gate:
         names = ["row_count", "schema_hash"]
         if manifest.window is not None:
             names.append("rows_in_window")
+        if contract.window_column is not None:
+            names.append("window_stability")
         if contract.key:
             names.append("key_integrity")
         if shape.coverage is Coverage.KEYS or manifest.keys or manifest.tombstones:
@@ -143,7 +145,10 @@ class Gate:
         now: datetime | None = None,
     ) -> Receipt:
         checks = cls.preflight(ledger, manifest)
-        if all(c.passed for c in checks):
+        replay = manifest.identity in ledger.accepted
+        if replay:
+            checks += (Check("replay", True, "already accounted; return the original store receipt"),)
+        if all(c.passed for c in checks) and not replay:
             expected = {r.name for r in cls.requirements(ledger.contract, manifest)}
             names = [c.name for c in outcomes]
             checks += outcomes
@@ -156,11 +161,10 @@ class Gate:
             )
         accepted = all(c.passed for c in checks)
         after = ledger.apply(manifest) if accepted else ledger
-        transition = (
-            Transition(ledger.regions, after.regions, ApplyPlan.build(ledger.contract, manifest))
-            if accepted
-            else None
-        )
+        plan = ApplyPlan.build(ledger.contract, manifest) if accepted else None
+        if replay and plan is not None:
+            plan = ApplyPlan(plan.table, plan.key, plan.window_column, ())
+        transition = Transition(ledger.regions, after.regions, plan) if accepted else None
         return Receipt(
             manifest,
             checks,

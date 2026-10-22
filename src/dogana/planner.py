@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from .contract import Checkpoint, Coverage, Deletions, Window, bounds
+from .contract import Checkpoint, Coverage, Manifest, Window, bounds
 from .ledger import Ledger, RejectedDelivery
 from .wire import InvalidContract, Wire, utc
 
@@ -106,13 +106,23 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
                 continue
             window = requirement.window if shape.coverage is Coverage.WINDOW else None
             request = next_extraction(ledger, name, until, window=window)
-            regions = ledger.covered(requirement.window)
-            if not shape.complete and requirement.valid_as_of is not None:
-                if shape.deletions is Deletions.TOMBSTONE:
-                    if any(r.valid_as_of != r.complete_as_of for r in regions):
-                        continue
-                elif any(r.valid_as_of is None or r.valid_as_of < requirement.valid_as_of for r in regions):
-                    continue
+            simulated = ledger.apply(
+                Manifest(
+                    ledger.contract.table,
+                    name,
+                    request.until,
+                    window=request.window,
+                    since=request.since,
+                    generation="planned-generation" if shape.checkpoint is Checkpoint.GENERATION else None,
+                )
+            )
+            proved = simulated.claims(until, window=requirement.window)
+            if proved.complete_as_of is None or proved.complete_as_of < requirement.complete_as_of:
+                continue
+            if requirement.valid_as_of is not None and (
+                proved.valid_as_of is None or proved.valid_as_of < requirement.valid_as_of
+            ):
+                continue
             candidates.append(request)
         except (PlanningError, InvalidContract, RejectedDelivery):
             continue

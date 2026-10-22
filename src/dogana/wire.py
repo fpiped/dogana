@@ -7,8 +7,10 @@ from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
+from functools import cache
 from hashlib import sha256
-from typing import ClassVar, Self
+from types import UnionType
+from typing import ClassVar, Self, Union, get_args, get_origin, get_type_hints
 
 
 class InvalidContract(ValueError):
@@ -42,10 +44,13 @@ class Wire:
 
     @classmethod
     def from_dict(cls, value: dict) -> Self:
-        result = decode(value)
-        if not isinstance(result, cls):
-            raise SerializationError(f"expected {cls.__name__}")
-        return result
+        try:
+            result = decode(value)
+            if not isinstance(result, cls):
+                raise SerializationError(f"expected {cls.__name__}")
+            return result
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            raise SerializationError(str(exc)) from exc
 
     @classmethod
     def from_json(cls, value: str) -> Self:
@@ -96,14 +101,45 @@ def decode(value):
         return date.fromisoformat(value["$date"])
     if set(value) == {"$seconds"}:
         return timedelta(seconds=value["$seconds"])
-    if "kind" in value or "version" in value:
+    if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, bool):
         if type(value.get("version")) is not int or value["version"] != 1:
             raise SerializationError("unsupported wire version")
         cls = _TYPES.get(value.get("kind"))
         if cls is None:
             raise SerializationError("unknown wire kind")
         try:
-            return cls(**{k: decode(v) for k, v in value.items() if k not in ("kind", "version")})
+            result = cls(**{k: decode(v) for k, v in value.items() if k not in ("kind", "version")})
+            hints = _hints(cls)
+            for f in fields(result):
+                if not _matches(getattr(result, f.name), hints[f.name]):
+                    raise SerializationError(f"invalid type for {cls.__name__}.{f.name}")
+            return result
         except (TypeError, ValueError, KeyError) as exc:
             raise SerializationError(str(exc)) from exc
     return {k: decode(v) for k, v in value.items()}
+
+
+@cache
+def _hints(cls):
+    return get_type_hints(cls)
+
+
+def _matches(value, annotation) -> bool:
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin in (Union, UnionType):
+        return any(_matches(value, option) for option in args)
+    if origin is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(_matches(v, args[0]) for v in value)
+        return len(value) == len(args) and all(_matches(v, t) for v, t in zip(value, args, strict=True))
+    if origin is Mapping:
+        return isinstance(value, Mapping) and all(
+            _matches(k, args[0]) and _matches(v, args[1]) for k, v in value.items()
+        )
+    if annotation in (str, int, bool):
+        return type(value) is annotation
+    if annotation is float:
+        return type(value) in (int, float) and float("-inf") < value < float("inf")
+    return isinstance(value, annotation)

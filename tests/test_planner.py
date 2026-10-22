@@ -65,3 +65,11 @@ def test_the_next_read_cannot_go_backwards_in_source_time():
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(20)))
     with pytest.raises(PlanningError, match="advance"):
         next_extraction(ledger, "since", at(19))
+
+
+def test_a_tombstone_feed_can_advance_completeness_when_its_old_validity_already_satisfies_the_reader():
+    c = contract(shapes={"full": FULL, "since": SINCE, "feed": FEED})
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation="g1"))
+    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18), generation="g2"))
+    request = plan_delivery(ledger, Requirement(c.table, at(20), at(18)))
+    assert request.shape == "feed"

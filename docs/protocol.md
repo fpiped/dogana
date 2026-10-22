@@ -27,7 +27,9 @@ A window column exists exactly when a window shape exists. Its value must be imm
 Moving keys between partitions or changing their window value requires a full delivery. This is a
 source guarantee, not something the gate can infer from one delivery. Keys are non-null and unique.
 An empty key means append-only; such a contract declares `start_at`, the beginning of its retained
-history, and admits only timestamp shapes without deletions and without named-key coverage.
+history, and admits only whole-domain timestamp shapes without deletions. Window bounds and key
+components are strings, integers, dates or UTC datetimes; window and key schema columns use these
+logical types.
 
 A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
 and an optional positive `window_size` duration for automatic rolling-window planning:
@@ -50,7 +52,8 @@ represent a partition such as plant `IT01`. Domains are ordered scalar values of
 states one read's claim. Dates are timezone-aware UTC instants. `window` is required exactly for window
 coverage. `since` is required exactly for changed-only shapes. Timestamp checkpoints are datetimes;
 generation checkpoints and issued generations are nonempty strings. A generation feed must issue its
-next generation. `rows` counts incoming live rows, excluding `tombstones`. Keys and tombstones are
+next generation. A changed-only delivery collapses changes to one final live row or terminal tombstone
+per key at the read boundary. `rows` counts incoming live rows, excluding `tombstones`. Keys and tombstones are
 tuples of composite key tuples. A named-key manifest enumerates its live `keys`; other keyed shapes
 may omit that enumeration and refer to the candidate's keys instead. Tombstones require a tombstone
 shape, have the contract's key width and cannot also be live keys.
@@ -64,7 +67,8 @@ intervals. Append-only intervals must start exactly at the previous boundary, wi
 append starts at `start_at` and establishes only that declared retained history.
 
 A manifest's identity is SHA-256 of its canonical JSON. Reapplying an accepted identity returns the
-same publication and receipt, even after later deliveries. Different manifests sharing a timestamp
+same publication and receipt, even after later deliveries. A core gate replay decision has an empty
+operation plan and leaves the current ledger intact; a store returns the original persisted receipt. Different manifests sharing a timestamp
 are not interchangeable snapshots. A corrected file needs a corrected manifest.
 
 ## Ledger and regions
@@ -123,8 +127,11 @@ matching. The core never reads rows or executes a plan.
 each requirement. Missing, duplicate or unexpected outcomes reject the delivery. Core checks validate
 manifest structure, replay identity, base coverage, timestamp continuity, generation continuity and
 monotonic time. Row checks verify exact row count, schema hash against both manifest and contract,
-window containment (null bounds-column values fail), non-null unique keys, live-key enumeration and
-shrink tolerance. Checks verify the delivered rows, not whether the source told the truth.
+window containment (null bounds-column values fail), stable window values for existing keys,
+non-null unique keys, live-key enumeration and
+shrink tolerance. A window tombstone may not delete a published key outside its window. Complete
+window deliveries also check the immutable window-column guarantee for keys already published.
+Checks verify the delivered rows, not whether the source told the truth.
 
 `Gate.evaluate` combines core checks and adapter outcomes into a `Receipt`: manifest, checks, acceptance,
 transition (before/after regions and plan), resulting ledger and claims, receipt identity and publication
@@ -146,7 +153,9 @@ or stale deletion knowledge excludes change feeds from proving current validity.
 requirements can use complete windows; whole-domain requirements need whole-domain evidence. If no
 shape suffices, `PlanningError` explains the failure. Cost is a contract estimate, not a measured query
 optimizer. `next_extraction` derives a window from `window_size` and `until`, or a timestamp interval
-from the weakest covered completeness boundary to `until`. Generation requests use the held cursor.
+from the weakest covered completeness boundary to `until`. Each candidate request is simulated
+against the ledger before it can be chosen; tombstones with an already sufficient validity date may
+still be the cheapest way to advance completeness. Generation requests use the held cursor.
 A request's `until` becomes the manifest's source boundary after extraction.
 
 ## Interfaces and entry points
@@ -173,7 +182,8 @@ an explicit full-match filename regular expression supplies named groups `shape`
 `schema_hash` defaults to the declared schema hash and is checked against the actual file. File arrival
 order is delivery order; there is no watcher, file mover or scheduler. CSV types are inferred from all
 rows. For a header-only CSV, the declared schema supplies types because the payload contains no type
-evidence. Parquet retains its physical schema even when empty. Neither encoding silently accepts
+evidence. Parquet retains its physical schema even when empty. Successful candidates normalize logical types to DuckDB BIGINT, DOUBLE,
+VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ, so publication types do not depend on file inference. Neither encoding silently accepts
 missing or retyped columns.
 
 ## Versioned JSON

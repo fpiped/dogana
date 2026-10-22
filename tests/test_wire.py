@@ -57,3 +57,45 @@ def test_the_core_has_no_adapter_or_third_party_imports():
             else:
                 continue
             assert set(names) <= sys.stdlib_module_names
+
+
+def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_keys():
+    from tests.support import FULL
+
+    c = contract(shapes={"kind": FULL, "version": FULL})
+    assert Contract.from_json(c.to_json()) == c
+
+
+@pytest.mark.parametrize("change", [{"table": 1}, {"generation": 3}, {"schema_hash": 4}, {"rows": True}])
+def test_manifest_wire_types_are_checked_before_any_accounting(change):
+    value = Manifest("stock", "full", at(18)).to_dict()
+    value.update(change)
+    with pytest.raises(SerializationError):
+        Manifest.from_dict(value)
+
+
+def test_the_core_runs_in_an_isolated_package_with_every_adapter_removed(tmp_path):
+    import subprocess
+    import sys
+
+    source = Path(__file__).parents[1] / "src" / "dogana"
+    isolated = tmp_path / "dogana"
+    isolated.mkdir()
+    for module in source.glob("*.py"):
+        (isolated / module.name).write_text(module.read_text())
+    program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from datetime import datetime, timezone
+from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
+shape = Shape('all', 'complete', 'absence', 'none')
+c = Contract('stock', ('id',), {'full': shape})
+m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc))
+checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+receipt = Gate.evaluate(Ledger(c), m, checks)
+assert receipt.accepted
+assert receipt.claims.state is State.COMPLETE
+assert Ledger.from_json(receipt.ledger.to_json()) == receipt.ledger
+assert 'dogana.adapters' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)

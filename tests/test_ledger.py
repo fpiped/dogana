@@ -236,3 +236,23 @@ def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     assert unknown.state is State.UNKNOWN
     assert unknown.complete_as_of is None
     assert len(unknown.in_state(State.UNKNOWN)) == 1
+
+
+def test_a_generation_window_cannot_advance_a_region_whose_cursor_it_skipped():
+    from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
+
+    window_feed = Shape(
+        Coverage.WINDOW, Completeness.CHANGED_ONLY, Deletions.TOMBSTONE, Checkpoint.GENERATION
+    )
+    c = contract(shapes={"full": FULL, "feed_window": window_feed})
+    ledger = full(c, generation="g1")
+    ledger = ledger.apply(
+        Manifest(c.table, "feed_window", at(19), window=(1, 10), since="g1", generation="g2")
+    )
+    with pytest.raises(RejectedDelivery, match="generation chain"):
+        ledger.apply(Manifest(c.table, "feed_window", at(20), window=(5, 20), since="g2", generation="g3"))
+    ledger = ledger.apply(
+        Manifest(c.table, "feed_window", at(20), window=(1, 10), since="g2", generation="g3")
+    )
+    assert point(ledger, 5).valid_as_of == at(20)
+    assert point(ledger, 15).valid_as_of == at(18)

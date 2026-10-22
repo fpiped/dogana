@@ -81,3 +81,16 @@ def test_an_unadmitted_manifest_still_leaves_a_rejected_receipt():
     receipt = Gate.evaluate(Ledger(c), Manifest(c.table, "surprise", at(18)))
     assert not receipt.accepted
     assert receipt.checks[0].name == "manifest"
+
+
+def test_a_gate_replay_has_no_row_operations_even_after_a_newer_delivery():
+    c = contract()
+    m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
+    first = Gate.evaluate(Ledger(c), m, outcomes(c, m))
+    newer = Manifest(c.table, "full", at(19), rows=3, schema_hash=c.schema_hash)
+    second = Gate.evaluate(first.ledger, newer, outcomes(c, newer))
+    replay = Gate.evaluate(second.ledger, m)
+    assert replay.accepted
+    assert replay.ledger is second.ledger
+    assert replay.transition.plan.actions == ()
+    assert replay.publication_id == second.publication_id
