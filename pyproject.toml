@@ -24,7 +24,7 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
-addopts = "--basetemp=.tmp/pytest"
+addopts = "--basetemp=.pytest-tmp"
 
 [tool.ruff]
 line-length = 110

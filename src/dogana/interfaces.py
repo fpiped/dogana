@@ -9,6 +9,7 @@ from .planner import ExtractionRequest
 
 
 class Store(Protocol):
+    def deliver(self, contract: Contract, source: object, manifest: Manifest) -> Receipt: ...
     def hold(self, source: object, manifest: Manifest) -> str: ...
     def check(
         self,

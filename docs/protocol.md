@@ -151,7 +151,7 @@ A request's `until` becomes the manifest's source boundary after extraction.
 
 ## Interfaces and entry points
 
-`Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store holds a candidate,
+`Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store exposes `deliver(contract, source, manifest)` as the gated push facade, holds a candidate,
 runs required checks, executes a plan, publishes rows with ledger and receipt atomically, aborts on
 failure, reads a publication, loads a ledger and persists rejected receipts. `Extractor.extract(contract,
 request)` returns a manifest and an opaque row source consumable by a store. Extraction and storage
@@ -171,7 +171,10 @@ The file-drop adapter accepts CSV or Parquet paths. `<file>.json` is the optiona
 an explicit full-match filename regular expression supplies named groups `shape`, `produced_at`,
 `rows`, and optional `low`, `high`, `since`, `generation`. Bounds use the contract column's logical type;
 `schema_hash` defaults to the declared schema hash and is checked against the actual file. File arrival
-order is delivery order; there is no watcher, file mover or scheduler.
+order is delivery order; there is no watcher, file mover or scheduler. CSV types are inferred from all
+rows. For a header-only CSV, the declared schema supplies types because the payload contains no type
+evidence. Parquet retains its physical schema even when empty. Neither encoding silently accepts
+missing or retyped columns.
 
 ## Versioned JSON
 
