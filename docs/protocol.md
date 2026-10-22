@@ -143,7 +143,8 @@ transition (before/after regions and plan), resulting ledger and claims, receipt
 identity. A rejected receipt references the existing publication. Receipt indexing uses the receiver
 contract table, even when the rejected manifest names a different table. A successful publication identity is
 a hash of the previous publication, contract and manifest identities. Receipt identity also includes
-check outcomes. The audit history includes rejected attempts without making them publications.
+check outcomes. Receipt claims use the supplied `now`, defaulting to the source read boundary for a
+deterministic decision. Readers recompute ledger claims with their current time to evaluate freshness. The audit history includes rejected attempts without making them publications.
 
 ## Claims and pull planning
 
@@ -215,6 +216,10 @@ A full shape and its manifest are:
 ```json
 {"version":1,"kind":"Manifest","table":"stock","shape":"full","produced_at":{"$datetime":"2026-10-18T00:00:00+00:00"},"window":null,"since":null,"generation":null,"rows":2,"schema_hash":null,"keys":[],"tombstones":[]}
 ```
+
+Complete executable wire examples are [contract](examples/contract.json),
+[manifest](examples/manifest.json), [ledger](examples/ledger.json) and [receipt](examples/receipt.json).
+The tests decode them, replay their delivery and reproduce the ledger and receipt.
 
 A contract encodes `shapes` as an object of these shape values and `schema` as an array of
 `{"version":1,"kind":"Column","name":"id","type":"int"}` values. A ledger embeds that contract,
