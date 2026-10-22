@@ -194,10 +194,18 @@ The publication stamp makes obligation 2 checkable. `Ledger.publication_id` is a
 previous publication, the contract and the accepted manifest. A store writes the current
 `publication_id` next to the rows it publishes (a side table, a table property, commit metadata)
 in the same step as the rows. `load_ledger` compares the stamp with the ledger's `publication_id`
-and refuses every delivery while they differ: a stamp ahead of the ledger means a crash between
+and raises `InconsistentPublication` while they differ: a stamp ahead of the ledger means a crash between
 rows and ledger, repaired by folding the receipts; a ledger ahead of the stamp means rows were
 replaced outside the gate, repaired only by a complete delivery. No stamp and no ledger is a new
-table.
+table. A new complete whole-domain delivery may recover rows behind the ledger; replay cannot,
+because returning an old receipt does not execute its plan. Partial deliveries remain refused.
+`Ledger.from_receipts(contract, receipts)` ignores rejected attempts, folds accepted receipts in
+persistence order and checks each resulting ledger and publication identity. A missing, reordered
+or foreign accepted receipt refuses reconstruction. `repair(contract)` restores only a ledger
+whose reconstructed publication equals the row stamp; it never stamps rows from ledger evidence.
+A crash before the receipt exists requires resubmitting the same idempotent delivery, not inventing
+evidence. Its store must retain the pending identity and refuse unrelated deliveries until recovery.
+These exceptions make recovery possible without blessing rows that no receipt proves.
 
 ## Interfaces and entry points
 

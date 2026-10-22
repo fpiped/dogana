@@ -1,0 +1,84 @@
+import pytest
+
+pytest.importorskip("duckdb")
+
+from dogana import InconsistentPublication, Ledger, Manifest
+from dogana.reference.duckdb import DuckDBStore
+from tests.integration.support import csv_file, row, sidecar
+from tests.support import at, contract
+
+
+class InterruptedWrite(BaseException):
+    pass
+
+
+class CommitBeforeLedger:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def execute(self, sql, *args):
+        if sql.startswith("INSERT OR REPLACE INTO __dogana_ledgers"):
+            self.connection.execute("COMMIT")
+            raise InterruptedWrite
+        return self.connection.execute(sql, *args)
+
+
+def test_rows_and_stamp_ahead_of_the_ledger_refuse_until_receipts_restore_evidence(tmp_path):
+    c = contract()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        manifest = sidecar(path, c, "full", 18, 1)
+        connection = store.connection
+        store.connection = CommitBeforeLedger(connection)
+        with pytest.raises(InterruptedWrite):
+            store.deliver(c, path, manifest)
+        store.connection = connection
+        store._transaction = None
+        with pytest.raises(InconsistentPublication, match="stamp ahead of ledger"):
+            store.load_ledger(c)
+        with pytest.raises(InconsistentPublication):
+            store.deliver(c, path, manifest)
+        repaired = store.repair(c)
+        receipt = store.deliver(c, path, manifest)
+        assert receipt.accepted
+        assert repaired == receipt.ledger == Ledger.from_receipts(c, store.receipts(c.table))
+        assert store.load_ledger(c) == repaired
+        assert store.read(c.table) == [row(1)]
+        assert len(store.receipts()) == 1
+
+
+def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery(tmp_path):
+    c = contract()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        first = sidecar(path, c, "full", 18, 1)
+        receipt = store.deliver(c, path, first)
+        path = csv_file(tmp_path, "next.csv", [row(2)])
+        second = sidecar(path, c, "full", 19, 1)
+        assert store.deliver(c, path, second).accepted
+        store.connection.execute('DELETE FROM "moves"')
+        store.connection.execute('INSERT INTO "moves" VALUES (1, ?, ?)', [at(18).date(), "current"])
+        store.connection.execute(
+            "UPDATE __dogana_publications SET publication_id=? WHERE table_name=?",
+            [receipt.publication_id, c.table],
+        )
+        with pytest.raises(InconsistentPublication, match="ledger ahead of stamp"):
+            store.load_ledger(c)
+        with pytest.raises(InconsistentPublication, match="complete delivery"):
+            store.repair(c)
+        with pytest.raises(InconsistentPublication):
+            store.deliver(c, path, second)
+        partial = Manifest(
+            c.table,
+            "daily",
+            at(20),
+            window=(at(18).date(), at(19).date()),
+            rows=1,
+            schema_hash=c.schema_hash,
+        )
+        with pytest.raises(InconsistentPublication):
+            store.deliver(c, path, partial)
+        recovered = store.deliver(c, path, sidecar(path, c, "full", 20, 1))
+        assert recovered.accepted
+        assert store.load_ledger(c) == Ledger.from_receipts(c, store.receipts(c.table))
+        assert store.read(c.table) == [row(2)]

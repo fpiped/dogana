@@ -3,7 +3,7 @@
 from .contract import Checkpoint, Column, Completeness, Contract, Coverage, Deletions, Manifest, Shape
 from .gate import Action, ApplyPlan, Check, CheckRequirement, Gate, Operation, Receipt, Transition
 from .interfaces import Extractor, Store
-from .ledger import Claims, Ledger, Region, RegionClaim, RejectedDelivery, State
+from .ledger import Claims, InconsistentPublication, Ledger, Region, RegionClaim, RejectedDelivery, State
 from .planner import ExtractionRequest, PlanningError, Requirement, next_extraction, plan_delivery
 from .wire import InvalidContract, SerializationError
 
@@ -22,6 +22,7 @@ __all__ = [
     "ExtractionRequest",
     "Extractor",
     "Gate",
+    "InconsistentPublication",
     "InvalidContract",
     "Ledger",
     "Manifest",

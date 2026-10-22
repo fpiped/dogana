@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from .contract import Checkpoint, Contract, Coverage, Deletions, Manifest, Scalar, Window, bounds
 from .wire import InvalidContract, Wire, utc
+
+if TYPE_CHECKING:
+    from .gate import Receipt
+
+
+class InconsistentPublication(ValueError):
+    """Published rows and their persisted evidence disagree."""
 
 
 class State(StrEnum):
@@ -188,6 +197,25 @@ class Ledger(Wire):
             raise InvalidContract("ledger regions must partition the entire ordered domain")
         if len(set(self.accepted)) != len(self.accepted):
             raise InvalidContract("accepted manifest identities must be unique")
+
+    @classmethod
+    def from_receipts(cls, contract: Contract, receipts: Iterable[Receipt]) -> Ledger:
+        ledger = cls(contract)
+        for receipt in receipts:
+            if not receipt.accepted:
+                continue
+            if receipt.ledger.contract != contract:
+                raise InconsistentPublication("accepted receipt belongs to a different contract")
+            if receipt.manifest.identity in ledger.accepted:
+                raise InconsistentPublication("duplicate accepted receipt in publication chain")
+            try:
+                after = ledger.apply(receipt.manifest)
+            except (InvalidContract, RejectedDelivery) as exc:
+                raise InconsistentPublication(f"accepted receipt breaks publication chain: {exc}") from exc
+            if after.publication_id != receipt.publication_id or after != receipt.ledger:
+                raise InconsistentPublication("accepted receipt breaks publication chain or ledger evidence")
+            ledger = after
+        return ledger
 
     def covered(self, window: Window | None = None) -> tuple[Region, ...]:
         bounds(window)

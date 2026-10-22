@@ -9,6 +9,12 @@ The DuckDB reference implementation uses a transaction against the published tab
 temporary candidate table first. DuckDB isolation hides uncommitted changes and permits atomic rows,
 ledger JSON and receipt JSON without a second mutable copy. Immutable publication tables support
 `read(..., publication_id=...)`; these copies deliberately trade storage for a small reference implementation.
+`__dogana_publications` stamps rows with their publication identity in the same transaction as
+the ledger and receipt. `load_ledger` raises `InconsistentPublication` on disagreement, naming the
+ahead side. `repair(contract)` folds receipts and restores a missing or stale ledger only when the
+result matches the stamp. A ledger ahead of the stamp requires a new complete whole-table delivery;
+a window or a replay cannot repair rows. An unknown stamp or an incomplete receipt chain needs
+investigation rather than a ledger reset.
 Contracts cannot change within a table's history. One store instance serializes deliveries.
 The DuckDB extra includes `pytz`, required by its Python client when returning timezone-aware columns.
 The internal `__dogana_` namespace is reserved regardless of letter case. DuckDB refuses a spelling

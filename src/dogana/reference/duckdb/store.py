@@ -15,6 +15,7 @@ from dogana import (
     Contract,
     Coverage,
     Gate,
+    InconsistentPublication,
     InvalidContract,
     Ledger,
     Manifest,
@@ -56,6 +57,8 @@ class DuckDBStore:
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_receipts
             (receipt_id VARCHAR PRIMARY KEY, table_name VARCHAR, manifest_id VARCHAR,
              accepted BOOLEAN, publication_id VARCHAR, document VARCHAR NOT NULL)""")
+        self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_publications
+            (table_name VARCHAR PRIMARY KEY, publication_id VARCHAR NOT NULL)""")
         self._candidates: dict[str, tuple[Manifest, bool]] = {}
         self._checked: dict[str, tuple[Contract, tuple[Check, ...]]] = {}
         self._transaction: str | None = None
@@ -88,7 +91,7 @@ class DuckDBStore:
         if row and row[0] != table:
             raise InvalidContract("DuckDB table identities must retain their registered letter case")
 
-    def load_ledger(self, contract: Contract) -> Ledger:
+    def _stored_ledger(self, contract: Contract) -> Ledger:
         self._check_table_spelling(contract.table)
         row = self.connection.execute(
             "SELECT document FROM __dogana_ledgers WHERE table_name=?", [contract.table]
@@ -97,6 +100,56 @@ class DuckDBStore:
         if ledger.contract != contract:
             raise InvalidContract("a published table's contract cannot change within its history")
         return ledger
+
+    def _stamp(self, table: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT publication_id FROM __dogana_publications WHERE table_name=?", [table]
+        ).fetchone()
+        return row[0] if row else None
+
+    def _ledger_ahead(self, ledger: Ledger, stamp: str | None) -> bool:
+        if ledger.publication_id is None:
+            return False
+        if stamp is None:
+            return True
+        return any(
+            r.accepted and r.publication_id == stamp and r.manifest.identity in ledger.accepted
+            for r in self.receipts(ledger.contract.table)
+        )
+
+    def load_ledger(self, contract: Contract) -> Ledger:
+        ledger = self._stored_ledger(contract)
+        stamp = self._stamp(contract.table)
+        if stamp != ledger.publication_id:
+            side = "ledger" if self._ledger_ahead(ledger, stamp) else "stamp"
+            raise InconsistentPublication(f"{side} ahead of {'stamp' if side == 'ledger' else 'ledger'}")
+        return ledger
+
+    def _base(self, contract: Contract, manifest: Manifest) -> Ledger:
+        try:
+            return self.load_ledger(contract)
+        except InconsistentPublication:
+            ledger = self._stored_ledger(contract)
+            shape = manifest.check(contract)
+            if not (
+                self._ledger_ahead(ledger, self._stamp(contract.table))
+                and shape.complete
+                and shape.coverage is Coverage.ALL
+                and manifest.identity not in ledger.accepted
+            ):
+                raise
+            return ledger
+
+    def repair(self, contract: Contract) -> Ledger:
+        with self._lock:
+            ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
+            if ledger.publication_id != self._stamp(contract.table):
+                raise InconsistentPublication("ledger ahead of stamp; a new complete delivery is required")
+            self.connection.execute(
+                "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
+                [contract.table, ledger.to_json()],
+            )
+            return ledger
 
     def receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
         sql = "SELECT document FROM __dogana_receipts"
@@ -298,15 +351,19 @@ class DuckDBStore:
         if self._transaction != candidate or not receipt.accepted:
             raise ValueError("publication requires an accepted receipt and an executing candidate")
         contract, checks = self._checked[candidate]
-        current = self.load_ledger(contract)
+        current = self._base(contract, self._candidates[candidate][0])
         expected = Gate.evaluate(current, self._candidates[candidate][0], checks)
         if receipt != expected:
             raise ValueError("receipt does not authorize this candidate against the current publication")
+        self.save_receipt(receipt)
+        self.connection.execute(
+            "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)",
+            [contract.table, receipt.publication_id],
+        )
         self.connection.execute(
             "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
             [contract.table, receipt.ledger.to_json()],
         )
-        self.save_receipt(receipt)
         snapshot = _quote("__dogana_version_" + receipt.publication_id)
         self.connection.execute(f"CREATE TABLE {snapshot} AS SELECT * FROM {_quote(contract.table)}")
         self.connection.execute("COMMIT")
@@ -326,7 +383,7 @@ class DuckDBStore:
 
     def deliver(self, contract: Contract, source: object, manifest: Manifest) -> Receipt:
         with self._lock:
-            ledger = self.load_ledger(contract)
+            ledger = self._base(contract, manifest)
             old = self.connection.execute(
                 "SELECT document FROM __dogana_receipts WHERE manifest_id=? AND accepted", [manifest.identity]
             ).fetchone()
