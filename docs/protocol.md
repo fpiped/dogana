@@ -217,7 +217,12 @@ manifest and an opaque row source consumable by a store. Extraction and storage 
 
 Push supplies a source plus manifest. Pull passes an `ExtractionRequest` to an extractor, then submits
 the returned source and manifest through the same gate. The next request comes from required claims or
-from `next_extraction`. Both modes produce identical ledgers for identical deliveries.
+from `next_extraction`. Both modes produce identical ledgers for identical deliveries. A file feed may declare its shape
+once at the receiver when filenames omit it. A declared filename pattern supplies the source read
+boundary; missing row counts are counted from the file. A window without named bounds derives its
+closed interval from the shape's `window_size`, ending at that boundary (calendar dates for DATE).
+Missing shape evidence or missing bounds without a window size are refused. File arrival time is
+never evidence of a source read boundary.
 
 A loader that is not a `Store` can still meet the obligations with the core alone: load the ledger,
 `manifest.check(contract)`, `Gate.requirements`, run the checks, `Gate.evaluate`, execute

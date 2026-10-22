@@ -25,8 +25,16 @@ table identities preserve spelling.
 ## File drop
 
 The file-drop reference implementation accepts CSV or Parquet paths. `<file>.json` is the optional sidecar. Without it,
-an explicit full-match filename regular expression supplies named groups `shape`, `produced_at`,
-`rows`, and optional `low`, `high`, `since`, `generation`. Bounds use the contract column's logical type;
+an explicit full-match filename regular expression supplies `produced_at` and optionally `shape`,
+`rows`, `low`, `high`, `since`, `generation`. `FilePattern(expression, shape="daily")` declares the
+shape once when the sender cannot provide a sidecar or a shape in the name. Conflicting filename
+and fixed shapes are refused. No shape anywhere is refused. Without a `rows` group the reference
+implementation counts CSV records (including quoted newlines) or Parquet rows. Parquet counting
+requires the `duckdb` extra. Without bounds groups, a window shape uses its `window_size` ending
+at `produced_at`: thirty DATE days ending October 19 start September 20; datetime bounds span the
+exact duration. A window shape without either bounds or `window_size` is refused. Both bounds
+groups must be present together. `pattern.manifest(path, contract)` needs the file path when counting
+rows, and accepts a filename alone when its groups carry the count. Bounds use the contract column's logical type;
 `schema_hash` defaults to the declared schema hash and is checked against the actual file. File arrival
 order is delivery order; there is no watcher, file mover or scheduler. CSV types are inferred from all
 rows. For a header-only CSV, the declared schema supplies types because the payload contains no type
@@ -44,6 +52,7 @@ and pytest; it has no DuckDB dependency. In your pytest module:
 import pytest
 from dogana.conformance import StoreConformance
 from your_project.testing import WarehouseFactory
+
 
 class TestWarehouse(StoreConformance):
     @pytest.fixture
