@@ -105,7 +105,7 @@ class DuckDBStore:
             """INSERT OR IGNORE INTO __dogana_receipts VALUES (?, ?, ?, ?, ?, ?)""",
             [
                 receipt.identity,
-                receipt.manifest.table,
+                receipt.ledger.contract.table,
                 receipt.manifest.identity,
                 receipt.accepted,
                 receipt.publication_id,

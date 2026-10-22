@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("duckdb")
 
-from dogana import Claims, Column, Contract, Ledger, Receipt, State, next_extraction
+from dogana import Claims, Column, Contract, Ledger, Manifest, Receipt, State, next_extraction
 from dogana.adapters.duckdb import DuckDBStore
 from dogana.adapters.files import FileDrop, FilePattern
 from tests.integration.support import csv_file, row, sidecar
@@ -404,3 +404,66 @@ def test_shrink_tolerance_includes_its_exact_fraction_boundary(tmp_path, remaini
         receipt = store.deliver(c, path, m)
         assert receipt.accepted is accepted
         assert len(store.read(c.table)) == (remaining if accepted else 10)
+
+
+def test_a_manifest_naming_the_wrong_table_is_audited_against_the_receiving_contract(tmp_path):
+    c = contract()
+    manifest = Manifest("other", "full", at(18), rows=0, schema_hash=c.schema_hash)
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        receipt = store.deliver(c, tmp_path / "not_read.csv", manifest)
+        assert not receipt.accepted
+        assert store.receipts(c.table) == (receipt,)
+        assert receipt.manifest.table == "other"
+        assert store.load_ledger(c) == Ledger(c)
+
+
+def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_unreported_deletes(tmp_path):
+    import csv
+
+    schema = (Column("id", "int"), Column("updated_at", "datetime"), Column("value", "str"))
+    c = contract(shapes={"full": FULL, "since": SINCE}, schema=schema)
+    source = [
+        {"id": 1, "updated_at": at(17), "value": "old"},
+        {"id": 2, "updated_at": at(18), "value": "initial"},
+    ]
+
+    class ERPExtractor:
+        def extract(self, contract, request):
+            rows = (
+                source
+                if request.shape == "full"
+                else [r for r in source if request.since <= r["updated_at"] <= request.until]
+            )
+            path = tmp_path / f"{request.shape}.csv"
+            with path.open("w", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=[c.name for c in contract.schema])
+                writer.writeheader()
+                writer.writerows(rows)
+            manifest = Manifest(
+                contract.table,
+                request.shape,
+                request.until,
+                since=request.since,
+                rows=len(rows),
+                schema_hash=contract.schema_hash,
+            )
+            return manifest, path
+
+    extractor = ERPExtractor()
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        request = next_extraction(store.load_ledger(c), "full", at(18))
+        manifest, path = extractor.extract(c, request)
+        assert store.deliver(c, path, manifest).accepted
+        source[:] = [
+            {"id": 2, "updated_at": at(19), "value": "updated"},
+            {"id": 3, "updated_at": at(19), "value": "new"},
+        ]
+        request = next_extraction(store.load_ledger(c), "since", at(19))
+        assert request.interval == (at(18), at(19))
+        manifest, path = extractor.extract(c, request)
+        receipt = store.deliver(c, path, manifest)
+        assert receipt.accepted, receipt.checks
+        assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
+        assert receipt.claims.complete_as_of == at(19)
+        assert receipt.claims.valid_as_of == at(18)
+        assert receipt.claims.state is State.PATCHED

@@ -140,7 +140,8 @@ Checks verify the delivered rows, not whether the source told the truth.
 
 `Gate.evaluate` combines core checks and adapter outcomes into a `Receipt`: manifest, checks, acceptance,
 transition (before/after regions and plan), resulting ledger and claims, receipt identity and publication
-identity. A rejected receipt references the existing publication. A successful publication identity is
+identity. A rejected receipt references the existing publication. Receipt indexing uses the receiver
+contract table, even when the rejected manifest names a different table. A successful publication identity is
 a hash of the previous publication, contract and manifest identities. Receipt identity also includes
 check outcomes. The audit history includes rejected attempts without making them publications.
 
@@ -180,6 +181,7 @@ temporary candidate table first. DuckDB isolation hides uncommitted changes and 
 ledger JSON and receipt JSON without a second mutable copy. Immutable publication tables support
 `read(..., publication_id=...)`; these copies deliberately trade storage for a small reference adapter.
 Contracts cannot change within a table's history. One store instance serializes deliveries.
+The DuckDB extra includes `pytz`, required by its Python client when returning timezone-aware columns.
 
 The file-drop adapter accepts CSV or Parquet paths. `<file>.json` is the optional sidecar. Without it,
 an explicit full-match filename regular expression supplies named groups `shape`, `produced_at`,
