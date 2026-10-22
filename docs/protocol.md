@@ -67,8 +67,11 @@ shape, have the contract's key width and cannot also be live keys.
 changes through this boundary are present, including equal checkpoint timestamps. Wall-clock read
 completion alone does not prove this. A timestamp gap is refused: `since` must be at or before every
 covered region's `complete_as_of` and at or before `produced_at`. Keyed upserts tolerate overlapping
-intervals. Append-only intervals must start exactly at the previous boundary, with extraction using
-`(since, produced_at]`; otherwise overlapping reads would duplicate events without keys. The first
+intervals. Append-only intervals must start exactly at the previous boundary of every covered region, with
+extraction using `(since, produced_at]`; otherwise overlapping reads would duplicate events without
+keys. A complete delivery on a keyless table restarts that boundary for its coverage, so after a
+window delivery the regions differ and an append is refused until a complete whole-table delivery
+aligns them. An interval whose `since` equals `produced_at` is empty and carries no rows. The first
 append starts at `start_at` and establishes only that declared retained history.
 
 A manifest's identity is SHA-256 of its canonical JSON. Reapplying an accepted identity returns the

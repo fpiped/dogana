@@ -227,6 +227,8 @@ class Manifest(Wire):
             raise InvalidContract("only changed-only deliveries supply since")
         if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(self.since, datetime):
             raise InvalidContract("timestamp checkpoints must be datetimes")
+        if shape.checkpoint is Checkpoint.TIMESTAMP and self.since == self.produced_at and self.rows:
+            raise InvalidContract("an empty interval carries no rows")
         if shape.checkpoint is Checkpoint.GENERATION and (
             not isinstance(self.since, str) or not self.since or not self.generation
         ):

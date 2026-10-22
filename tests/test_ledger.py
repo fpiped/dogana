@@ -2,8 +2,8 @@ from datetime import timedelta
 
 import pytest
 
-from dogana import Claims, Contract, Ledger, Manifest, RejectedDelivery, State
-from tests.support import FEED, FULL, SINCE, at, contract
+from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, State
+from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
 def full(c, day=18, generation=None):
@@ -218,6 +218,32 @@ def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_appe
         ledger.apply(Manifest(c.table, "log", at(19), since=at(1)))
     ledger = ledger.apply(Manifest(c.table, "log", at(19), since=at(18)))
     assert ledger.claims(at(19)).complete_as_of == at(19)
+
+
+def test_a_keyless_append_after_a_window_is_refused_until_a_full_delivery_aligns_the_boundaries():
+    c = Contract(
+        "events",
+        (),
+        {"full": FULL, "bucket": WINDOW, "log": SINCE},
+        window_column="id",
+        start_at=at(1),
+    )
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18, 1)))
+    ledger = ledger.apply(Manifest(c.table, "bucket", at(18, 2), window=(1, 1)))
+    with pytest.raises(RejectedDelivery, match="contiguous"):
+        ledger.apply(Manifest(c.table, "log", at(18, 3), since=at(18, 1)))
+    ledger = ledger.apply(Manifest(c.table, "full", at(18, 3)))
+    assert (
+        ledger.apply(Manifest(c.table, "log", at(18, 4), since=at(18, 3))).claims(at(18, 4)).state
+        is State.COMPLETE
+    )
+
+
+def test_an_empty_append_interval_cannot_carry_rows():
+    c = Contract("events", (), {"log": SINCE}, start_at=at(1))
+    with pytest.raises(InvalidContract, match="empty interval"):
+        Manifest(c.table, "log", at(1), since=at(1), rows=1).check(c)
+    assert Ledger(c).apply(Manifest(c.table, "log", at(1), since=at(1), rows=0)).accepted
 
 
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():

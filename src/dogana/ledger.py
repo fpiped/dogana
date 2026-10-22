@@ -222,8 +222,8 @@ class Ledger(Wire):
                 if manifest.since > t:
                     raise RejectedDelivery("since is after the source read boundary")
                 if not self.contract.key:
-                    expected = self.contract.start_at if bootstrap else min(r.complete_as_of for r in target)
-                    if manifest.since != expected:
+                    boundaries = {self.contract.start_at} if bootstrap else {r.complete_as_of for r in target}
+                    if boundaries != {manifest.since}:
                         raise RejectedDelivery("append-only intervals must be contiguous without overlap")
                 elif any(manifest.since > r.complete_as_of for r in target):
                     raise RejectedDelivery("timestamp checkpoint leaves a gap after the base")
