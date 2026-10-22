@@ -382,30 +382,152 @@ class StoreConformance(_StoreScenarios):
         assert factory.read_table(store, c.table) == [{"event": "one"}, {"event": "two"}]
         self._fold(store, c)
 
-    def test_a_generation_break_needs_a_full_export_before_the_feed_can_continue(
+    def test_a_cdc_stream_advances_both_dates_for_each_offset_batch_after_a_snapshot(
         self, factory: StoreFactory, store: Store
     ) -> None:
-        c = _contract()
-        self._deliver(factory, store, c, [_row(1)], generation="g41")
-        refused = self._deliver(
-            factory, store, c, [_row(2)], "feed", 19, since="restored", generation="g2", keys=((2,),)
-        )
-        assert not refused.accepted
-        assert self._rows(factory, store, c.table) == [_row(1)]
-        assert self._deliver(factory, store, c, [_row(2)], day=20, generation="new").accepted
+        c = _contract(shapes={"full": Shape.full(), "feed": Shape.feed()})
+        snapshot = self._deliver(factory, store, c, [_row(1), _row(2)], generation="log:100")
+        assert snapshot.accepted
+        previous = snapshot
+        for day, rows, tombstones, offset in (
+            (19, [_row(2, value="updated"), _row(3)], ((1,),), "log:103"),
+            (20, [], ((2,),), "log:104"),
+        ):
+            receipt = self._deliver(
+                factory,
+                store,
+                c,
+                rows,
+                "feed",
+                day,
+                since=previous.ledger.generation,
+                generation=offset,
+                keys=tuple((r["id"],) for r in rows),
+                tombstones=tombstones,
+            )
+            assert receipt.accepted, receipt.checks
+            assert receipt.base_publication_id == previous.publication_id
+            assert receipt.ledger.generation == offset
+            assert (receipt.claims.complete_as_of, receipt.claims.valid_as_of) == (_at(day), _at(day))
+            retained = store.receipts(c.table)
+            replay = _submit(store, c, object(), receipt.manifest)
+            assert replay == replace(receipt, outcome=Outcome.REPLAYED)
+            assert replay.identity == receipt.identity
+            assert store.receipts(c.table) == retained
+            previous = receipt
+        assert self._rows(factory, store, c.table) == [_row(3)]
+        assert len(store.receipts(c.table)) == 3
+
+    def test_a_cdc_stream_with_a_different_offset_needs_a_new_snapshot(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = _contract(shapes={"full": Shape.full(), "feed": Shape.feed()})
+        first = self._deliver(factory, store, c, [_row(1)], generation="log:100")
+        for day in (19, 20):
+            refused = self._deliver(
+                factory,
+                store,
+                c,
+                [_row(2)],
+                "feed",
+                day,
+                since="restored:200",
+                generation="restored:201",
+                keys=((2,),),
+            )
+            assert not refused.accepted
+            failures = [check for check in refused.checks if not check.passed]
+            assert len(failures) == 1 and failures[0].name == "transition"
+            assert failures[0].detail.endswith(
+                "generation_chain: generation chain differs from the base; request a complete delivery"
+            )
+            assert store.load_ledger(c) == first.ledger
+            assert self._rows(factory, store, c.table) == [_row(1)]
+        assert self._deliver(factory, store, c, [_row(2)], day=21, generation="restored:201").accepted
         assert self._deliver(
             factory,
             store,
             c,
             [_row(3)],
             "feed",
-            21,
-            since="new",
-            generation="next",
+            22,
+            since="restored:201",
+            generation="restored:202",
             keys=((3,),),
             tombstones=((2,),),
         ).accepted
         assert self._rows(factory, store, c.table) == [_row(3)]
+
+    def test_an_event_stream_uses_contiguous_arrival_intervals_without_deduplicating_new_batches(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = Contract(
+            "events",
+            (),
+            {"append": Shape.append()},
+            schema=(Column("event", "str"), Column("occurred_at", "datetime")),
+            start_at=_at(18),
+        )
+        event = {"event": "late", "occurred_at": _at(17)}
+        source = factory.write_source([event], c.schema)
+        manifest = c.manifest("append", _at(19), since=_at(18), rows=1)
+        first = _submit(store, c, source, manifest)
+        assert first.accepted
+        for since in (_at(18), _at(20)):
+            refused = _submit(store, c, source, replace(manifest, produced_at=_at(21), since=since))
+            assert not refused.accepted
+            failures = [check for check in refused.checks if not check.passed]
+            assert len(failures) == 1 and failures[0].name == "transition"
+            assert failures[0].detail.endswith(
+                "append_contiguous: append-only intervals must be contiguous without overlap"
+            )
+            assert store.load_ledger(c) == first.ledger
+            assert factory.read_table(store, c.table) == [event]
+        request = next_extraction(store.load_ledger(c), "append", _at(20))
+        assert request.since == _at(19)
+        second = _submit(store, c, source, c.manifest("append", request.until, since=request.since, rows=1))
+        assert second.accepted
+        assert (second.claims.complete_as_of, second.claims.valid_as_of) == (_at(20), _at(20))
+        assert factory.read_table(store, c.table) == [event, event]
+        retained = store.receipts(c.table)
+        assert _submit(store, c, object(), second.manifest) == replace(second, outcome=Outcome.REPLAYED)
+        assert factory.read_table(store, c.table) == [event, event]
+        assert store.receipts(c.table) == retained
+        self._fold(store, c)
+
+    def test_an_upsert_stream_lookback_recovers_a_late_commit_in_the_next_batch(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = Contract(
+            "updates",
+            ("id",),
+            {
+                "full": Shape.full(),
+                "upserts": Shape.changes(lookback=timedelta(seconds=10)),
+            },
+            schema=(Column("id", "int"), Column("updated_at", "datetime")),
+            cursor_column="updated_at",
+        )
+        start = _at(18)
+        initial: dict[str, Any] = {"id": 1, "updated_at": start}
+        assert self._deliver(factory, store, c, [initial]).accepted
+        late: dict[str, Any] = {"id": 2, "updated_at": start + timedelta(seconds=3)}
+        committed_at = start + timedelta(seconds=7)
+        for seconds in (5, 10):
+            until = start + timedelta(seconds=seconds)
+            request = next_extraction(store.load_ledger(c), "upserts", until)
+            assert isinstance(request.since, datetime)
+            assert request.since == start - timedelta(seconds=10 if seconds == 5 else 5)
+            visible = [initial, late] if committed_at <= until else [initial]
+            rows = [r for r in visible if request.since < r["updated_at"] <= until]
+            manifest = c.manifest("upserts", until, since=request.since, rows=len(rows))
+            receipt = _submit(store, c, factory.write_source(rows, c.schema), manifest)
+            assert receipt.accepted, receipt.checks
+            assert (receipt.claims.complete_as_of, receipt.claims.valid_as_of) == (until, start)
+            assert self._rows(factory, store, c.table) == visible
+        assert late["updated_at"] < start + timedelta(seconds=5) < committed_at
+        assert receipt.ledger.claims(until).state is State.PATCHED
+        self._fold(store, c)
 
     def test_a_keyed_row_moving_into_a_window_replaces_its_earlier_copy(
         self, factory: StoreFactory, store: Store

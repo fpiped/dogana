@@ -115,13 +115,73 @@ publication to the committed row version exposed to readers, not an intermediate
 A snapshot timestamp says when storage changed; regional evidence says which source rows that
 change establishes and through which source boundary.
 
-## Spark and replication systems
+## Streams: Kafka, Debezium, Spark Structured Streaming
 
-An engine executes the plan; it does not supply the source's completeness declaration. Use a storage
-transaction or table-format commit for Spark publication, with the same expected-parent check and
-durable receipt. Plain file replacement plus a later ledger write does not meet that obligation.
-A stream watermark is a processing policy for event time, not evidence that an export reported all
-deletions in a region.
+A stream becomes a sequence of bounded deliveries through the existing shapes. For Kafka carrying
+Debezium change data capture (CDC), use keyed `Shape.feed()` after a complete `Shape.full()` snapshot
+that issues the matching starting offset as `generation`. Each feed manifest has the committed
+generation as `since` and the next offset as `generation`. Encode the source identity and all relevant
+partition offsets in one stable, opaque string: the ledger holds one table-wide cursor. The extractor
+must establish continuity from the snapshot and all changes through a truthful `produced_at`;
+an offset alone does not prove a source-time boundary.
+
+Collapse each batch to one final live row or terminal tombstone per key. Manifest `keys` names every
+live row key; `tombstones` names deleted keys; `rows` counts live rows only. A broken generation chain
+needs a full reset. Continuous tombstones preserve an exact base; they do not repair an existing
+deletion gap.
+
+For immutable keyless events, use `Shape.append()`, `key=()` and a declared `start_at`. Read contiguous
+arrival-order intervals `(since, produced_at]`, starting at `start_at` and then at the previous
+completeness boundary. Arrival means entry into the source log, not receipt by this consumer. The
+source must guarantee every arrival through the boundary and never revise or delete retained events.
+If declaring `cursor_column`, use the source arrival timestamp. Equal payloads remain separate events.
+
+For keyed upserts without a deletion signal, use
+`Shape.changes(checkpoint="timestamp", deletions="none")` after a full snapshot, with `lookback` for
+bounded lag. `next_extraction` extends the read back from the weakest completeness boundary; matching
+by key makes overlap safe. Completeness advances while validity remains at its previous boundary.
+
+A CDC consumer loop, after the snapshot:
+
+1. Load the committed ledger and resume from its `generation`, with automatic broker offset commits disabled.
+2. Poll a bounded offset range, establish its source read boundary and collapse its changes by key.
+3. Build a manifest with the previous generation as `since`, the range end as `generation`, live keys,
+   tombstones and live row count. Retain the rows and exact manifest for retries.
+4. Call `deliver(store, contract, rows, manifest, now=receiver_time)`. The store atomically commits rows,
+   ledger and accepted receipt against the expected parent. The generation in that commit is the
+   authoritative consumed offset; the receipt is the destination commit record.
+5. Acknowledge broker offsets only after acceptance or accepted replay, then repeat. On rejection or
+   storage failure, stop without acknowledging; inspect the receipt or recover the committed state
+   before retrying the retained delivery.
+
+The broker acknowledgement is separate from the destination commit. A crash between them leaves the
+broker behind; resume from destination evidence or replay the exact retained manifest. Ordered calls
+do not create a transaction across Kafka and a database. The same atomicity obligation applies to a
+table-format store: its commit carries the receipt or a reference to an already durable copy.
+
+Spark's `foreachBatch` supplies a DataFrame and batch ID in micro-batch mode; deterministic queries
+produce the same output for the same ID. See the
+[`foreachBatch` API](https://spark.apache.org/docs/latest/api/python/reference/pyspark.ss/api/pyspark.sql.streaming.DataStreamWriter.foreachBatch.html).
+A keyed generation feed can encode that ID with a stable checkpoint identity, such as
+`orders-checkpoint-1:42`, and use the previous committed token as `since`. Spark's
+[query ID](https://spark.apache.org/docs/latest/api/python/reference/pyspark.ss/api/pyspark.sql.streaming.StreamingQuery.id.html)
+persists across restarts from checkpoint data. A reset checkpoint must not reuse the old identity;
+a broken chain needs a full snapshot. The adapter still needs proof of a bounded, complete source
+read and a stable manifest on retry. The batch ID supplies neither `produced_at` nor event time.
+Keyless output still requires contiguous timestamp append intervals. Publish through the same atomic
+store; a DataFrame write followed by a ledger write is insufficient.
+
+Replay is at batch granularity: an accepted manifest is published once. It does not deduplicate an
+event re-emitted inside a new batch; a key or the consumer must do that. Keyless append retains that
+occurrence.
+
+Time is the source read boundary, not event time. dogana has no watermarks or event-time windows.
+An invisible late row can be absorbed by a keyed lookback only if it becomes visible while its timestamp
+still falls within the overlap; the gate cannot detect an omitted row. Keyless append follows arrival
+order: a late business event belongs to its later source-arrival interval, without reopening an
+earlier event-time interval.
+
+## Replication systems
 
 For Airbyte, Fivetran or a custom loader, translate the actual configured extraction guarantees into
 a shape and gate publication of the candidate. A full load to an isolated staging table is possible;

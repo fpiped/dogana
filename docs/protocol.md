@@ -80,6 +80,8 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 | Every changed row and deleted key since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
 | Continuous opaque-cursor feed with deleted keys | `Shape.feed()` | Window-local cursors, missing generations or repair of an unknown base. |
 | Immutable events retained from a declared start | `Shape.append()` | Updates, deletion or overlapping keyless intervals. |
+| CDC stream in offset batches | `Shape.feed()` after a full snapshot | Missing offset ranges or source completeness inferred from offsets alone. |
+| Immutable event stream in arrival-order intervals | `Shape.append()` with `start_at` | Event-time completeness or deduplication of a re-emitted event in a new batch. |
 
 Shape constructors take keywords; `Contract` and `Manifest` require keywords after `shapes` and
 `produced_at`, respectively. `Contract.manifest(shape, produced_at, ...)` supplies table and schema

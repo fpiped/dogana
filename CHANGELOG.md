@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Document stream mappings and test CDC offsets, event intervals, lookback, restarts, concurrent consumers and 1,000 micro-batches with existing shapes.
 - Store regional evidence as sorted boundary cuts and expose Known or Unknown evidence internally.
 - Parse manifests into shape-specific deliveries and separate guards, date transitions, cursor rules and publication chaining.
 - Replace receipt flags with accepted, rejected or replayed outcomes, retaining derived compatibility properties.

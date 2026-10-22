@@ -12,6 +12,8 @@ orders     before 2026-09-20          complete as of 2026-10-18   valid as of 20
 movements  whole table                complete as of 2026-10-19   valid as of 2026-10-12   patched
 ```
 
+Batch and streaming deliveries produce the same record at different cadences.
+
 Patched means: rows deleted at the source after October 12 may still be here. That sentence, per table and per region, is what the library exists to produce. One rule governs everything it records: a delivery never raises a date above what it proves.
 
 It runs inside whatever already writes your tables: a cron script, an Airflow task, a dlt pipeline. No server, no daemon, no dependencies in the core. It never reads a source, never schedules, never transforms. The rows stay in your database and the ledger moves with them in one transaction. A DuckDB reference store makes the example below run in a minute; a conformance suite lets you prove a store for your own warehouse.
@@ -176,6 +178,8 @@ date is not the source read boundary. Keyed timestamp reads can use `lookback` f
 | One export per plant | Complete singleton windows | Each plant has dates; undelivered space stays unknown. |
 | Cursor feed with tombstones | `Shape.feed()` | Continuous changes and deleted keys preserve an exact base. |
 | Immutable keyless history | `Shape.append()` with `start_at` | Contiguous intervals advance both dates. |
+| CDC stream in offset batches | `Shape.feed()` after a snapshot | Each committed offset range preserves an exact base. |
+| Event stream in arrival-order intervals | `Shape.append()` with `start_at` | Contiguous reads of immutable keyless events advance both dates. |
 
 Window membership must be immutable at the source. A generation is an opaque table-wide cursor;
 a tombstone names a deleted key. The [shape decision table](docs/protocol.md#choosing-a-shape)
@@ -188,6 +192,7 @@ details what each pattern cannot prove.
 - dbt snapshots retain row history; dogana decides when incoming absence justifies deletion.
 - A watermark table records a cursor; dogana also records coverage, deletion knowledge and refused files.
 - CDC transports changes; dogana accounts for the evidence a delivered batch establishes.
+- Not a stream processor: no watermarks, no event-time windows; it records what each committed batch proved.
 
 ## Reading and extending
 
