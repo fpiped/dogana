@@ -64,6 +64,39 @@ DuckLake commit extra info, Delta commit user metadata) that carries the receipt
 format's own history links to the audit record. None of them stores per-region completeness, so
 the ledger stays dogana's table inside the same catalog.
 
+## Spark
+
+Spark is an engine, so it covers the execution of a plan and nothing of the ledger. What it offers,
+by layer:
+
+- Plain DataFrame writes have four save modes; `overwrite` deletes the data before writing the new
+  data, and the documentation states that save modes take no locks and are not atomic. `INSERT INTO
+  ... REPLACE WHERE <predicate>` is documented as an atomic delete-then-insert, and `INSERT OVERWRITE
+  ... PARTITION` replaces one partition. MERGE INTO is not in the plain Spark SQL reference; it
+  arrives with a table format.
+- With Iceberg: overwrites are atomic, static overwrite turns the `PARTITION` clause into a filter,
+  dynamic overwrite replaces the partitions the query produced, `MERGE INTO` with `WHEN NOT MATCHED
+  BY SOURCE` (Spark 3.5) deletes destination rows absent from the source under a condition, and
+  `spark.wap.branch` writes to a branch for write-audit-publish. Iceberg records per-commit row
+  counts in the snapshot summary (inserted, deleted, updated).
+- With Delta: `replaceWhere` overwrites exactly the rows matching a predicate and validates that the
+  written rows match it; `txnAppId` and `txnVersion` make a write idempotent (a repeated or older
+  version is ignored); `WHEN NOT MATCHED BY SOURCE` is in Delta 2.3 and later.
+- Structured Streaming: a watermark bounds how late a row may be and still be aggregated; rows later
+  than the threshold start being dropped, and the documentation says a row beyond the threshold is
+  not guaranteed to be dropped either. Exactly-once needs a replayable source and an idempotent sink;
+  `foreachBatch` is at-least-once unless the batch id is used to deduplicate.
+
+So every dogana action has a Spark execution: `replace_all` is an overwrite, `replace_window` is
+`REPLACE WHERE` or `replaceWhere` on the window predicate, `upsert` and `tombstone` are a merge, and
+`WHEN NOT MATCHED BY SOURCE` with a window condition is "delete every row inside W absent from this
+file", which is the operation a complete window delivery authorises. What Spark does not have is the
+authorisation: nothing records that the file was complete for W, so nothing can refuse the same
+merge when the file was a changed-since extract. The watermark is the closest thing to a
+completeness statement, and it is one-directional and per stream, not per region of a table. A
+Spark store adapter therefore executes plans and stamps the receipt identity into the Iceberg
+snapshot summary or the Delta commit metadata; the ledger stays dogana's.
+
 ## Dagster and Airflow
 
 Orchestrators schedule and display. In pull mode the orchestrator asks `plan_delivery` what is due,
