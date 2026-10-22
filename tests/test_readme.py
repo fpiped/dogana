@@ -18,7 +18,7 @@ PAGES = {
 def test_every_documented_block_runs_from_its_documented_directory(tmp_path, page):
     pytest.importorskip("duckdb")
     BLOCKS = PAGES[page]
-    assert BLOCKS and all(language in ("sh", "python", "text") for language, _ in BLOCKS)
+    assert BLOCKS and all(language in ("sh", "python", "text", "json") for language, _ in BLOCKS)
     environment = dict(
         os.environ,
         VIRTUAL_ENV=str(Path(sys.executable).parent.parent),

@@ -28,6 +28,58 @@ delivery never raises a date above what it proves.
 </picture>
 </p>
 
+## How it works
+
+dogana is a protocol, with this library as its reference. Two documents carry it.
+
+**The contract** is the receiver's declaration, written once per table: the key, the window column
+and the named shapes a delivery may take, each shape saying what such a delivery proves.
+
+```python
+from datetime import timedelta
+
+from dogana import Contract, Shape
+
+orders = Contract(
+    "orders",
+    key=("id",),
+    shapes={"full": Shape.full(), "daily": Shape.window(size=timedelta(days=30))},
+    window_column="day",
+)
+```
+
+**The manifest** travels with each delivery and declares that one read: which shape, as of which
+source boundary, which window, how many rows, a hash of the content. On the wire it is plain JSON:
+
+```json
+{"kind": "Manifest", "version": 1, "table": "orders", "shape": "daily",
+ "produced_at": {"$datetime": "2026-10-19T00:00:00+00:00"},
+ "window": [{"$date": "2026-09-20"}, {"$date": "2026-10-19"}],
+ "rows": 1, "content_hash": "3b7f...", "since": null, "generation": null,
+ "schema_hash": null, "keys": [], "tombstones": []}
+```
+
+Who writes it depends on who controls the read. A sender that controls it drops the JSON next to
+the file (`orders-19.csv.json`). A sender that cannot write one gets a manifest derived by the
+receiver from a filename pattern the receiver declares once (`orders-20261019-daily.csv`). An
+extractor you run yourself builds it from the read it just made. The protocol does not care who
+wrote it, only that the gate checks the rows against it.
+
+**The gate** compares the manifest with the contract (is this shape admitted, does the window fit
+the column, is the boundary later than what the ledger already holds) and the rows with the
+manifest (the count, the columns, every row inside the window, keys unique). A contradiction is
+refused as a whole and nothing is written.
+
+**The ledger** folds each accepted manifest. A complete delivery sets both dates in its coverage.
+Rows changed since a timestamp move completeness only. Tombstones move validity back to their
+checkpoint. A delivery never raises a date above what it proves.
+
+**The receipt** records the decision, every check, the regions before and after, and the
+receiver's clock. The same manifest again returns the stored receipt. The receipts in order rebuild
+the ledger, so the ledger is derived state and the receipts are the record.
+
+The [protocol](docs/protocol.md) is the authority for all of this; the code follows it.
+
 ## The answer it gives
 
 Most warehouse tables are copies of data someone else owns, delivered in pieces, and every pipeline
