@@ -1,331 +1,302 @@
 # The dogana protocol
 
-Version 1. The wire format and the rules below are authoritative for the reference library.
+Version 1. This page defines the wire values, transitions and publication obligations.
 
-## What a delivery proves
+## Trust model
 
-A full extract proves that a missing row is deleted. Rows changed since Monday prove nothing about
-unreported deletions. A complete thirty-day window proves absence only inside that window.
+A delivery contains rows and a `Manifest`, the sender's declaration of what was read. A `Contract`
+states the source guarantees; a `Gate` checks the declaration and the delivered rows. It cannot
+verify the source against them. A truncated full export with a matching count, an overstated window
+or an omitted late commit can pass. A receiver-derived row count checks parsing, not completeness.
+The shrink guard limits one delivery's row loss, not cumulative loss or source dishonesty.
 
-Razniewski and Nutt describe table completeness statements: the available table contains every ideal
-row satisfying a condition. Motro separates completeness (no missing rows) from validity (no rows that
-should be gone). A retained deleted row violates validity. Each region therefore has two dates.
+The invariant is conditional on truthful extraction, the declared source guarantees and correct
+store checks: a delivery never raises an evidence date above what those premises prove. The core
+checks region partitioning, date order, continuity and unchanged evidence outside coverage. It does
+not authenticate senders, verify business values or certify a query's answer.
 
-One invariant governs publication: a delivery never raises a date above what it proves.
+`produced_at` is the source snapshot or read boundary. The extractor guarantees all changes through
+that boundary, including its endpoint. Download completion, arrival time and a scheduler's logical
+date are not that boundary. Required receiver time `now` rejects `produced_at > now`. A late commit
+with an earlier `updated_at` is invisible to the gate. Overlapping keyed reads mitigate bounded lag;
+no lookback proves that extraction was complete.
 
-## Delivery contract and shape
+## Contract and shapes
 
-A `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, `schema`,
-`max_shrink_fraction`, `freshness` and `start_at`. A schema is an ordered tuple of `Column(name, type)`;
-logical types are `int`, `float`, `str`, `bool`, `date`, `datetime`. Its canonical JSON SHA-256 is the
-schema hash. Column order is significant. Publishing rows requires a schema; accounting alone does not.
-`max_shrink_fraction`, between zero and one, limits the fraction of published rows a complete delivery
-may remove within its coverage. It is a guard against an accidentally truncated export, not a proof of
-source correctness. `freshness` defaults to seven days.
+`Contract` declares `table`, `key`, named `shapes`, optional `window_column`, optional `cursor_column`,
+`schema`, `max_shrink_fraction`, `freshness` and `start_at`. A schema is an ordered tuple of
+`Column(name, type)` with logical types `int`, `float`, `str`, `bool`, `date`, `datetime`. Column order
+matters: `schema_hash` is SHA-256 of compact ASCII JSON containing ordered `[name, type]` pairs. Publication requires a schema; accounting alone does not.
+`freshness` defaults to seven days; choose cadence plus arrival slack. `max_shrink_fraction` defaults
+to 0.5, lies between zero and one, and is disabled only by explicit `None`.
 
-A window column exists exactly when a window shape exists. Its value must be immutable for a key.
-Moving keys between partitions or changing their window value requires a full delivery. This is a
-source guarantee, not something the gate can infer from one delivery. Keys are non-null and unique.
-An empty key means the source gives rows no identity. Such a contract admits complete shapes, which
-replace their coverage wholesale, and append-only shapes: whole-domain, timestamp checkpoint, no
-deletion signal. Named keys, tombstones and generation checkpoints need a key. A contract with an
-append-only shape declares `start_at`, the beginning of its retained history. Window bounds and key
-components are strings, integers, dates or UTC datetimes; window and key schema columns use these
-logical types, and a manifest's window bounds must have the window column's declared type. Timezone-aware
-inputs normalise to UTC before interval arithmetic and key equality, including repeated local times at
-DST transitions, so two instants that share a local wall time are never one point.
+A window column exists exactly when a window shape exists. Regions divide this one column's ordered
+domain, not the key space. Its value must be immutable for a key; a full delivery can reset it.
+Keys are unique and non-null. Key and window values are strings, integers, dates or UTC datetimes;
+schema columns and manifest bounds must agree on type. Normalize aware datetimes to UTC before key
+equality or interval arithmetic, including DST folds. Strings use code-point order, without Unicode
+normalization or locale collation. Equal-endpoint windows denote one partition. String adjacency uses successor `s + "\x00"` and minimum `""`. Date and datetime domains respect
+their representable minima and maxima; empty exterior intervals are discarded. A set of delivered
+plant codes does not close the rest of the string domain; whole-table evidence requires a full read.
 
-A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
-and an optional positive `window_size` duration for automatic rolling-window planning. DATE windows
-count calendar dates, including the final date: thirty days ending October 19 start September 20.
-Their width must be a whole number of days. A declared integer or string window column cannot
-use a duration: rolling duration windows require date or datetime values. Datetime windows span the duration with both endpoints
-included:
+An empty `key` means rows have no identity. Complete shapes replace their coverage wholesale.
+Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
+`start_at` bounding retained history. This declares that the source only appends and never deletes
+or revises retained events. Named-key coverage, tombstones and generation checkpoints require keys.
+An optional `cursor_column` names a schema datetime column for timestamp row checks; without it,
+the gate cannot check individual rows against the declared extraction interval.
+
+A `Shape` has four semantic properties:
 
 | Property | Values | Meaning |
 |---|---|---|
-| coverage | `all`, `window`, `keys` | Whole domain, closed interval on the window column, or keys in a table-wide change stream. |
-| completeness | `complete`, `changed_only` | All current rows in coverage, or all changes since the checkpoint. |
-| deletions | `absence`, `tombstone`, `none` | Missing rows delete, explicitly named keys delete, or no delete signal. |
-| checkpoint | `generation`, `timestamp`, `none` | Opaque source cursor, inclusive source timestamp, or no checkpoint. |
+| coverage | `all`, `window`, `keys` | Whole domain, closed window, or a table-wide stream naming changed keys. |
+| completeness | `complete`, `changed_only` | All current rows in coverage, or all changes since a checkpoint. |
+| deletions | `absence`, `tombstone`, `none` | Missing rows delete, named keys delete, or no deletion signal. |
+| checkpoint | `generation`, `timestamp`, `none` | Opaque cursor, source time, or no checkpoint. |
 
-Complete means checkpoint `none` and deletion signal `absence`. Changed-only means a timestamp or
-generation checkpoint and deletion signal `none` or `tombstone`. Named-key coverage is changed-only.
-A generation is a table-wide cursor, so window coverage cannot use a generation checkpoint. These
-rules admit twelve semantic shapes. Complete windows include both endpoints; equal endpoints
-represent a partition such as plant `IT01`. Domains are ordered scalar values of one type.
+Complete shapes require `absence` and checkpoint `none`. Changed-only shapes require `timestamp`
+or `generation` and deletions `none` or `tombstone`. Key coverage is changed-only. Generations are
+table-wide, so window generation feeds are forbidden. These rules admit twelve semantic shapes.
+
+Shapes also carry nonnegative relative `cost` (default one), optional positive `window_size` and
+optional `lookback` durations. `window_size` is a planning hint, not a push-window width constraint.
+Rolling durations require date or datetime windows. DATE widths are whole days including both ends:
+thirty days ending October 19 start September 20. Datetime windows include both ends of the duration.
+`lookback` is allowed only on timestamp shapes in keyed contracts; it extends a planned read back
+from the weakest covered completeness boundary. Keyless appends cannot overlap.
 
 ## Manifest
 
 `Manifest(table, shape, produced_at, window, since, generation, rows, schema_hash, keys, tombstones,
-content_hash)` states one read's claim. The manifest is the sender's testimony: the gate verifies the
-rows against it and never the source against the rows. Dates are timezone-aware UTC instants. `window` is required exactly for window
-coverage. `since` is required exactly for changed-only shapes. Timestamp checkpoints are datetimes;
-generation checkpoints and issued generations are nonempty strings. A generation feed must issue its
-next generation. A changed-only delivery collapses changes to one final live row or terminal tombstone
-per key at the read boundary. `rows` counts incoming live rows, excluding `tombstones`. Keys and tombstones are
-tuples of composite key tuples. A named-key manifest enumerates its live `keys`; other keyed shapes
-may omit that enumeration and refer to the candidate's keys instead. Tombstones require a tombstone
-shape, have the contract's key width and cannot also be live keys.
+content_hash)` describes one read. `window` is required exactly for window coverage; `since` exactly
+for changed-only shapes. Timestamp checkpoints are aware datetimes; generation checkpoints and
+issued generations are nonempty strings. A generation feed must issue its next generation.
+A complete whole-domain delivery may issue a generation; a complete window carries none.
 
-`produced_at` is the source snapshot or read boundary, not arrival time. The extractor guarantees all
-changes through this boundary are present, including equal checkpoint timestamps. Wall-clock read
-completion alone does not prove this. The gate receives the receiver's clock as `now`; a manifest
-whose `produced_at` is later than `now` is refused, because a future-dated acceptance would block
-every later honest delivery. `content_hash` is an optional digest of the delivered bytes or rows,
-computed by the sender or by a receiver that derives the manifest; when present it is part of the
-identity, so a corrected file is a new delivery and not a replay. A `rows` count that the receiver
-derived from the file proves nothing about truncation; only `max_shrink_fraction` guards it. A timestamp gap is refused: `since` must be at or before every
-covered region's `complete_as_of` and at or before `produced_at`. Keyed upserts tolerate overlapping
-intervals. Append-only intervals must start exactly at the previous boundary of every covered region, with
-extraction using `(since, produced_at]`; otherwise overlapping reads would duplicate events without
-keys. A complete delivery on a keyless table restarts that boundary for its coverage, so after a
-window delivery the regions differ and an append is refused until a complete whole-table delivery
-aligns them. An interval whose `since` equals `produced_at` is empty and carries no rows. The first
-append starts at `start_at` and establishes only that declared retained history.
+Changed-only delivery collapses changes to one final live row or terminal tombstone per key at its
+boundary. `rows` counts live rows, excluding tombstones. `keys` and `tombstones` are tuples of
+composite key tuples of the contract's width and types. Key coverage enumerates every live key;
+other keyed shapes may omit the enumeration. Live and tombstoned keys cannot intersect. Tombstones
+require a tombstone shape. A zero-length timestamp interval contains no rows.
 
-A manifest's identity is SHA-256 of its identity form, defined under Versioned JSON. Reapplying an
-accepted identity returns the same publication and receipt, even after later deliveries, and the
-receipt says it is a replay. A core gate replay decision has an empty
-operation plan and leaves the current ledger intact; a store returns the original persisted receipt. Different manifests sharing a timestamp
-are not interchangeable snapshots. A corrected file needs a corrected manifest.
+Timestamp deliveries with `cursor_column` use `(since, produced_at]`, including for keyed feeds.
+Without that column, keyed extraction may include `since`; overlapping keyed reads are admissible.
+Keyless appends always use `(since, produced_at]`, without overlap. `content_hash` is an optional
+digest of the bytes or canonical rows, supplied by sender or receiver. It participates in identity.
+A corrected payload needs a changed manifest; a changed digest creates a new delivery subject to
+ordinary time checks, so a correction at an already accepted boundary is refused, not replayed.
+Without a digest, manifest identity does not identify the content.
 
-## Ledger and regions
+## Ledger and transitions
 
-A `Ledger` contains its contract, disjoint `Region` values covering the entire ordered domain, the
-current table generation, accepted manifest identities and the current publication identity. Initially
-there is one unbounded unknown region. Each region has `low`, `high`, endpoint-open flags,
-`complete_as_of` and `valid_as_of`. The generation is one cursor for the whole table: a feed asserts
-that no key changed anywhere else, so one cursor is all it can continue from. `None` endpoints mean
-unbounded. Both dates are absent together in unknown regions; otherwise `valid_as_of <= complete_as_of`.
-Explicit unknown gaps prevent an undelivered plant from disappearing from table claims. Empty gaps
-between successive integers, calendar dates or microsecond datetimes are discarded. Adjacency is
-measured in the scalar domain, so [1, 9] and [10, 20] leave no unknown integer between them.
+`Ledger` contains only its contract, disjoint regions covering the domain, table generation and
+`publication_id`. Initially one unbounded region is unknown. `Region` has `low`, `high`, open-endpoint
+flags, `complete_as_of` and `valid_as_of`. `None` endpoints are unbounded. Evidence dates are absent
+together, or `valid_as_of <= complete_as_of`. No accepted-identity history is embedded in the ledger.
+
+For a region with dates `(c, v)`, every source row live there at `c` is present. Every retained row
+was live at some source instant in `[v, c]`; deletions after `v` may remain. Equal dates mean the
+region equals the source at that instant. Unknown is different from a known empty region.
+
+Coverage boundaries split regions exactly, preserving excluded endpoints; adjacent regions with
+equal evidence merge. Empty gaps between successive integers, dates or microsecond datetimes are
+removed. Untouched regions retain their evidence, including unknown gaps.
+
+- Complete delivery at `t` sets covered dates to `(t, t)`. Empty complete coverage proves absence,
+  subject to shrink policy. Whole-domain completion sets or clears the table generation.
+- Changed-only delivery needs a known base throughout coverage. Key streams cover all regions,
+  asserting that no unreported key changed; a partial base cannot bootstrap them.
+- The first keyless append is the exception: `since = start_at` establishes retained history only.
+  Later appends require `since` equal to every covered `complete_as_of`, not their minimum. A complete
+  keyless delivery restarts the boundary in its coverage. After a newer complete window, a full
+  complete delivery must realign boundaries before global append can resume.
+- A keyed timestamp feed requires `since <= produced_at` and `since <= complete_as_of` everywhere
+  covered. A gap is refused. A generation feed requires `since` equal to the table generation and
+  advances that single cursor. A broken chain needs a complete whole-domain reset.
+- Changed-only delivery raises completeness to `t`. Timestamp tombstones also raise validity where
+  `since <= valid_as_of`; otherwise missed deletions remain unproved. Generation tombstones raise
+  validity where the previous validity equalled completeness. Keyed feeds without deletion signals
+  leave validity unchanged. Keyless appends raise both dates because their contract declares that
+  retained events never change or disappear, despite the shape's `deletions="none"`.
+- A new delivery with `t <= complete_as_of` in any affected known region is refused as a whole.
+  A late full export cannot overwrite a newer window. Disjoint older windows remain admissible.
+
+`Ledger.apply(manifest)` performs accounting only and raises `RejectedDelivery` for an impossible
+transition. It neither certifies rows nor detects replays. Repeating a manifest through this pure
+operation is subject to the same strict time rule; store delivery provides idempotent replay.
+
+## Plans, checks and receipts
+
+`ApplyPlan` contains ordered `Action` values. `replace_all` replaces the table. `replace_window`
+removes rows in its closed window, removes earlier copies of candidate keys and inserts the candidate.
+`upsert` matches the contract key; `tombstone` deletes exactly its keys; `append` inserts without
+matching. Keyless replacement does not match keys. The core describes operations but never reads rows.
+
+`Gate.requirements(contract, manifest)` names required row checks. The store returns exactly one
+`Check(name, passed, detail)` for each; missing, duplicate or unexpected outcomes reject publication.
+
+| Check | Predicate |
+|---|---|
+| row_count | Candidate live row count equals `manifest.rows`. |
+| schema_hash | Candidate ordered schema and manifest hash equal the contract schema hash; omitted for schemaless accounting. |
+| rows_in_window | Every candidate window value is non-null and inside the declared closed window. |
+| window_stability | Every candidate window-column value is non-null. |
+| key_integrity | Every candidate key is non-null and unique. |
+| named_keys | Required live-key enumeration equals candidate keys; window tombstones cannot delete published keys outside coverage. |
+| shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
+| rows_in_interval | With `cursor_column` and a timestamp shape, every cursor value is non-null and in `(since, produced_at]`. |
+
+Moving a key into a window is safe: replacement removes its old copy. Moving out can leave a hole
+that no candidate check sees, hence source immutability remains necessary. Checks blocked by an
+earlier failure return `passed=False, detail="not evaluated"`, not an unevaluated predicate's result.
+
+`Gate.evaluate(ledger, manifest, outcomes, now=now, source=None)` requires receiver `now`. Core checks
+validate structure, source time, base coverage, timestamp/generation continuity and monotonic time.
+`Gate.preflight(ledger, manifest, now=now)` returns those core checks without row outcomes;
+`Gate.reject(ledger, manifest, checks, now=now, source=None)` records a declared failure.
+The `Receipt` contains manifest, checks, acceptance, `received_at`, `replayed`, optional `source`,
+`base_publication_id`, transition, resulting ledger, claims at receipt time, and publication identity.
+Only acceptance has a transition; rejection retains the previous ledger and publication. Receipts
+are indexed by the receiver contract's table even if the rejected manifest names another table.
+Their identity also covers check outcomes. Ledger evidence in each receipt grows with region count,
+not delivery count; manifest key lists and other payload metadata still contribute to receipt size.
+
+`DoganaError` is the error root; `InvalidContract`, `RejectedDelivery`, `PlanningError`,
+`SerializationError` and `StoreError` distinguish configuration, delivery, planning, wire and storage
+failures. `SerializationError` subclasses `InvalidContract`; `InconsistentPublication` subclasses
+`StoreError`. Only declared protocol violations become rejection receipts. Operational failures and
+programming errors propagate after cleanup. Failure after commit cannot revoke acceptance.
+
+## Claims and planning
+
+`Ledger.claims(now, limit=None, window=None)` requires the reader's current time. It clips regions
+to an optional window and returns `Claims` with each region's dates and state. `now` evaluates
+freshness, not historical time travel. Equality at the freshness limit is fresh.
 
 | State | Condition |
 |---|---|
 | unknown | Both dates absent. |
 | complete | Dates equal and completeness within the freshness limit. |
-| patched | Completeness newer than validity and completeness within the limit. |
-| expired | Completeness older than the freshness limit. |
+| patched | Completeness newer than validity and within the freshness limit. |
+| expired | Completeness older than the freshness limit, even if validity is also older. |
 
-Freshness is evaluated against a caller-supplied `now`. Equality at the limit remains fresh. The
-validity date remains visible when recent patches hide old deletion knowledge.
+State priority is unknown, expired, patched, complete. Aggregate dates are separate minima, absent
+if any region is unknown; equal aggregate dates do not imply that every region is exact. Validity
+remains visible even when recent patches hide old deletion knowledge.
 
-## Transitions
+`Claims.combine` takes those minima across tables. These are lower bounds on input evidence dates,
+not completeness or validity statements about one common snapshot or a joined result. Regions at
+different dates may form a table exact at no instant. Common-time evidence is needed to propagate
+row guarantees through monotone queries such as filters, joins and unions. Negation (`NOT EXISTS`,
+anti-joins, difference) swaps completeness and validity requirements for the negated input. With
+exact items and complete-but-patched movements at the same boundary, "items with no movement" is
+valid but possibly incomplete: a retained deleted movement hides an item. Exact aggregates need
+both guarantees; `COUNT` and `SUM` as exact values are not ordinary monotone row queries.
 
-Every coverage boundary splits existing regions exactly, preserving the excluded endpoints.
-Adjacent regions with identical evidence merge. Regions outside coverage are unchanged.
+`Requirement` names a table, minimum completeness, optional minimum validity and optional window.
+`plan_delivery` returns no request if claims suffice; otherwise it chooses the cheapest admitted
+shape that establishes the requirement, breaking ties by shape name. It checks candidate transitions
+against the ledger. Unknown bases or unrepairable deletion gaps exclude feeds; complete windows can
+prove bounded requirements, but whole-domain requirements need whole-domain evidence. No suitable
+shape raises `PlanningError`. The boundary may exceed the requirement minimum to be later than all
+affected evidence; the extractor must actually obtain that source boundary.
 
-- A complete delivery at `t` replaces covered regions' dates with `(t, t)`. An empty complete
-  partition decommissions it, proving absence there. A complete whole-domain delivery sets the
-  table generation to the manifest's generation, or clears it; a complete window carries none.
-- Changed-only deliveries require a known base throughout coverage. Named-key streams speak about all
-  regions, including the assertion that no other key changed. They cannot bootstrap a partial base.
-- The append-only first interval is the sole exception to the base requirement because the contract
-  explicitly bounds retained history. Subsequent append intervals are contiguous, and a complete
-  delivery on a keyless table starts a new contiguous history at its own boundary.
-- A generation feed requires `since` to equal the table generation and advances it to the issued
-  generation. A broken chain is refused until a complete whole-domain delivery resets the cursor.
-- Changed-only coverage raises completeness to `t`. A tombstone delivery raises validity to `t` in
-  every covered region whose `valid_as_of` is at or after `since`, because it reports every deletion
-  since its checkpoint; where validity is older than `since`, deletions in between were never
-  reported, and validity stays unchanged. Without a delete signal validity never moves.
-- Any nonduplicate delivery with `produced_at <= complete_as_of` in an affected known region is
-  refused as a whole. This conservative rule keeps rows and dates consistent when files arrive out of
-  order; even a partial overlap cannot overwrite a newer snapshot. Disjoint older windows are allowed.
-- Unknown regions outside coverage stay unknown. Rejection leaves rows, ledger and publication intact.
+`next_extraction(ledger, shape, until)` derives a rolling window from `window_size`, extending its
+start back when needed to bridge the last complete evidence and avoid scheduling-jitter gaps.
+Timestamp `since` is the weakest covered completeness boundary minus optional keyed `lookback`.
+Append requires one common boundary; generation requests use the held cursor. The request's `until`
+becomes the manifest boundary only when extraction proves it. Push and pull use the same gate.
 
-`Ledger.apply` performs accounting and raises `RejectedDelivery` for an impossible transition. It does
-not certify rows. Only a gate receipt with all required checks passing authorizes publication.
+## Store protocol and publication
 
-## Apply plan and gate
+`Store` and `Extractor` are structural `typing.Protocol` interfaces. An extractor implements
+`extract(contract, request)`, returning `(manifest, source)`. The source representation belongs to
+the store. `dogana.deliver(store, contract, source, manifest, now)` owns the shared sequence:
 
-`ApplyPlan` is a value describing ordered `Action` values: `replace_all`, `replace_window`, `upsert`,
-`tombstone`, `append`. Replacing a window deletes published rows inside it, matches candidate keys and
-inserts the candidate. Upsert matches the contract key against candidate rows; named-key coverage also
-verifies the manifest's enumeration. Tombstones delete exactly their named keys. Append inserts without
-matching. A keyless complete delivery replaces its coverage without key matching. The core never reads rows or executes a plan.
+1. Load the ledger and compare `publication_stamp(table)` with its head. Consult
+   `accepted_receipt(manifest.identity)` before preflight; a replay returns the stored receipt with
+   `replayed=True`, preserving original receipt identity and `received_at`, without changing rows.
+2. Preflight the declaration and transition. A rejected declaration is persisted by `save_receipt`.
+3. `hold(source, manifest, contract)` stages a candidate; `check(candidate, contract, manifest,
+   requirements)` answers the gate. Evaluate with required receiver time and source description.
+4. If accepted, `execute(candidate, plan)` prepares row changes and `publish(candidate, receipt)`
+   commits rows and evidence. Execution may be deferred into `publish` for a table-format commit.
+   On rejection, save the receipt. `abort(candidate)` releases staging and rolls back open work.
 
-`Gate.requirements` returns named row checks. A store returns one `Check(name, passed, detail)` for
-each requirement. Missing, duplicate or unexpected outcomes reject the delivery. Core checks validate
-manifest structure, replay identity, base coverage, timestamp continuity, generation continuity and
-monotonic time. Row checks verify exact row count, schema hash against both manifest and contract,
-window containment (null bounds-column values fail), non-null window values, non-null unique keys,
-live-key enumeration and shrink tolerance. A window tombstone may not delete a published key outside
-its window. A keyed row that moves into a window is admitted and the plan removes its earlier copy;
-a row that moves out of a window leaves a hole the gate cannot see, which is why the window value is
-a source guarantee. A check that cannot be evaluated because an earlier check failed is reported
-with its name, `passed` false and the detail `not evaluated`, never with a predicate detail. Checks
-verify the delivered rows, not whether the source told the truth. `max_shrink_fraction` defaults
-to one half and is disabled only by an explicit `None`.
+The primitives also include `load_ledger(contract)`, `receipts(table=None)` in persistence order
+and `repair(contract)`. Optional `read(table, publication_id=None)` and `store.deliver` conveniences
+are not required by `Store`; delivery conveniences delegate to the core.
 
-`Gate.evaluate` combines core checks and store outcomes into a `Receipt`: manifest, checks, acceptance,
-`received_at` (the receiver's `now`), `replayed`, an optional `source` description the store
-supplies, transition (before/after regions and plan), resulting ledger and claims at `received_at`,
-receipt identity and publication identity. A rejected receipt references the existing publication. Receipt indexing uses the receiver
-contract table, even when the rejected manifest names a different table. A successful publication identity is
-a hash of the previous publication, contract and manifest identities. Receipt identity also includes
-check outcomes. Readers recompute ledger claims with their current time to evaluate freshness. The audit history includes rejected attempts without making them publications. A failure after
-commit cannot turn a publication into a rejection: the store returns the committed receipt on retry
-or after recovering from cleanup failure. Unexpected exceptions and interrupts release staged
-candidates and roll back any open transaction before propagating; an error must not leave a
-half-executed candidate on a reusable connection.
+The store must satisfy six obligations:
 
-## Claims and pull planning
+1. Check candidate rows before published rows change; execute only an accepted receipt's plan.
+2. Publish rows, stamp, ledger and accepted receipt as one atomic step: either one transaction,
+   or a table-format commit carrying the full receipt or a reference to an already durable receipt.
+   Ordered writes plus idempotent plans are not atomic. Accounting alone offers no publication guarantee.
+3. Compare and set against `receipt.base_publication_id`. Refuse a changed head, including cached
+   checks against a stale base. A commit retry may not silently rebase an already approved plan.
+4. Persist accepted and rejected receipts; retain accepted receipts in publication order for recovery.
+5. Replay accepted manifest identity by returning its original receipt, with no second publication.
+6. Read rows and claims under one publication identity; separate current reads can straddle a commit.
 
-`Ledger.claims(now, limit, window)` clips to the requested window (default whole domain). `Claims`
-contains each table/region/state and the minimum of each date; either aggregate date is absent if any
-region is unknown. `Claims.combine` takes the same minima across tables. State priority is unknown,
-expired, patched, complete; the individual regions retain every other weakness.
+The publication chain is SHA-256 of UTF-8 `f"{previous}:{contract.identity}:{manifest.identity}"`;
+the initial `previous` is the literal string `None`. It includes the full contract identity.
+The stamp associates rows with that head; it is not a row checksum. Comparing it with the ledger
+finds a ledger behind rows or external publication that changed the stamp. It cannot detect silent
+row edits preserving the stamp, lost rejected receipts or joint loss of all evidence. Surviving
+receipts or stamps disprove a fresh start when a ledger is missing. Stores must fail closed.
 
-A table's aggregate dates are lower bounds: every region is complete as of at least
-`complete_as_of`, not the table at one instant. `Claims.combine` is the same lower bound across
-tables. A query inherits those bounds only when it is monotone (a join, a filter, a union, an
-aggregate over the inputs): a missing input row can only remove output rows, a ghost row can only
-add them. Under negation (NOT EXISTS, an anti-join, a difference) the roles swap for the negated
-input: a ghost row in the subtrahend removes a true answer, so the query's completeness depends on
-the subtrahend's validity and the query's validity on its completeness. "Items with no movement"
-computed over a patched movements table is valid but incomplete. The protocol gives the dates; the
-reader applies the polarity of the query.
+`Ledger.from_receipts(contract, receipts)` folds accepted receipts in publication order and checks
+their ledgers and chain, ignoring rejections. Missing, reordered or foreign acceptances refuse
+reconstruction. `repair` restores the ledger only when the reconstructed head equals the stamp;
+it never relabels rows from ledger evidence. Rows require retained store versions to reconstruct.
 
-`Requirement` names a table, minimum completeness date, optional minimum validity date and optional
-window. `plan_delivery` returns no request when claims suffice, otherwise the admitted shape with the
-lowest declared cost that can establish the requirement, breaking ties by shape name. An unknown base
-or stale deletion knowledge excludes change feeds from proving current validity. Finite window
-requirements can use complete windows; whole-domain requirements need whole-domain evidence. If no
-shape suffices, `PlanningError` explains the failure. Cost is a contract estimate, not a measured query
-optimizer. `next_extraction` derives a rolling window from `window_size` and `until`, anchored to the ledger:
-the window starts at the earlier of `until` minus the size and the first instant after the newest
-complete evidence below `until`, so a late run leaves no unknown sliver behind it. A timestamp
-interval runs from the weakest covered completeness boundary to `until`. `plan_delivery` reads a
-requirement as minima and chooses a read boundary that is admissible, the later of the required date
-and the newest covered evidence plus one unit, so a feasible later snapshot is never reported
-impossible. A scheduler's logical date is not a read boundary. Each candidate request is simulated
-against the ledger before it can be chosen; tombstones with an already sufficient validity date may
-still be the cheapest way to advance completeness. Generation requests use the held cursor.
-A request's `until` becomes the manifest's source boundary after extraction.
+## Algebraic guarantees
 
-## Store obligations
-
-The core never writes rows. Whoever does, a reference store or a user's own loader, meets the
-obligations below; together they are the store contract, and the conformance suite checks them.
-
-1. Checks before rows. Every `CheckRequirement` the gate names is answered against the candidate
-   rows before any published row changes, and the plan executes only for an accepted receipt.
-2. One publication. A publication is one accepted manifest, its candidate, its checks against a
-   named base publication, the resulting rows and ledger, and its accepted receipt. The store
-   exposes them as one committed step, the publication point, and a rejected delivery leaves rows
-   and ledger unchanged. Two mechanisms give that step:
-   - one transaction, when rows and ledger live in the same engine: rows, ledger, receipt and
-     stamp commit together or not at all;
-   - one table-format commit, when rows live in Iceberg, Delta or DuckLake: the commit carries the
-     full receipt (or a reference to an already durable one), the expected parent publication and
-     the resulting publication identity, and the ledger is derived from the committed history.
-   Ordered writes with idempotent plans are not a third mechanism: a crash between rows and ledger
-   leaves a stale ledger that a replay then confirms as success. A loader without either mechanism
-   may use the core for accounting and must say that its publications are unprotected.
-3. Compare and set. The checks, the plan and the receipt are computed against a base publication.
-   The publication point refuses when the current publication is not that base, so two writers
-   cannot both publish from the same ledger, and cached check outcomes are never reused against a
-   different base.
-4. Receipts are kept, in order. Every receipt, accepted or rejected, is persisted; the accepted ones
-   in publication order reconstruct the ledger and its identity chain. Order matters: two disjoint
-   windows commute on regions but not on the chain.
-5. Replay returns the stored receipt. A manifest whose identity is already accepted produces no
-   second publication; the store answers with the receipt it holds, marked as a replay.
-6. One publication per read. A reader that combines rows and claims reads both under one
-   publication identity; current rows and a separately loaded ledger can straddle a commit.
-
-The publication stamp is the store's record of the current publication identity, written next to
-the rows at the publication point. `load_ledger` compares the stamp with the ledger and refuses
-deliveries while they differ. The stamp detects exactly two faults: a ledger behind the rows (a
-crash after the publication point on a store whose ledger is a cache, repaired by folding the
-receipts) and rows replaced outside the gate that moved the stamp (repaired only by a complete
-delivery). It is an association label, not a checksum: it does not detect row edits that leave the
-stamp in place, lost rejected receipts, or the joint loss of stamp and ledger, and a store that
-promises those adds content digests or a retained trusted head. No stamp, no ledger and no accepted
-receipts is a new table; retained accepted receipts disprove a fresh start.
-
-`Ledger.from_receipts(contract, receipts)` ignores rejected attempts, folds accepted receipts in
-publication order and checks each resulting ledger and publication identity; a missing, reordered or
-foreign accepted receipt refuses reconstruction. `repair(contract)` restores only a ledger whose
-reconstructed publication equals the stamp; it never stamps rows from ledger evidence.
+The same initial ledger and ordered accepted history produce the same ledger. Store delivery is
+replay-idempotent by accepted-receipt lookup; `Ledger.apply` itself is not. Disjoint complete or
+timestamp windows commute on regional evidence when both orders are admissible, but not on the
+publication chain. The fold is not a join-semilattice or a merge of concurrent ledgers: order,
+continuity and row replacement constrain admissibility. Rejection and shrink policy apply per
+manifest, not to an arbitrary batch or cumulative history.
 
 ## Contract evolution
 
-A table's history binds `table`, `key`, `window_column` and the types of the window column and the
-key; those cannot change, and a store refuses a contract that changes them. Everything else may
-change between deliveries: `freshness`, `max_shrink_fraction`, shape costs and window sizes, new
-shapes, and schema columns that are neither key nor window. The publication identity hashes the
-contract, so the chain records exactly which contract each publication was judged against.
-
-## Interfaces and entry points
-
-`Store` and `Extractor` are `typing.Protocol` interfaces, not base classes. A store exposes
-`deliver(contract, source, manifest)` as the gated push facade, holds a candidate, runs required
-checks, executes a plan, publishes rows with ledger and receipt, aborts on failure, reads a
-publication, loads a ledger, persists and lists receipts, and repairs a ledger from receipts. `Extractor.extract(contract, request)` returns a
-manifest and an opaque row source consumable by a store. Extraction and storage are outside the core.
-
-Push supplies a source plus manifest. Pull passes an `ExtractionRequest` to an extractor, then submits
-the returned source and manifest through the same gate. The next request comes from required claims or
-from `next_extraction`. Both modes produce identical ledgers for identical deliveries. A file feed may declare its shape
-once at the receiver when filenames omit it. A declared filename pattern supplies the source read
-boundary; missing row counts are counted from the file. A window without named bounds derives its
-closed interval from the shape's `window_size`, ending at that UTC boundary (UTC calendar dates for DATE).
-Missing shape evidence or missing bounds without a window size are refused. File arrival time is
-never evidence of a source read boundary.
-
-A loader that is not a `Store` can still meet the obligations with the core alone: load the ledger,
-`manifest.check(contract)`, `Gate.requirements`, run the checks, `Gate.evaluate`, execute
-`receipt.transition.plan`, save `receipt.ledger` and the receipt under obligation 2. The conformance
-suite in `dogana.conformance` runs the same scenarios against any store object and is the proof a
-store meets the contract. Reference stores and their constraints are described in
-[reference](reference.md).
+History binds `table`, `key`, `window_column` and the types of key/window columns. Stores refuse
+changes to these bindings. Other fields may evolve, including freshness, shrink policy, costs,
+window sizes, lookback, admitted shapes and nonbinding schema columns. Each accepted receipt retains
+the contract used for that decision. The full contract, including policy with normalized numeric
+spelling, participates in the chain; only binding differences cause history refusal.
+`Ledger.with_contract(contract)` verifies compatibility and preserves regions, generation and head.
+Reconstruction uses each accepted receipt's historical contract before applying the requested compatible contract.
 
 ## Versioned JSON
 
-Every structured value has `version: 1` and `kind` equal to its public class name. Field names match
-constructor arguments. Every field is present, including null and empty defaults; otherwise a lost
-field could silently change the declaration or its identity during decoding. Missing fields are
-refused, as are overflowing scalar tags, through `SerializationError`. Tuples encode as arrays, enums as their string values, mappings as objects.
-Wire field types are checked before constructor normalization; an array cannot stand in for a mapping
-and a string cannot stand in for a key tuple. Scalar-tag names remain valid shape names.
-UTC datetimes encode as `{"$datetime":"2026-10-18T00:00:00+00:00"}`, dates as
-`{"$date":"2026-10-18"}`, durations as `{"$seconds":604800.0}`. Other supported bounds are strings
-and integers. Type tags distinguish an ISO-looking plant code from a date. Unsupported versions,
-unknown kinds, unknown fields, invalid types and naive datetimes are refused. Canonical JSON uses
-sorted keys, compact separators and ASCII escapes, and is the wire form. The identity form is the
-canonical JSON of a value with `version` removed, every field equal to its default omitted, `keys`
-and `tombstones` sorted, integral floats written as integers and datetimes as UTC with `+00:00`.
-An identity therefore survives a version that adds an optional field, and two implementations that
-follow this page compute the same identity; the examples carry their identities as test vectors. `to_dict/from_dict` and `to_json/from_json` round-trip every public
-wire value, including nested ledger and receipt values. Persistence belongs to the store.
+Structured wire values have `version: 1` and `kind` equal to the public class name. Field names match
+constructor arguments; every field, including defaults, is present. Tuples encode as arrays, enums
+as strings, mappings as objects. Missing or unknown fields, unsupported versions/kinds, invalid
+wire types, overflowing tags and naive datetimes raise `SerializationError` before normalization.
 
-A full shape and its manifest are:
+Dates use `{"$date":"2026-10-18"}`, UTC datetimes
+`{"$datetime":"2026-10-18T00:00:00+00:00"}`, durations `{"$seconds":604800.0}`. Canonical wire JSON
+uses sorted keys, compact separators and ASCII escapes. Identity is SHA-256 of the UTF-8 identity
+form: recursively omit `version` and fields equal to defaults; sort keys/tombstones lexically by
+each tuple's compact canonical JSON (`[10]` before `[2]`); normalize integral floats to integers
+and datetimes to UTC `+00:00`. Always exclude `Receipt.replayed`, even when true, so replay preserves
+the original receipt identity. `identity_dict()` and `identity_json()` expose this form. Do not hash sidecar bytes.
+Compatible future optional fields at defaults preserve identity; semantic changes need explicit
+migration. Unknown wire versions are refused even when their identity form would be compatible.
 
-```json
-{"version":1,"kind":"Shape","coverage":"all","completeness":"complete","deletions":"absence","checkpoint":"none","cost":1,"window_size":null}
-```
-
-```json
-{"version":1,"kind":"Manifest","table":"stock","shape":"full","produced_at":{"$datetime":"2026-10-18T00:00:00+00:00"},"window":null,"since":null,"generation":null,"rows":2,"schema_hash":null,"keys":[],"tombstones":[]}
-```
-
-Complete executable wire examples are [contract](examples/contract.json),
-[manifest](examples/manifest.json), [ledger](examples/ledger.json) and [receipt](examples/receipt.json).
-The tests decode them, replay their delivery and reproduce the ledger and receipt.
-
-A contract encodes `shapes` as an object of these shape values and `schema` as an array of
-`{"version":1,"kind":"Column","name":"id","type":"int"}` values. A ledger embeds that contract,
-its region array, generation, accepted identity array and publication identity. A receipt embeds the
-manifest, checks, transition, resulting ledger and claims. Replaying accepted manifests from receipts
-reconstructs ledger evidence; reconstructing historical rows still needs the store's publications.
+`to_dict/from_dict` and `to_json/from_json` round-trip nested values. A ledger embeds contract,
+regions, generation and publication head; a receipt embeds its decision and resulting ledger.
+[Contract](examples/contract.json), [manifest](examples/manifest.json), [ledger](examples/ledger.json)
+and [receipt](examples/receipt.json) are executable wire examples. Identity fixtures specify exact
+bytes and hashes for independent implementations.
 
 ## Boundaries
 
-The protocol declares, verifies, accounts and answers claims. Extraction belongs to dlt, Airbyte,
-Spark or an existing script; scheduling to an orchestrator; business row rules to a quality tool; rows
-to a store or table format. The core imports only the Python standard library and works with every
-reference implementation removed. Reference implementations perform all I/O behind optional extras.
+The core uses only Python's standard library; reference stores and conformance support are separate.
+The [reference guide](reference.md) describes concrete transports and the six-call accounting path.
+The conformance suite exercises publication obligations against store implementations; passing it
+is evidence for those scenarios, not a proof of arbitrary storage or source correctness.
