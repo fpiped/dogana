@@ -166,3 +166,41 @@ def test_seeded_append_intervals_replays_and_gaps_keep_retained_history_exact(tm
                 assert store.deliver(c, object(), old.manifest) == old
             assert store.read(c.table) == sorted(events, key=lambda r: r["event"])
             assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
+
+
+def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_without_new_publications(
+    tmp_path,
+):
+    from dataclasses import replace
+
+    from tests.integration.support import row, sidecar
+    from tests.support import contract
+
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        source = csv_file(tmp_path, "base.csv", [row(1), row(2)])
+        first = store.deliver(c, source, sidecar(source, c, "full", 18, 2, generation="g1"))
+        source = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
+        manifest = sidecar(source, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),))
+        second = store.deliver(c, source, manifest)
+        assert first.accepted and second.accepted
+        bad_window = Manifest(
+            c.table,
+            "daily",
+            first.manifest.produced_at,
+            window=(row(1)["day"], row(2)["day"]),
+            rows=1,
+            schema_hash=c.schema_hash,
+        )
+        broken = replace(manifest, produced_at=manifest.produced_at + timedelta(days=1), since="restored")
+        for attempt in (first.manifest, bad_window, broken, manifest, bad_window, broken, first.manifest):
+            receipt = store.deliver(c, source, attempt)
+            if attempt.identity == first.manifest.identity:
+                assert receipt == first
+            elif attempt.identity == manifest.identity:
+                assert receipt == second
+            else:
+                assert not receipt.accepted
+            assert store.load_ledger(c) == second.ledger == Ledger.from_receipts(c, store.receipts(c.table))
+            assert store.read(c.table) == [row(1), row(2, value="changed")]
+        assert sum(r.accepted for r in store.receipts(c.table)) == 2

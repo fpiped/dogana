@@ -97,3 +97,38 @@ def test_repair_cannot_rewind_a_ledger_that_is_ahead_of_the_last_retained_receip
             store.repair(c)
         with pytest.raises(InconsistentPublication, match="ledger ahead"):
             store.load_ledger(c)
+
+
+def test_a_lost_ledger_cannot_hide_a_case_alias_of_stamped_rows(tmp_path):
+    from dogana import InvalidContract
+
+    c = contract("Moves")
+    with DuckDBStore(":memory:") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        assert store.deliver(c, path, sidecar(path, c, "full", 18, 1)).accepted
+        store.connection.execute("DELETE FROM __dogana_ledgers")
+        with pytest.raises(InvalidContract, match="letter case"):
+            store.load_ledger(contract("moves"))
+        assert store.repair(c).publication_id is not None
+
+
+def test_retained_receipts_prevent_missing_ledger_and_stamp_from_looking_like_a_new_table(tmp_path):
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        first = store.deliver(c, path, sidecar(path, c, "full", 18, 1))
+        store.connection.execute("DELETE FROM __dogana_ledgers")
+        store.connection.execute("DELETE FROM __dogana_publications")
+        store.connection.execute('DELETE FROM "moves"')
+        with pytest.raises(InconsistentPublication, match="missing"):
+            store.load_ledger(c)
+        with pytest.raises(InconsistentPublication):
+            store.deliver(c, object(), first.manifest)
+        with pytest.raises(InconsistentPublication, match="complete delivery"):
+            store.repair(c)
+        path = csv_file(tmp_path, "recovered.csv", [row(2)])
+        recovered = store.deliver(c, path, sidecar(path, c, "full", 19, 1))
+        assert recovered.accepted
+        assert store.load_ledger(c) == Ledger.from_receipts(c, store.receipts(c.table))
+        assert len(recovered.ledger.accepted) == 2
+        assert store.read(c.table) == [row(2)]

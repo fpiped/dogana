@@ -153,6 +153,10 @@ class Contract(Wire):
             if c.name in self.key or c.name == self.window_column
         ):
             raise InvalidContract("key and window columns must use ordered scalar logical types")
+        if any(
+            c.name == self.window_column and c.type not in ("date", "datetime") for c in self.schema
+        ) and any(shape.window_size is not None for shape in self.shapes.values()):
+            raise InvalidContract("duration windows need a date or datetime column")
         if any(c.name == self.window_column and c.type == "date" for c in self.schema) and any(
             shape.window_size is not None and shape.window_size.total_seconds() % 86400
             for shape in self.shapes.values()

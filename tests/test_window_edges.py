@@ -60,3 +60,13 @@ def test_distinct_fall_back_datetime_keys_are_not_mistaken_for_duplicates():
     manifest = Manifest(c.table, "feed", at(26), since=at(25), keys=keys)
     manifest.check(c)
     assert manifest.keys[0] != manifest.keys[1]
+
+
+def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_gap():
+    rome = ZoneInfo("Europe/Rome")
+    low = datetime(2026, 3, 29, 1, 30, tzinfo=rome)
+    high = datetime(2026, 3, 29, 3, 30, tzinfo=rome)
+    region = Region(low, high)
+    assert region.high - region.low == timedelta(hours=1)
+    assert region.low == datetime(2026, 3, 29, 0, 30, tzinfo=UTC)
+    assert region.high == datetime(2026, 3, 29, 1, 30, tzinfo=UTC)

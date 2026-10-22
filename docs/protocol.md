@@ -35,7 +35,8 @@ logical types.
 A `Shape` has four semantic properties, plus a nonnegative relative extraction `cost` (default one)
 and an optional positive `window_size` duration for automatic rolling-window planning. DATE windows
 count calendar dates, including the final date: thirty days ending October 19 start September 20.
-Their width must be a whole number of days. Datetime windows span the duration with both endpoints
+Their width must be a whole number of days. A declared integer or string window column cannot
+use a duration: rolling duration windows require date or datetime values. Datetime windows span the duration with both endpoints
 included:
 
 | Property | Values | Meaning |
@@ -147,7 +148,9 @@ a hash of the previous publication, contract and manifest identities. Receipt id
 check outcomes. Receipt claims use the supplied `now`, defaulting to the source read boundary for a
 deterministic decision. Readers recompute ledger claims with their current time to evaluate freshness. The audit history includes rejected attempts without making them publications. A failure after
 commit cannot turn a publication into a rejection: the store returns the committed receipt on retry
-or after recovering from cleanup failure.
+or after recovering from cleanup failure. Unexpected exceptions and interrupts release staged
+candidates and roll back any open transaction before propagating; an error must not leave a
+half-executed candidate on a reusable connection.
 
 ## Claims and pull planning
 
@@ -199,8 +202,10 @@ previous publication, the contract and the accepted manifest. A store writes the
 in the same step as the rows. `load_ledger` compares the stamp with the ledger's `publication_id`
 and raises `InconsistentPublication` while they differ: a stamp ahead of the ledger means a crash between
 rows and ledger, repaired by folding the receipts; a ledger ahead of the stamp means rows were
-replaced outside the gate, repaired only by a complete delivery. No stamp and no ledger is a new
-table. A new complete whole-domain delivery may recover rows behind the ledger; replay cannot,
+replaced outside the gate, repaired only by a complete delivery. No stamp, no ledger and no accepted receipts is a new
+table. Retained accepted receipts disprove a fresh start: losing both metadata records refuses
+replay and requires a new complete delivery using the retained chain as its base. Otherwise an
+old receipt could authorize claims about rows whose stamp has been lost. A new complete whole-domain delivery may recover rows behind the ledger; replay cannot,
 because returning an old receipt does not execute its plan. Partial deliveries remain refused.
 `Ledger.from_receipts(contract, receipts)` ignores rejected attempts, folds accepted receipts in
 persistence order and checks each resulting ledger and publication identity. A missing, reordered
@@ -223,7 +228,7 @@ the returned source and manifest through the same gate. The next request comes f
 from `next_extraction`. Both modes produce identical ledgers for identical deliveries. A file feed may declare its shape
 once at the receiver when filenames omit it. A declared filename pattern supplies the source read
 boundary; missing row counts are counted from the file. A window without named bounds derives its
-closed interval from the shape's `window_size`, ending at that boundary (calendar dates for DATE).
+closed interval from the shape's `window_size`, ending at that UTC boundary (UTC calendar dates for DATE).
 Missing shape evidence or missing bounds without a window size are refused. File arrival time is
 never evidence of a source read boundary.
 

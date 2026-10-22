@@ -165,10 +165,10 @@ assert Ledger.from_receipts(memory_contract, memory_state[2]) == memory_state[1]
 
 A production loader meets four obligations:
 
-- Check candidate rows before changing published rows.
-- Publish rows, stamp, ledger and receipt together, or use the protocol's recovery ordering.
-- Keep accepted and rejected receipts so evidence can be rebuilt.
-- Return the stored receipt for an accepted manifest replay.
+- Checks before rows.
+- Rows and ledger move together, including stamp and receipt.
+- Receipts are kept, including rejections.
+- Replay returns the stored receipt.
 
 Run `dogana.conformance.StoreConformance` against your store; [reference](docs/reference.md) shows
 the factory and fault hooks. The example above handles a full replacement only.
@@ -227,8 +227,9 @@ so push and pull produce the same ledger for the same deliveries.
 - Not a quality monitor. Soda or Great Expectations test row values; dogana tracks what a delivery proved.
 - Not a store. Rows live in DuckDB, Postgres, Iceberg or DuckLake. The store executes plans the core emits as values.
 
-The DuckDB store and file drop are reference implementations. [Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg,
-DuckLake, Dagster and the observability tools. [Architecture](docs/architecture.md) explains the
+The DuckDB store and file drop are reference implementations.
+[Integrations](docs/integrations.md) explains how dogana sits next to dlt, dbt, Iceberg, DuckLake,
+Dagster and the observability tools. [Architecture](docs/architecture.md) explains the
 design and what it borrows from projects that got these questions right.
 
 ## Who should not use it
@@ -246,7 +247,7 @@ one.
 
 ## Status
 
-Protocol version 1, no release yet. 225 tests cover transitions, JSON, planning, runnable README
+Protocol version 1, no release yet. 280 tests cover transitions, JSON, planning, runnable README
 examples and store obligations. A conformance suite proves a store; DuckDB and file drop are
 reference implementations. Contract evolution remains open.
 

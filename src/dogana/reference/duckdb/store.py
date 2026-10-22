@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from functools import wraps
 from pathlib import Path
 from threading import Lock, RLock
@@ -79,6 +80,8 @@ class DuckDBStore:
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_receipts
             (receipt_id VARCHAR PRIMARY KEY, table_name VARCHAR, manifest_id VARCHAR,
              accepted BOOLEAN, publication_id VARCHAR, document VARCHAR NOT NULL)""")
+        self.connection.execute("""CREATE INDEX IF NOT EXISTS __dogana_manifest_lookup
+            ON __dogana_receipts (table_name, manifest_id)""")
         self.connection.execute("""CREATE TABLE IF NOT EXISTS __dogana_publications
             (table_name VARCHAR PRIMARY KEY, publication_id VARCHAR NOT NULL)""")
         self._candidates: dict[str, tuple[Manifest, bool]] = {}
@@ -107,11 +110,14 @@ class DuckDBStore:
 
     def _check_table_spelling(self, table: str) -> None:
         identifier(table)
-        row = self.connection.execute(
-            "SELECT table_name FROM __dogana_ledgers WHERE lower(table_name)=lower(?)", [table]
-        ).fetchone()
-        if row and row[0] != table:
-            raise InvalidContract("DuckDB table identities must retain their registered letter case")
+        for registry in ("__dogana_ledgers", "__dogana_publications", "__dogana_receipts"):
+            row = self.connection.execute(
+                f"SELECT table_name FROM {registry} WHERE lower(table_name)=lower(?) LIMIT 1", [table]
+            ).fetchone()
+            if row:
+                if row[0] != table:
+                    raise InvalidContract("DuckDB table identities must retain their registered letter case")
+                return
 
     def _stored_ledger(self, contract: Contract) -> Ledger:
         self._check_table_spelling(contract.table)
@@ -143,6 +149,14 @@ class DuckDBStore:
     def load_ledger(self, contract: Contract) -> Ledger:
         ledger = self._stored_ledger(contract)
         stamp = self._stamp(contract.table)
+        if (
+            stamp is None
+            and ledger.publication_id is None
+            and self.connection.execute(
+                "SELECT 1 FROM __dogana_receipts WHERE table_name=? AND accepted LIMIT 1", [contract.table]
+            ).fetchone()
+        ):
+            raise InconsistentPublication("ledger and stamp missing for retained accepted receipts")
         if stamp != ledger.publication_id:
             side = "ledger" if self._ledger_ahead(ledger, stamp) else "stamp"
             raise InconsistentPublication(f"{side} ahead of {'stamp' if side == 'ledger' else 'ledger'}")
@@ -153,9 +167,12 @@ class DuckDBStore:
             return self.load_ledger(contract)
         except InconsistentPublication:
             ledger = self._stored_ledger(contract)
+            stamp = self._stamp(contract.table)
+            if stamp is None and ledger.publication_id is None:
+                ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
             shape = manifest.check(contract)
             if not (
-                self._ledger_ahead(ledger, self._stamp(contract.table))
+                self._ledger_ahead(ledger, stamp)
                 and shape.complete
                 and shape.coverage is Coverage.ALL
                 and manifest.identity not in ledger.accepted
@@ -180,17 +197,45 @@ class DuckDBStore:
 
     @_synchronized
     def receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
-        sql = "SELECT document FROM __dogana_receipts"
+        sql = "SELECT table_name, manifest_id, accepted, document FROM __dogana_receipts"
         params = []
         if table is not None:
             sql += " WHERE table_name=?"
             params.append(table)
-        return tuple(
-            Receipt.from_json(r[0])
-            for r in self.connection.execute(sql + " ORDER BY rowid", params).fetchall()
-        )
+        rows = self.connection.execute(sql + " ORDER BY rowid", params).fetchall()
+        prefixes: dict[str, list[str]] = {}
+        receipts = []
+        for name, manifest_id, accepted, document in rows:
+            prefix = prefixes.setdefault(name, [])
+            if accepted:
+                prefix.append(manifest_id)
+            receipts.append(self._receipt(document, name, prefix))
+        return tuple(receipts)
+
+    def _receipt(self, document: str, table: str, prefix: list[str] | None = None) -> Receipt:
+        value = json.loads(document)
+        accepted = value["ledger"]["accepted"]
+        if isinstance(accepted, dict) and set(accepted) == {"prefix"}:
+            count = accepted["prefix"]
+            if type(count) is not int or count < 0:
+                raise InconsistentPublication("invalid accepted receipt prefix")
+            if prefix is None:
+                prefix = [
+                    r[0]
+                    for r in self.connection.execute(
+                        "SELECT manifest_id FROM __dogana_receipts WHERE table_name=? AND accepted "
+                        "ORDER BY rowid LIMIT ?",
+                        [table, count],
+                    ).fetchall()
+                ]
+            if len(prefix) < count:
+                raise InconsistentPublication("accepted receipt prefix is missing")
+            value["ledger"]["accepted"] = prefix[:count]
+        return Receipt.from_dict(value)
 
     def save_receipt(self, receipt: Receipt) -> None:
+        document = receipt.to_dict()
+        document["ledger"]["accepted"] = {"prefix": len(receipt.ledger.accepted)}
         self.connection.execute(
             """INSERT OR IGNORE INTO __dogana_receipts VALUES (?, ?, ?, ?, ?, ?)""",
             [
@@ -199,7 +244,7 @@ class DuckDBStore:
                 receipt.manifest.identity,
                 receipt.accepted,
                 receipt.publication_id,
-                receipt.to_json(),
+                json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False),
             ],
         )
 
@@ -383,6 +428,7 @@ class DuckDBStore:
         expected = Gate.evaluate(current, self._candidates[candidate][0], checks)
         if receipt != expected:
             raise ValueError("receipt does not authorize this candidate against the current publication")
+        self._record_history(candidate, receipt)
         self.save_receipt(receipt)
         self.connection.execute(
             "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)",
@@ -392,11 +438,37 @@ class DuckDBStore:
             "INSERT OR REPLACE INTO __dogana_ledgers VALUES (?, ?)",
             [contract.table, receipt.ledger.to_json()],
         )
-        snapshot = _quote("__dogana_version_" + receipt.publication_id)
-        self.connection.execute(f"CREATE TABLE {snapshot} AS SELECT * FROM {_quote(contract.table)}")
         self.connection.execute("COMMIT")
         self._transaction = None
         self._release(candidate)
+
+    def _record_history(self, candidate: str, receipt: Receipt) -> None:
+        contract = receipt.ledger.contract
+        history = _quote("__dogana_history_" + contract.table)
+        target = _quote(contract.table)
+        sequence = len(receipt.ledger.accepted)
+        self.connection.execute(
+            f"CREATE TABLE IF NOT EXISTS {history} AS SELECT *, "
+            f"0::BIGINT AS __dogana_from, NULL::BIGINT AS __dogana_until FROM {target} WHERE false"
+        )
+        if not contract.key:
+            self.connection.execute(
+                f"INSERT INTO {history} SELECT *, ?, NULL FROM {_quote(candidate)}", [sequence]
+            )
+            return
+        same = " AND ".join(
+            f"h.{_quote(c.name)} IS NOT DISTINCT FROM p.{_quote(c.name)}" for c in contract.schema
+        )
+        self.connection.execute(
+            f"UPDATE {history} AS h SET __dogana_until=? WHERE __dogana_until IS NULL "
+            f"AND NOT EXISTS (SELECT 1 FROM {target} p WHERE {same})",
+            [sequence],
+        )
+        self.connection.execute(
+            f"INSERT INTO {history} SELECT p.*, ?, NULL FROM {target} p WHERE NOT EXISTS "
+            f"(SELECT 1 FROM {history} h WHERE h.__dogana_until IS NULL AND {same})",
+            [sequence],
+        )
 
     def _release(self, candidate: str) -> None:
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(candidate)}")
@@ -417,10 +489,11 @@ class DuckDBStore:
         with self._lock:
             ledger = self._base(contract, manifest)
             old = self.connection.execute(
-                "SELECT document FROM __dogana_receipts WHERE manifest_id=? AND accepted", [manifest.identity]
+                "SELECT document FROM __dogana_receipts WHERE table_name=? AND manifest_id=? AND accepted",
+                [contract.table, manifest.identity],
             ).fetchone()
             if old:
-                return Receipt.from_json(old[0])
+                return self._receipt(old[0], contract.table)
             if not all(c.passed for c in Gate.preflight(ledger, manifest)):
                 receipt = Gate.evaluate(ledger, manifest)
                 self.save_receipt(receipt)
@@ -439,9 +512,11 @@ class DuckDBStore:
                     self.abort(candidate)
                     self.save_receipt(receipt)
                 return receipt
-            except (duckdb.Error, OSError, ValueError, TypeError) as exc:
+            except BaseException as exc:
                 for held in set(self._candidates) - held_before:
                     self.abort(held)
+                if not isinstance(exc, (duckdb.Error, OSError, ValueError, TypeError)):
+                    raise
                 old = self.connection.execute(
                     "SELECT document FROM __dogana_receipts "
                     "WHERE table_name=? AND manifest_id=? AND accepted",
@@ -449,7 +524,7 @@ class DuckDBStore:
                 ).fetchone()
                 if old:
                     self.load_ledger(contract)
-                    return Receipt.from_json(old[0])
+                    return self._receipt(old[0], contract.table)
                 receipt = Gate.evaluate(ledger, manifest, checks + (Check("execution", False, str(exc)),))
                 self.save_receipt(receipt)
                 return receipt
@@ -457,16 +532,25 @@ class DuckDBStore:
     @_synchronized
     def read(self, table: str, publication_id: str | None = None) -> list[dict]:
         self._check_table_spelling(table)
-        target = table
+        target = _quote(table)
+        query = f"SELECT * FROM {target}"
+        params = []
         if publication_id is not None:
-            exists = self.connection.execute(
-                """SELECT count(*) FROM __dogana_receipts
+            row = self.connection.execute(
+                """SELECT document FROM __dogana_receipts
                 WHERE table_name=? AND publication_id=? AND accepted""",
                 [table, publication_id],
-            ).fetchone()[0]
-            if not exists:
+            ).fetchone()
+            if row is None:
                 raise KeyError("unknown table publication")
-            target = "__dogana_version_" + publication_id
-        cursor = self.connection.execute(f"SELECT * FROM {_quote(target)} ORDER BY ALL")
+            receipt = self._receipt(row[0], table)
+            columns = ", ".join(_quote(c.name) for c in receipt.ledger.contract.schema)
+            sequence = len(receipt.ledger.accepted)
+            query = (
+                f"SELECT {columns} FROM {_quote('__dogana_history_' + table)} "
+                "WHERE __dogana_from <= ? AND (__dogana_until IS NULL OR __dogana_until > ?)"
+            )
+            params = [sequence, sequence]
+        cursor = self.connection.execute(query + " ORDER BY ALL", params)
         names = [c[0] for c in cursor.description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]

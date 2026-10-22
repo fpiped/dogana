@@ -133,3 +133,9 @@ def test_date_windows_cannot_request_fractional_calendar_days():
 
     with pytest.raises(InvalidContract, match="whole number of days"):
         contract(shapes={"daily": replace(WINDOW, window_size=timedelta(hours=12))})
+
+
+@pytest.mark.parametrize("column_type", ["int", "str"])
+def test_a_duration_cannot_define_a_rolling_window_over_integer_or_string_partitions(column_type):
+    with pytest.raises(InvalidContract, match="date or datetime"):
+        contract(schema=(Column("id", "int"), Column("day", column_type), Column("value", "str")))

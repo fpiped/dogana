@@ -9,11 +9,10 @@ A data system has three verbs. Load moves bytes from a source into landing table
 derives tables from tables. Publish decides what readers see and what they may conclude from it.
 dogana owns the third verb and refuses the other two.
 
-The test for the boundary is the recomputation rule: everything dogana writes must be derivable
-from two inputs, the sequence of accepted manifests and the contract. The ledger passes (it is a
-fold over manifests). Receipts pass (each is a function of ledger, manifest and check outcomes).
-Rows fail (they are the source's), so dogana never owns a row. Schedules fail, so it never owns a
-clock. This rule decides every "should this live in the core" question.
+The ledger is derived from the contract and accepted manifests. Receipts retain the original
+check outcomes and rejected attempts; those audit inputs cannot be recovered from accepted
+manifests alone. Rows and check execution belong to the store. Schedules belong to the caller.
+The core accepts evidence as values and derives decisions without performing I/O.
 
 ## Rules, not implementations
 
@@ -24,17 +23,16 @@ checks before rows, rows and ledger together, receipts kept, replay returns the 
 
 Those obligations are stated as rules because they can be checked mechanically. `dogana.conformance`
 is the check: the same scenarios (a week of files, a contradictory file, a crash after the rows
-changed, a replay, an out-of-order window) run against any object that implements `Store`. A store
-that passes has met the contract, whoever wrote it. That is why the repository ships no catalogue
-of warehouse adapters: the product is the rule and its test, and a warehouse team writes its store
-the way it writes everything else, then runs the suite.
+changed, a replay, an out-of-order window) run against any store facade that delivers, loads a ledger, lists receipts and repairs it. A store
+that passes has met the contract, whoever wrote it. The product is the rule and its test. A warehouse team
+writes its store the way it writes everything else, then runs the suite.
 
 Two reference implementations live in `dogana.reference`, installed under extras: a DuckDB store and
 a file drop that derives a manifest from a filename. They exist so the protocol has a running
 example, the README runs, and the conformance suite has a subject. They are fixtures that happen
 to be usable, not warehouse support.
 
-Dependencies point inward. The reference imports the core; the core imports nothing. A test deletes
+Dependencies point inward. The reference imports the core; the core imports only the standard library. A test deletes
 the reference package and proves the core still validates, applies and answers.
 
 ## Atomicity: three mechanisms and one guard

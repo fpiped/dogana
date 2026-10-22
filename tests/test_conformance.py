@@ -79,6 +79,9 @@ class DuckDBFactory:
         )
 
     def set_stamp(self, store, table, publication_id):
+        if publication_id is None:
+            store.connection.execute("DELETE FROM __dogana_publications WHERE table_name=?", [table])
+            return
         store.connection.execute(
             "UPDATE __dogana_publications SET publication_id=? WHERE table_name=?", [publication_id, table]
         )
@@ -101,3 +104,34 @@ class TestDuckDB(StoreConformance):
     def factory(self, tmp_path, monkeypatch):
         pytest.importorskip("duckdb")
         return DuckDBFactory(tmp_path, monkeypatch)
+
+
+def test_an_ordered_receipt_written_before_a_crash_repairs_the_ledger_before_replay(monkeypatch):
+    from dogana import InconsistentPublication, Ledger
+    from tests.integration.support import row
+    from tests.support import at, contract
+
+    c = contract()
+    store = OrderedMemoryStore()
+    factory = MemoryFactory(OrderedMemoryStore, monkeypatch)
+    suite = StoreConformance()
+    first = suite._deliver(factory, store, c, [row(1)])
+
+    def fail():
+        raise OSError("interrupted after receipt")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_after_receipt", fail)
+        from dogana import Manifest
+
+        manifest = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
+        failed = store.deliver(c, [row(2)], manifest)
+    assert not failed.accepted
+    with pytest.raises(InconsistentPublication, match="stamp ahead"):
+        store.load_ledger(c)
+    replay = store.deliver(c, object(), manifest)
+    assert replay.accepted
+    assert replay.ledger != first.ledger
+    assert store.load_ledger(c) == Ledger.from_receipts(c, store.receipts(c.table))
+    assert factory.read_table(store, c.table) == [row(2)]
+    assert not store.pending

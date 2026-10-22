@@ -12,7 +12,7 @@ dlt extracts, normalises and loads. dogana owns the delivery state. The division
   does not modify its own incremental state, so the read is stateless and dogana remains the only
   owner of "where are we". Note the endpoint conventions: dlt's `initial_value` is inclusive and
   `end_value` exclusive by default (`range_start="closed"`, `range_end="open"`), while a complete
-  dogana window includes both endpoints. An adapter translates.
+  dogana window includes both endpoints. The loader translates the endpoints.
 - dogana's `ApplyPlan` maps onto dlt's merge strategies. `replace_all` is `write_disposition="replace"`.
   `upsert` is the `upsert` strategy. `tombstone` is the `hard_delete` hint. `replace_window` is
   the `cdc` strategy (documented as treating the load as a complete snapshot and deleting what the
@@ -23,7 +23,7 @@ dlt extracts, normalises and loads. dogana owns the delivery state. The division
   complete or whether deletions were observed. The dogana ledger adds exactly that, keyed by the
   same table.
 
-A dlt extractor adapter is the first planned integration: it takes an `ExtractionRequest`, runs the
+A dlt extractor can implement the boundary: it takes an `ExtractionRequest`, runs the
 resource with the interval, and emits the manifest from the run.
 
 ## dbt (Core 2.0 and 1.x)
@@ -50,13 +50,13 @@ the ledger, not the dbt process.
 ## Airbyte and Fivetran
 
 Both load with their own sync modes (full refresh, incremental append, incremental deduped;
-Fivetran's inferred deletes via re-sync). dogana sits after landing: the adapter declares the
+Fivetran's inferred deletes via re-sync). dogana sits after landing: the receiver declares the
 coverage and deletion guarantee of the configured sync as a shape, verifies what landed against it,
 and publishes. The replication tool keeps its connectors; the receiver gains a ledger.
 
 ## Iceberg, DuckLake, Delta
 
-Table formats own rows, snapshots and atomic commits. A store adapter maps the apply plan onto the
+Table formats own rows, snapshots and atomic commits. A store maps the apply plan onto the
 format's primitives: Iceberg `overwrite` with a filter for `replace_window`, `upsert` and `delete`
 for the keyed actions; DuckLake multi-table transactions for rows plus ledger; Delta `replaceWhere`
 for a bounded replace. Each format has a per-commit metadata slot (Iceberg snapshot summary,
@@ -94,7 +94,7 @@ file", which is the operation a complete window delivery authorises. What Spark 
 authorisation: nothing records that the file was complete for W, so nothing can refuse the same
 merge when the file was a changed-since extract. The watermark is the closest thing to a
 completeness statement, and it is one-directional and per stream, not per region of a table. A
-Spark store adapter therefore executes plans and stamps the receipt identity into the Iceberg
+Spark store therefore executes plans and stamps the receipt identity into the Iceberg
 snapshot summary or the Delta commit metadata; the ledger stays dogana's.
 
 ## Dagster and Airflow
@@ -119,7 +119,7 @@ then carries the one fact these tools cannot produce: that deletions are known a
   declared in the contract that yields the manifest. The gate verifies the claim against the rows.
 - Pull from your own extractor: the contract parameterises the read and the extractor writes the
   manifest, so claim and rows cannot disagree.
-- From a replication tool: the adapter translates the sync configuration into a shape and the sync
+- From a replication tool: the loader translates the sync configuration into a shape and the sync
   result into a manifest.
 
 In all three the ledger, the receipts and the claims are the same objects.

@@ -6,4 +6,3 @@ dist/
 .cache/
 .tmp/
 .ruff_cache/
-.pytest-tmp/

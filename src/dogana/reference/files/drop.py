@@ -9,11 +9,12 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, Store
+from dogana.wire import utc
 
 
 def _instant(value: str) -> datetime:
     result = datetime.fromisoformat(value)
-    return result if result.tzinfo is not None else result.replace(tzinfo=UTC)
+    return utc(result if result.tzinfo is not None else result.replace(tzinfo=UTC))
 
 
 @dataclass(frozen=True)

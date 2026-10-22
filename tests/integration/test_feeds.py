@@ -81,3 +81,11 @@ def test_a_filename_cannot_override_a_conflicting_fixed_feed_shape():
     pattern = FilePattern(r"(?P<shape>full)_(?P<produced_at>.*)_(?P<rows>0)\.csv", shape="daily")
     with pytest.raises(InvalidContract, match="differs"):
         pattern.manifest("full_2026-10-19_0.csv", contract())
+
+
+def test_a_derived_date_window_ends_on_the_utc_source_date_even_with_a_filename_offset():
+    c = contract()
+    pattern = FilePattern(r"(?P<produced_at>.*)_(?P<rows>0)\.csv", shape="daily")
+    manifest = pattern.manifest("2026-10-19T00:30:00+02:00_0.csv", c)
+    assert manifest.produced_at == at(18, 22) + timedelta(minutes=30)
+    assert manifest.window == (at(18).date() - timedelta(days=29), at(18).date())

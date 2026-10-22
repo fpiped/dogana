@@ -24,8 +24,6 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
-addopts = "--basetemp=.pytest-tmp"
-
 [tool.ruff]
 line-length = 110
 target-version = "py311"

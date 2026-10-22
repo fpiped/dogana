@@ -9,10 +9,11 @@ from tests.support import contract
 
 
 class StatementFault:
-    def __init__(self, connection, fail_at=None, after=False):
+    def __init__(self, connection, fail_at=None, after=False, error_type=OSError):
         self.connection, self.fail_at, self.after = connection, fail_at, after
         self.statements = []
         self.fired = False
+        self.error_type = error_type
 
     def execute(self, sql, *args):
         index = len(self.statements)
@@ -20,18 +21,19 @@ class StatementFault:
         fail = index == self.fail_at and not self.fired
         if fail and not self.after:
             self.fired = True
-            raise OSError(f"interrupted before statement {index}")
+            raise self.error_type(f"interrupted before statement {index}")
         result = self.connection.execute(sql, *args)
         if fail:
             self.fired = True
-            raise OSError(f"interrupted after statement {index}")
+            raise self.error_type(f"interrupted after statement {index}")
         return result
 
     def close(self):
         self.connection.close()
 
 
-def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tmp_path):
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError, KeyboardInterrupt])
+def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tmp_path, error_type):
     c = contract()
     base = csv_file(tmp_path, "base.csv", [row(1), row(2)])
     incoming = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
@@ -52,11 +54,11 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
             with DuckDBStore(":memory:") as store:
                 first = store.deliver(c, base, first_manifest)
                 connection = store.connection
-                fault = StatementFault(connection, index, after)
+                fault = StatementFault(connection, index, after, error_type)
                 store.connection = fault
                 try:
                     result = store.deliver(c, incoming, manifest)
-                except OSError:
+                except (OSError, RuntimeError, KeyboardInterrupt):
                     result = None
                 finally:
                     store.connection = connection

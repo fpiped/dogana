@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
@@ -18,7 +19,6 @@ from dogana import (
     Receipt,
     Shape,
     State,
-    Store,
 )
 
 FULL = Shape("all", "complete", "absence", "none")
@@ -28,17 +28,26 @@ FEED = Shape("keys", "changed_only", "tombstone", "generation")
 SCHEMA = (Column("id", "int"), Column("day", "date"), Column("value", "str"))
 
 
+class DeliveryStore(Protocol):
+    """The suite requires a delivery facade, not candidate staging methods."""
+
+    def deliver(self, contract: Contract, source: object, manifest: Manifest) -> Receipt: ...
+    def load_ledger(self, contract: Contract) -> Ledger: ...
+    def receipts(self, table: str | None = None) -> tuple[Receipt, ...]: ...
+    def repair(self, contract: Contract) -> Ledger: ...
+
+
 class StoreFactory(Protocol):
     """Transport and deliberate persistence faults supplied by the store's tests."""
 
     atomic_append: bool
 
-    def make_store(self) -> Store: ...
+    def make_store(self) -> DeliveryStore: ...
     def write_source(self, rows: Sequence[Mapping], schema: tuple[Column, ...]) -> object: ...
-    def read_table(self, store: Store, table: str) -> list[dict]: ...
-    def fail_after_rows(self, store: Store) -> AbstractContextManager[None]: ...
-    def set_ledger(self, store: Store, ledger: Ledger) -> None: ...
-    def set_stamp(self, store: Store, table: str, publication_id: str | None) -> None: ...
+    def read_table(self, store: DeliveryStore, table: str) -> list[dict]: ...
+    def fail_after_rows(self, store: DeliveryStore) -> AbstractContextManager[None]: ...
+    def set_ledger(self, store: DeliveryStore, ledger: Ledger) -> None: ...
+    def set_stamp(self, store: DeliveryStore, table: str, publication_id: str | None) -> None: ...
 
 
 def _at(day):
@@ -224,6 +233,10 @@ class StoreConformance:
         else:
             with pytest.raises(InconsistentPublication):
                 store.load_ledger(c)
+            with pytest.raises(InconsistentPublication):
+                store.deliver(
+                    c, source, replace(manifest, produced_at=manifest.produced_at + timedelta(days=1))
+                )
         retried = store.deliver(c, source, manifest)
         assert retried.accepted, retried.checks
         assert self._rows(factory, store, c.table) == ([_row(1), *rows] if shape == "since" else rows)

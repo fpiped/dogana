@@ -111,6 +111,11 @@ class MemoryStore:
         return ledger
 
     def repair(self, contract):
+        try:
+            self.load_ledger(contract)
+        except InconsistentPublication as exc:
+            if "ledger ahead" in str(exc):
+                raise
         ledger = Ledger.from_receipts(contract, self.receipts(contract.table))
         if ledger.publication_id != self.state[0].get(contract.table, ([], None))[1]:
             raise InconsistentPublication("ledger ahead of stamp; complete delivery required")
@@ -172,9 +177,14 @@ class OrderedMemoryStore(MemoryStore):
     def _base(self, contract, manifest):
         if self.pending.get(contract.table) == manifest.identity:
             if any(r.accepted and r.manifest == manifest for r in self.receipts(contract.table)):
-                return self.repair(contract)
+                ledger = self.repair(contract)
+                self.pending.pop(contract.table)
+                return ledger
             return self._ledger(contract)
         return super()._base(contract, manifest)
+
+    def _after_receipt(self):
+        pass
 
     def _publish(self, receipt, rows):
         table = receipt.ledger.contract.table
@@ -182,5 +192,6 @@ class OrderedMemoryStore(MemoryStore):
         self.state[0][table] = rows, receipt.publication_id
         self._after_rows()
         self.state[2][receipt.identity] = receipt
+        self._after_receipt()
         self.state[1][table] = receipt.ledger
         self.pending.pop(table)

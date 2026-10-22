@@ -14,7 +14,9 @@ def test_readme_installation_command_runs_from_the_checkout():
     commands = [code for language, code in BLOCKS if language == "sh"]
     assert commands
     env = dict(
-        os.environ, UV_CACHE_DIR=str(ROOT / ".cache" / "uv"), UV_TOOL_DIR=str(ROOT / ".cache" / "tools")
+        os.environ,
+        UV_CACHE_DIR=str(ROOT / ".venv" / "uv-cache"),
+        UV_TOOL_DIR=str(ROOT / ".venv" / "uv-tools"),
     )
     for command in commands:
         subprocess.run(shlex.split(command), cwd=ROOT, env=env, check=True, capture_output=True, text=True)
