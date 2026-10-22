@@ -2,7 +2,7 @@
 
 Know which rows you can trust.
 
-Every warehouse has tables that arrive from systems nobody controls: the ERP that sends everything on Sunday and the last 30 days on weekdays, the partner that sends "rows changed since yesterday" and never says what it deleted, the vendor whose file was truncated last Tuesday. The rows get loaded. What the delivery proved gets forgotten. So deleted rows live on as ghosts until the next full export, a truncated file quietly empties a table, and the report "items with no movement" is computed over rows that no longer exist. When someone asks "can I trust this table today", the honest answer is a shrug.
+Most tables in a warehouse are copies of data someone else owns, delivered in pieces: a full dump now and then, a rolling window every day, "rows changed since yesterday" from an API, a change feed that names what it touched. Each delivery proves something different about the table, and every pipeline forgets it the moment the rows are loaded. So rows deleted at the source live on as ghosts until the next full dump, a truncated file quietly empties a table, and a report that counts what is absent is computed over rows that no longer exist. When someone asks "can I trust this table today", the honest answer is a shrug.
 
 dogana replaces the shrug with a record. Every delivery states what it is and as of when. A gate refuses the ones that contradict themselves: a wrong count, a row outside its window, a column gone. A ledger keeps, for each part of a table, two dates: complete as of (nothing is missing) and valid as of (nothing deleted is still here). A reader gets those dates and a state, unknown, complete, patched or expired, for a table, a region, or the whole set of tables a report reads:
 
@@ -16,7 +16,7 @@ Patched means: rows deleted at the source after October 12 may still be here. Th
 
 It runs inside whatever already writes your tables: a cron script, an Airflow task, a dlt pipeline. No server, no daemon, no dependencies in the core. It never reads a source, never schedules, never transforms. The rows stay in your database and the ledger moves with them in one transaction. A DuckDB reference store makes the example below run in a minute; a conformance suite lets you prove a store for your own warehouse.
 
-For teams that live with file feeds, API extracts and ERP exports. If every source you have arrives through log-based change data capture with soft deletes, you already hold the answer and do not need this.
+For teams that receive data in deliveries: file drops, API extracts, exports from systems they do not operate. If every source you have arrives through log-based change data capture with soft deletes, you already hold the answer and do not need this.
 
 ## Try it
 
