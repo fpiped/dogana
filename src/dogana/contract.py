@@ -43,7 +43,7 @@ class Checkpoint(StrEnum):
 def identifier(value: str) -> None:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
         raise InvalidContract("identifiers must contain letters, digits or underscores")
-    if value.startswith("__dogana_"):
+    if value.casefold().startswith("__dogana_"):
         raise InvalidContract("the __dogana_ prefix is reserved")
 
 

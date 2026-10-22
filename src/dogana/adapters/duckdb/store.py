@@ -80,7 +80,16 @@ class DuckDBStore:
             > 0
         )
 
+    def _check_table_spelling(self, table: str) -> None:
+        identifier(table)
+        row = self.connection.execute(
+            "SELECT table_name FROM __dogana_ledgers WHERE lower(table_name)=lower(?)", [table]
+        ).fetchone()
+        if row and row[0] != table:
+            raise InvalidContract("DuckDB table identities must retain their registered letter case")
+
     def load_ledger(self, contract: Contract) -> Ledger:
+        self._check_table_spelling(contract.table)
         row = self.connection.execute(
             "SELECT document FROM __dogana_ledgers WHERE table_name=?", [contract.table]
         ).fetchone()
@@ -348,7 +357,7 @@ class DuckDBStore:
                 return receipt
 
     def read(self, table: str, publication_id: str | None = None) -> list[dict]:
-        identifier(table)
+        self._check_table_spelling(table)
         target = table
         if publication_id is not None:
             exists = self.connection.execute(

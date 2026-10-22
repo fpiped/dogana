@@ -183,6 +183,9 @@ ledger JSON and receipt JSON without a second mutable copy. Immutable publicatio
 `read(..., publication_id=...)`; these copies deliberately trade storage for a small reference adapter.
 Contracts cannot change within a table's history. One store instance serializes deliveries.
 The DuckDB extra includes `pytz`, required by its Python client when returning timezone-aware columns.
+The internal `__dogana_` namespace is reserved regardless of letter case. DuckDB refuses a spelling
+alias of an already registered table because its SQL identifiers are case-insensitive, while core
+table identities preserve spelling.
 
 The file-drop adapter accepts CSV or Parquet paths. `<file>.json` is the optional sidecar. Without it,
 an explicit full-match filename regular expression supplies named groups `shape`, `produced_at`,

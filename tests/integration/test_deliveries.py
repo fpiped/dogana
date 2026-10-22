@@ -467,3 +467,21 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         assert receipt.claims.complete_as_of == at(19)
         assert receipt.claims.valid_as_of == at(18)
         assert receipt.claims.state is State.PATCHED
+
+
+def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_path):
+    from dogana import InvalidContract
+
+    c = contract("Moves")
+    alias = contract("moves")
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        manifest = sidecar(path, c, "full", 18, 1)
+        first = store.deliver(c, path, manifest)
+        assert first.accepted
+        with pytest.raises(InvalidContract, match="letter case"):
+            store.deliver(alias, path, replace(manifest, table=alias.table, produced_at=at(19)))
+        with pytest.raises(InvalidContract, match="letter case"):
+            store.read(alias.table)
+        assert store.read(c.table) == [row(1)]
+        assert store.load_ledger(c) == first.ledger

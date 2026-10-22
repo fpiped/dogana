@@ -55,6 +55,7 @@ def test_a_source_cannot_declare_a_contradictory_shape(properties):
         {"max_shrink_fraction": 1.1},
         {"schema": (Column("other", "str"),)},
         {"table": "__dogana_ledgers"},
+        {"table": "__DOGANA_ledgers"},
         {"freshness": timedelta(days=-1)},
     ],
 )
