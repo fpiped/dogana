@@ -43,9 +43,8 @@ class Region(Wire):
 
     def __post_init__(self):
         for name in ("low", "high"):
-            value = getattr(self, name)
-            if isinstance(value, datetime):
-                object.__setattr__(self, name, utc(value))
+            if isinstance(getattr(self, name), datetime):
+                object.__setattr__(self, name, utc(getattr(self, name)))
         if self.low is not None and self.high is not None:
             bounds((self.low, self.high))
             if not _nonempty(self.low, self.high, self.low_open, self.high_open):
@@ -254,8 +253,8 @@ class Ledger(Wire):
                 if manifest.since > t:
                     raise RejectedDelivery("since is after the source read boundary")
                 if not self.contract.key:
-                    expected = self.contract.start_at if bootstrap else min(r.complete_as_of for r in target)
-                    if manifest.since != expected:
+                    boundaries = {self.contract.start_at} if bootstrap else {r.complete_as_of for r in target}
+                    if boundaries != {manifest.since}:
                         raise RejectedDelivery("append-only intervals must be contiguous without overlap")
                 elif any(manifest.since > r.complete_as_of for r in target):
                     raise RejectedDelivery("timestamp checkpoint leaves a gap after the base")

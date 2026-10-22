@@ -335,7 +335,11 @@ class DuckDBStore:
                 col = _quote(contract.window_column)
                 stable = db.execute(f"SELECT count(*) FROM {source} WHERE {col} IS NULL").fetchone()[0] == 0
                 shape = contract.shape(manifest.shape)
-                if self._exists(contract.table) and not (shape.complete and shape.coverage is Coverage.ALL):
+                if (
+                    contract.key
+                    and self._exists(contract.table)
+                    and not (shape.complete and shape.coverage is Coverage.ALL)
+                ):
                     match = " AND ".join(f"p.{_quote(k)}=c.{_quote(k)}" for k in contract.key)
                     moved = db.execute(
                         f"SELECT count(*) FROM {_quote(contract.table)} p JOIN {source} c ON {match} "
@@ -410,7 +414,7 @@ class DuckDBStore:
                     f"DELETE FROM {target} WHERE {_quote(plan.window_column)} BETWEEN ? AND ?",
                     list(action.window),
                 )
-            if action.operation in (Operation.UPSERT, Operation.REPLACE_WINDOW):
+            if plan.key and action.operation in (Operation.UPSERT, Operation.REPLACE_WINDOW):
                 match = " AND ".join(f"t.{_quote(k)} = c.{_quote(k)}" for k in plan.key)
                 db.execute(f"DELETE FROM {target} AS t USING {source} AS c WHERE {match}")
             if action.operation is Operation.TOMBSTONE:

@@ -44,7 +44,7 @@ class ApplyPlan(Wire):
     @classmethod
     def build(cls, contract: Contract, manifest: Manifest) -> ApplyPlan:
         shape = manifest.check(contract)
-        if not contract.key:
+        if not shape.complete and not contract.key:
             actions = (Action(Operation.APPEND),)
         elif shape.complete:
             actions = (

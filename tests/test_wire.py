@@ -1,11 +1,15 @@
 import ast
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 from dogana import Contract, Ledger, Manifest, SerializationError
-from tests.support import at, contract
+from tests.support import SCHEMA, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types():
@@ -30,7 +34,7 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
     ],
 )
 def test_unsupported_or_invalid_wire_contracts_are_refused(change):
-    value = contract().to_dict()
+    value = contract(schema=SCHEMA).to_dict()
     value.update(change)
     with pytest.raises(SerializationError):
         Contract.from_dict(value)

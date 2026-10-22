@@ -1,9 +1,13 @@
 from dataclasses import replace
+from functools import partial
 
 import pytest
 
-from dogana import ApplyPlan, Check, Gate, Ledger, Manifest, Operation, Receipt
-from tests.support import at, contract
+from dogana import ApplyPlan, Check, Contract, Gate, Ledger, Manifest, Operation, Receipt
+from tests.support import FULL, SINCE, WINDOW, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def outcomes(c, m, fail=None):
@@ -74,6 +78,20 @@ def test_apply_plans_name_the_store_operations_without_accessing_rows(shape, kwa
     plan = ApplyPlan.build(c, Manifest(c.table, shape, at(18), **kwargs))
     assert [a.operation for a in plan.actions] == operations
     assert ApplyPlan.from_json(plan.to_json()) == plan
+
+
+def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_append():
+    shapes = {"full": FULL, "plant": WINDOW, "log": SINCE}
+    c = Contract("receipts", (), shapes, window_column="id", start_at=at(1))
+    whole = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
+    plant = ApplyPlan.build(c, Manifest(c.table, "plant", at(18), window=(1, 1)))
+    log = ApplyPlan.build(c, Manifest(c.table, "log", at(19), since=at(18)))
+    assert [a.operation for a in whole.actions + plant.actions + log.actions] == [
+        Operation.REPLACE_ALL,
+        Operation.REPLACE_WINDOW,
+        Operation.APPEND,
+    ]
+    assert "key_integrity" not in [r.name for r in Gate.requirements(c, Manifest(c.table, "full", at(18)))]
 
 
 def test_an_unadmitted_manifest_still_leaves_a_rejected_receipt():

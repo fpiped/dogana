@@ -1,9 +1,13 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from functools import partial
 
 import pytest
 
-from dogana import Claims, Contract, Ledger, Manifest, RejectedDelivery, State
-from tests.support import FEED, FULL, SINCE, at, contract
+from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, State
+from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
+
+# Accounting-only contracts: these tests mix int, str, date and datetime window domains on one table.
+contract = partial(contract, schema=())
 
 
 def full(c, day=18, generation=None):
@@ -210,6 +214,42 @@ def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_over
             ledger.apply(Manifest(c.table, "log", at(20), since=since))
 
 
+def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_append_history():
+    c = Contract("receipts", (), {"full": FULL, "log": SINCE}, start_at=at(1))
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
+    assert ledger.claims(at(18)).valid_as_of == at(18)
+    with pytest.raises(RejectedDelivery, match="contiguous"):
+        ledger.apply(Manifest(c.table, "log", at(19), since=at(1)))
+    ledger = ledger.apply(Manifest(c.table, "log", at(19), since=at(18)))
+    assert ledger.claims(at(19)).complete_as_of == at(19)
+
+
+def test_a_keyless_append_after_a_window_is_refused_until_a_full_delivery_aligns_the_boundaries():
+    c = Contract(
+        "events",
+        (),
+        {"full": FULL, "bucket": WINDOW, "log": SINCE},
+        window_column="id",
+        start_at=at(1),
+    )
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18, 1)))
+    ledger = ledger.apply(Manifest(c.table, "bucket", at(18, 2), window=(1, 1)))
+    with pytest.raises(RejectedDelivery, match="contiguous"):
+        ledger.apply(Manifest(c.table, "log", at(18, 3), since=at(18, 1)))
+    ledger = ledger.apply(Manifest(c.table, "full", at(18, 3)))
+    assert (
+        ledger.apply(Manifest(c.table, "log", at(18, 4), since=at(18, 3))).claims(at(18, 4)).state
+        is State.COMPLETE
+    )
+
+
+def test_an_empty_append_interval_cannot_carry_rows():
+    c = Contract("events", (), {"log": SINCE}, start_at=at(1))
+    with pytest.raises(InvalidContract, match="empty interval"):
+        Manifest(c.table, "log", at(1), since=at(1), rows=1).check(c)
+    assert Ledger(c).apply(Manifest(c.table, "log", at(1), since=at(1), rows=0)).accepted
+
+
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
     ledger = full(contract())
     ledger = ledger.apply(Manifest(ledger.contract.table, "daily", at(24), window=(10, 20)))
@@ -274,3 +314,33 @@ def test_adjacent_discrete_windows_leave_no_phantom_unknown_region(windows):
     assert claim.state is State.COMPLETE
     assert claim.complete_as_of == at(22)
     assert len(claim.regions) == 2
+
+
+def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
+    from zoneinfo import ZoneInfo
+
+    rome = ZoneInfo("Europe/Rome")
+    early = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=0)
+    late = datetime(2026, 10, 25, 2, 0, tzinfo=rome, fold=1)
+    c = Contract("ticks", ("id",), {"slot": WINDOW}, window_column="at")
+    ledger = Ledger(c).apply(Manifest(c.table, "slot", at(26), window=(early, early)))
+    assert ledger.claims(at(26), window=(early, early)).state is State.COMPLETE
+    assert ledger.claims(at(26), window=(late, late)).state is State.UNKNOWN
+    assert Manifest.from_json(Manifest(c.table, "slot", at(26), window=(late, late)).to_json()).window == (
+        late.astimezone(UTC),
+        late.astimezone(UTC),
+    )
+
+
+def test_window_bounds_must_have_the_window_columns_declared_type():
+    from dogana import Column
+
+    c = Contract(
+        "orders",
+        ("id",),
+        {"daily": WINDOW},
+        window_column="day",
+        schema=(Column("id", "int"), Column("day", "date")),
+    )
+    with pytest.raises(InvalidContract, match="window bound types"):
+        Manifest(c.table, "daily", at(19), window=("2026-10-01", "2026-10-19")).check(c)

@@ -49,7 +49,7 @@ def test_a_source_cannot_declare_a_contradictory_shape(properties):
         {"shapes": {}},
         {"shapes": {"daily": WINDOW}},
         {"window_column": "day"},
-        {"key": ()},
+        {"key": (), "shapes": {"feed": FEED}},
         {"key": ("id", "id")},
         {"max_shrink_fraction": -0.1},
         {"max_shrink_fraction": 1.1},
@@ -116,11 +116,17 @@ def test_generation_feeds_must_issue_the_cursor_the_next_read_will_use():
         Manifest("moves", "feed", at(19), since="g1").check(contract())
 
 
-def test_append_only_history_has_an_explicit_start_instead_of_an_impossible_full_export():
+def test_append_only_history_has_an_explicit_start_and_a_keyless_full_export_needs_none():
     log = Contract("events", (), {"log": SINCE}, start_at=at(1))
     assert log.start_at == at(1)
-    with pytest.raises(InvalidContract):
+    with pytest.raises(InvalidContract, match="start_at"):
         Contract("events", (), {"log": SINCE})
+    receipts = Contract("receipts", (), {"full": FULL, "plant": WINDOW}, window_column="plant")
+    assert receipts.start_at is None
+    with pytest.raises(InvalidContract, match="start_at"):
+        Contract("receipts", (), {"full": FULL}, start_at=at(1))
+    with pytest.raises(InvalidContract, match="append-only"):
+        Contract("receipts", (), {"feed": FEED})
 
 
 def test_unrecognized_shape_properties_use_the_public_contract_error():

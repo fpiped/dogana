@@ -9,7 +9,7 @@ from dogana import Claims, Column, Contract, Ledger, Manifest, Receipt, State, n
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
 from tests.integration.support import csv_file, row, sidecar
-from tests.support import FEED, FULL, SINCE, at, contract
+from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
 def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_surface_claims(tmp_path):
@@ -317,6 +317,29 @@ def test_an_append_only_log_has_no_keys_and_replay_does_not_duplicate_events(tmp
             assert store.deliver(c, path, m) == receipt
         assert store.read(c.table) == [{"event": "event18"}, {"event": "event19"}]
         assert len(store.receipts()) == 2
+
+
+def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp_path):
+    c = Contract(
+        "receipts",
+        (),
+        {"full": FULL, "plant": replace(WINDOW, window_size=None)},
+        window_column="plant",
+        schema=(Column("plant", "str"), Column("qty", "int")),
+    )
+    rows = [{"plant": "A", "qty": 1}, {"plant": "A", "qty": 1}, {"plant": "B", "qty": 2}]
+    with DuckDBStore(tmp_path / "landing.duckdb") as store:
+        path = csv_file(tmp_path, "full.csv", rows, ("plant", "qty"))
+        assert store.deliver(c, path, sidecar(path, c, "full", 18, 3)).accepted
+        assert store.read(c.table) == rows
+        path = csv_file(tmp_path, "a.csv", [{"plant": "A", "qty": 5}], ("plant", "qty"))
+        receipt = store.deliver(c, path, sidecar(path, c, "plant", 19, 1, window=("A", "A")))
+        assert receipt.accepted
+        assert sorted(store.read(c.table), key=lambda r: r["plant"]) == [
+            {"plant": "A", "qty": 5},
+            {"plant": "B", "qty": 2},
+        ]
+        assert store.load_ledger(c).claims(at(19), window=("B", "B")).valid_as_of == at(18)
 
 
 def test_a_window_that_moves_a_published_key_between_regions_requires_a_full_export(tmp_path):

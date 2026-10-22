@@ -171,16 +171,18 @@ class Contract(Wire):
         if self.start_at is not None:
             object.__setattr__(self, "start_at", utc(self.start_at))
         if not self.key:
-            if self.start_at is None or any(
-                s.complete
-                or s.deletions is not Deletions.NONE
+            changed = [s for s in self.shapes.values() if not s.complete]
+            if any(
+                s.deletions is not Deletions.NONE
                 or s.checkpoint is not Checkpoint.TIMESTAMP
                 or s.coverage is not Coverage.ALL
-                for s in self.shapes.values()
+                for s in changed
             ):
                 raise InvalidContract(
-                    "append-only history needs start_at and timestamp shapes without deletes"
+                    "without a key, changed-only shapes are append-only timestamp intervals"
                 )
+            if bool(changed) != (self.start_at is not None):
+                raise InvalidContract("start_at exists exactly when an append-only shape exists")
         elif self.start_at is not None:
             raise InvalidContract("start_at belongs to append-only history")
 
@@ -223,9 +225,7 @@ class Manifest(Wire):
                 ),
             )
         if self.window is not None:
-            object.__setattr__(
-                self, "window", tuple(utc(v) if isinstance(v, datetime) else v for v in self.window)
-            )
+            object.__setattr__(self, "window", bounds(tuple(self.window)))
 
     def check(self, contract: Contract) -> Shape:
         if self.table != contract.table:
@@ -238,6 +238,8 @@ class Manifest(Wire):
             raise InvalidContract("only changed-only deliveries supply since")
         if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(self.since, datetime):
             raise InvalidContract("timestamp checkpoints must be datetimes")
+        if shape.checkpoint is Checkpoint.TIMESTAMP and self.since == self.produced_at and self.rows:
+            raise InvalidContract("an empty interval carries no rows")
         if shape.checkpoint is Checkpoint.GENERATION and (
             not isinstance(self.since, str) or not self.since or not self.generation
         ):
@@ -257,6 +259,9 @@ class Manifest(Wire):
                 raise InvalidContract("named keys must be unique, non-null and have the contract's width")
         types = {"int": int, "str": str, "date": date, "datetime": datetime}
         declared = {c.name: c.type for c in contract.schema}
+        if self.window is not None and contract.window_column in declared:
+            if type(self.window[0]) is not types[declared[contract.window_column]]:
+                raise InvalidContract("window bound types differ from the contract schema")
         for key in (*self.keys, *self.tombstones):
             if any(type(value) not in (str, int, date, datetime) for value in key):
                 raise InvalidContract("named key components must be ordered scalars")
