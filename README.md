@@ -15,7 +15,8 @@ invoice from March was also deleted at the ERP, but March is outside the window,
 nothing about it. The row stays in your landing table until Sunday.
 
 Between full refreshes, a reader needs to know which regions may retain deleted rows and which
-have never arrived. Otherwise "items with no movement" includes rows that should be gone.
+have never arrived. Otherwise "items with no movement", which asks for items absent from the
+movements table, silently drops the items whose last movement is a ghost row.
 
 dogana keeps that record as two dates per region of a table:
 
@@ -99,7 +100,8 @@ assert history == [
 ```
 
 Sunday 18 establishes both dates everywhere. Monday's window deletes order 2 but keeps order 1
-outside it. The whole table stays at the 18th because its weakest region decides. Sunday 25 removes
+outside it. The whole table reports the 18th: the table dates are the earliest region dates, a lower bound
+that every region satisfies. Sunday 25 removes
 order 1 and moves both dates everywhere to the 25th.
 
 Ask for the window alone and the answer changes:
@@ -178,12 +180,12 @@ the factory and fault hooks. The example above handles a full replacement only.
 | Term | What it is |
 |---|---|
 | Contract | One table: key, schema, admitted delivery shapes, optional window column. |
-| Shape | How a delivery was produced: coverage (all, window, keys), completeness (complete, changed only), deletion signal (absence, tombstone, none), checkpoint (generation, timestamp, none). Fourteen combinations are valid. |
+| Shape | How a delivery was produced: coverage (all, window, keys), completeness (complete, changed only), deletion signal (absence, tombstone, none), checkpoint (generation, timestamp, none). Twelve combinations are valid. |
 | Manifest | What one delivery claims: its shape, the source read boundary, window, count, schema hash. Written by the sender as a sidecar, derived from a file name, or produced by your own extraction. |
 | Gate | Checks the claim against the contract and the rows against the claim. Accept or reject, never partially. |
-| Ledger | Disjoint regions of the key space, each with the two dates. Never delivered regions stay visible as unknown. |
+| Ledger | Disjoint regions of the window column's domain, each with the two dates. Never delivered regions stay visible as unknown. |
 | State | Per region: unknown, complete, patched (deleted rows may remain), expired (older than the freshness limit). |
-| Claims | What a reader may rely on, for a table or a set of tables: the weakest dates and the state of every region. |
+| Claims | What a reader may rely on, for a table or a set of tables: the earliest dates and the state of every region. A query inherits them when it is monotone; under negation the two dates swap roles for the negated input. |
 | Receipt | The audit record: manifest, checks, transition, resulting claims, publication identity. The ledger can be rebuilt from receipts. |
 
 The [protocol](docs/protocol.md) defines every term and transition. It is the authority; the code
