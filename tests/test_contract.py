@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from closedworld import Checkpoint, Completeness, Contract, Coverage, Deletions, InvalidContract, Manifest, Shape
+from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, InvalidContract, Manifest, Shape
 
 FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)
 WINDOW = Shape(Coverage.WINDOW, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)

@@ -1,5 +1,5 @@
 [project]
-name = "closedworld"
+name = "dogana"
 version = "0.0.1"
 description = "Delivery contracts and arrival state for data integrations: know where absence means deletion"
 readme = "README.md"
@@ -18,7 +18,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["closedworld"]
+packages = ["dogana"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

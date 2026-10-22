@@ -1,4 +1,4 @@
-# The closedworld protocol
+# The dogana protocol
 
 Version 0, design stage. Terms defined here are used unchanged in code, receipts and documentation.
 

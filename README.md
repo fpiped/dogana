@@ -1,8 +1,9 @@
-# closedworld
+# dogana
 
-Delivery contracts and arrival state for data integrations. It tells you, per table and per region of
-a table, where the closed world assumption holds: where a missing row means a deleted row, as of when,
-and where it does not.
+Customs for data integrations. Every delivery presents a declaration, is checked against it, waits
+until it proves what it claims, and leaves a stamped receipt; the register says, per table and per
+region of a table, where the closed world assumption holds: where a missing row means a deleted row,
+as of when, and where it does not.
 
 Most integrations receive data from systems they do not control: ERPs without change data capture,
 vendors dropping files on SFTP, legacy databases with no soft deletes. The files arrive as full
@@ -11,7 +12,7 @@ without recording what each one proved. The result is the familiar drift: deleti
 next full load, windows that silently overlap, and consumers who cannot tell a complete table from a
 patched one.
 
-closedworld makes that knowledge explicit:
+dogana makes that knowledge explicit:
 
 - A **delivery contract** per table declares the identity of rows and the shapes deliveries may take:
   coverage, completeness within coverage, deletion signal, checkpoint.
@@ -28,7 +29,7 @@ with your quality tool. The core depends on nothing but the Python standard libr
 
 ## Status
 
-Design stage. The protocol is in [docs/protocol.md](docs/protocol.md). The core in `src/closedworld`
+Design stage. The protocol is in [docs/protocol.md](docs/protocol.md). The core in `src/dogana`
 implements contract validation and the ledger transitions, with tests. No store or extractor adapter
 exists yet.
 

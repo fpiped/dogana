@@ -1,11 +1,11 @@
-# closedworld working rules
+# dogana working rules
 
 Read the fpiped vault scope and the global rules before work. One Git worktree per work stream.
 
 `docs/protocol.md` is canonical for every term and transition; code and README follow it, never the
 reverse. A change in semantics lands in the protocol first, with its reason.
 
-The core (`src/closedworld`) imports only the standard library and never knows an extractor, a store or
+The core (`src/dogana`) imports only the standard library and never knows an extractor, a store or
 a scheduler. Anything that performs I/O is an adapter in its own package. The test that the boundary
 holds: with every adapter deleted, the ledger still validates a manifest, applies it and answers claims.
 

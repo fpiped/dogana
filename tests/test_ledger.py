@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from closedworld import Checkpoint, Completeness, Contract, Coverage, Deletions, Ledger, Manifest, RejectedDelivery, Shape, State
+from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, Ledger, Manifest, RejectedDelivery, Shape, State
 
 LIMIT = timedelta(days=7)
 FULL = Shape(Coverage.ALL, Completeness.COMPLETE, Deletions.ABSENCE, Checkpoint.NONE)

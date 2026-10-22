@@ -1,4 +1,5 @@
-"""Delivery contracts and arrival state: where the closed world assumption holds, and as of when."""
+"""Customs for data integrations: delivery contracts, the arrival ledger and where the closed world
+assumption holds, as of when."""
 
 from .contract import Checkpoint, Completeness, Contract, Coverage, Deletions, InvalidContract, Manifest, Shape
 from .ledger import Ledger, Region, RejectedDelivery, State
