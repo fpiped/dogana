@@ -1,6 +1,6 @@
 # dogana working rules
 
-Read the fpiped vault scope and the global rules before work. One Git worktree per work stream.
+Working rules for this repository. One Git worktree per work stream; the shared checkout stays clean.
 
 `docs/protocol.md` is canonical for every term and transition; code and README follow it, never the
 reverse. A change in semantics lands in the protocol first, with its reason.

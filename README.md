@@ -1,6 +1,14 @@
 # dogana
 
-Know which rows you can trust.
+**Know which rows you can trust.**
+
+[![CI](https://github.com/fpiped/dogana/actions/workflows/ci.yml/badge.svg)](https://github.com/fpiped/dogana/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
+[![Licence Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-2f6f44)](LICENSE)
+[![Typed](https://img.shields.io/badge/typing-strict-5a5a5a)](src/dogana/py.typed)
+
+A ledger of what each data delivery proves about a table: two dates per region, a gate that refuses
+contradictions, receipts you can audit. Pure Python, no dependencies in the core.
 
 Most tables in a warehouse are copies of data someone else owns, delivered in pieces: a full dump now and then, a rolling window every day, "rows changed since yesterday" from an API, a change feed that names what it touched. Each delivery proves something different about the table, and every pipeline forgets it the moment the rows are loaded. So rows deleted at the source live on as ghosts until the next full dump, a truncated file quietly empties a table, and a report that counts what is absent is computed over rows that no longer exist. When someone asks "can I trust this table today", the honest answer is a shrug.
 
@@ -21,8 +29,9 @@ For teams that receive data in deliveries: file drops, API extracts, exports fro
 
 ## Try it
 
-Python 3.11 or later. No release is published yet. With uv and an active virtual environment,
-install from the source checkout containing `pyproject.toml`:
+Python 3.11 or later. No release is on PyPI yet; install from GitHub with
+`pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`, or, with uv and an active
+virtual environment, from the source checkout containing `pyproject.toml`:
 
 ```sh
 uv pip install -e '.[duckdb]'
@@ -201,6 +210,17 @@ The [protocol](docs/protocol.md) defines the semantics and [wire schemas](docs/w
 Store authors can run `dogana.conformance.StoreConformance`; stamped recovery is optional.
 See [reference implementations](docs/reference.md), [integrations](docs/integrations.md) and
 [architecture](docs/architecture.md). Quality tools run business rules outside the fixed gate.
+
+## Documentation
+
+| Read | For |
+|---|---|
+| [Protocol](docs/protocol.md) | Every term, transition, check and obligation; the canonical text. |
+| [Architecture](docs/architecture.md) | How the code is shaped and why, in ten sentences and their reasons. |
+| [Integrations](docs/integrations.md) | dlt, dbt, SQLMesh, Iceberg and DuckLake, Spark, orchestrators, quality tools, micro-batches. |
+| [Reference implementations](docs/reference.md) | The DuckDB store, the file drop and the no-store path. |
+| [Wire schemas](docs/wire/) | JSON Schema for every value, with identity test vectors in [examples](docs/examples/). |
+| [Changelog](CHANGELOG.md) and [Contributing](CONTRIBUTING.md) | What changed and how to work on it. |
 
 ## Grounding and status
 

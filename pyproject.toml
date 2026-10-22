@@ -1,13 +1,30 @@
 [project]
 name = "dogana"
 version = "0.0.1"
-description = "Delivery contracts and arrival state for data integrations: know where absence means deletion"
+description = "A ledger of what each data delivery proves about a table: two dates per region, a gate that refuses contradictions, auditable receipts"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Filippo Scotti" }]
 requires-python = ">=3.11"
 dependencies = []
-keywords = ["data-integration", "data-contract", "incremental-loading", "completeness", "ingestion"]
+keywords = ["data-integration", "data-contract", "incremental-loading", "completeness", "ingestion", "deletions"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/fpiped/dogana"
+Repository = "https://github.com/fpiped/dogana"
+Changelog = "https://github.com/fpiped/dogana/blob/main/CHANGELOG.md"
+Issues = "https://github.com/fpiped/dogana/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "mypy>=1.11", "hypothesis>=6", "jsonschema>=4.18", "types-jsonschema>=4"]
