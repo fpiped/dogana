@@ -1,10 +1,12 @@
 """Explicit transport schemas, separate from delivery contracts."""
 
+import csv
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import file_digest, sha256
 from json import dumps
 from os import PathLike, fspath
+from pathlib import Path
 from types import MappingProxyType
 
 from dogana.contract import LOGICAL_TYPES, identifier
@@ -33,6 +35,21 @@ def _column_hash(columns: Mapping[str, str]) -> str:
 def _file_digest(path: str | PathLike[str]) -> str:
     with open(path, "rb") as stream:
         return file_digest(stream, "sha256").hexdigest()
+
+
+def _count_rows(path: Path) -> int:
+    if path.suffix.lower() == ".csv":
+        with path.open(newline="") as stream:
+            return sum(1 for _ in csv.DictReader(stream))
+    if path.suffix.lower() == ".parquet":
+        import duckdb
+
+        with duckdb.connect() as connection:
+            row = connection.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+            if row is None or not isinstance(row[0], int):
+                raise InvalidContract("Parquet row count is unavailable")
+            return row[0]
+    raise InvalidContract("row counting supports CSV and Parquet files")
 
 
 @dataclass(frozen=True)

@@ -18,4 +18,7 @@ Receipts are the event log and the ledger is its projection: accepted history re
 
 The optional stamped tier uses core diagnosis to distinguish `LedgerAhead` from `StampAhead` and repairs evidence only when reconstructed history matches the row stamp, which cannot detect unstamped row edits.
 
+The command line (`dogana.cli`, also `python -m dogana`) is an entry point above both: it parses
+text with the file drop's helpers and the core never imports it.
+
 Reference code depends on the core, never the reverse; DuckDB supplies executable storage and file ingestion, while the pytest-based conformance suite tests required publication behavior and optional stamped recovery separately.

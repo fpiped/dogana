@@ -66,7 +66,9 @@ October 12 may still be here. That sentence, for every table and every region, i
 ## The manifest
 
 The sender writes it next to the file, or the receiver derives it from a filename pattern declared
-once. It is plain JSON:
+once. `dogana manifest orders.csv --contract orders.contract.json --shape full --produced-at ...`
+writes it for any sender, counting the rows, hashing the bytes and validating against the contract;
+the [command line](docs/reference.md#command-line) has the rest. It is plain JSON:
 
 ```json
 {

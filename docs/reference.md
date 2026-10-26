@@ -162,6 +162,34 @@ remain inside the drop root, including through symlinks. With no root, the submi
 is the boundary. These checks are not a sandbox or a resource quota: limit input size and memory
 at the caller. Compressed Parquet can expand far beyond its file size. There is no watcher or mover.
 
+## Command line
+
+`dogana` is installed with the package and runs as `python -m dogana` too. It needs no extra for
+CSV; Parquet rows and keys are read through the `duckdb` extra.
+
+```text
+dogana manifest FILE --contract PATH --shape NAME --produced-at TIME [options]
+dogana check FILE --contract PATH [--manifest PATH]
+```
+
+`manifest` writes the sidecar a file drop reads, `FILE.json`, validated against the contract. It
+counts CSV records (quoted newlines included) and Parquet rows, hashes the bytes with SHA-256 and
+takes the schema hash from the contract; `--rows` declares the count of any other format. Values
+are typed by the contract: `--window LOW HIGH` by the window column, omitted for a rolling shape
+whose window ends at `--produced-at`; `--since` as a time, an integer position or a generation
+token by the shape's checkpoint; `--generation` by the table's kind of position. A key-coverage
+shape enumerates its keys from FILE, and `--tombstones` reads deleted keys from another file.
+Times need a UTC offset. `--produced-at` is the source read boundary, never the time the command
+runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
+never reads half a manifest; `-o -` writes to standard output instead.
+
+`check` validates FILE's manifest against the contract and FILE against the manifest: the row count
+and the SHA-256 of the bytes. A sender runs it before handing a file over; a hand-written manifest
+gets the same checks the gate applies.
+
+Exit status is 0 on success, 1 when dogana refuses (an invalid contract or manifest, a mismatch, an
+unreadable file, an existing manifest) and 2 when the command cannot describe the delivery as called.
+
 ## Without a Store
 
 An existing loader can use the gate without implementing `Store`. For a new, structurally valid

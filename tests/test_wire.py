@@ -42,11 +42,16 @@ def test_a_manifest_cannot_be_decoded_as_a_contract():
         Contract.from_json(Manifest("stock", "full", at(18)).to_json())
 
 
+ENTRY_POINTS = {"cli.py", "__main__.py"}
+
+
 def test_the_core_has_no_reference_or_third_party_imports():
     import sys
 
     core = Path(__file__).parents[1] / "src" / "dogana"
     for source in core.glob("*.py"):
+        if source.name in ENTRY_POINTS:
+            continue
         for node in ast.walk(ast.parse(source.read_text())):
             if isinstance(node, ast.Import):
                 names = [a.name.split(".")[0] for a in node.names]
@@ -58,6 +63,30 @@ def test_the_core_has_no_reference_or_third_party_imports():
             else:
                 continue
             assert set(names) <= sys.stdlib_module_names
+
+
+def test_the_command_line_sits_above_the_core_and_imports_no_third_party_package():
+    import subprocess
+    import sys
+
+    core = Path(__file__).parents[1] / "src" / "dogana"
+    for source in core.glob("*.py"):
+        if source.name in ENTRY_POINTS:
+            continue
+        imported = {
+            node.module
+            for node in ast.walk(ast.parse(source.read_text()))
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert not imported & {"cli", "dogana.cli"}, source.name
+    third_party = "[m for m in sys.modules if m.split('.')[0] in ('duckdb', 'pyarrow')]"
+    loaded = subprocess.run(
+        [sys.executable, "-c", f"import sys, dogana.cli; print({third_party})"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert loaded.stdout == "[]\n"
 
 
 def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_keys():

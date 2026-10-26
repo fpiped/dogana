@@ -2,44 +2,18 @@
 
 from __future__ import annotations
 
-import csv
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
-from dogana.contract import Scalar, Window
-from dogana.reference._sources import _column_hash, _columns, _file_digest, _FileSource
-from dogana.wire import utc
+from dogana.contract import Window
+from dogana.reference._sources import _column_hash, _columns, _count_rows, _file_digest, _FileSource
+from dogana.reference._text import _checkpoint, _instant, _position, _scalar
 
-
-def _instant(value: str, timezone: tzinfo | None) -> datetime:
-    result = datetime.fromisoformat(value)
-    if result.tzinfo is not None:
-        return utc(result)
-    if timezone is None:
-        raise InvalidContract("naive filename timestamps need a declared timezone")
-    local = result.replace(tzinfo=timezone)
-    instant = utc(local)
-    if instant.astimezone(timezone).replace(tzinfo=None) != result:
-        raise InvalidContract("nonexistent filename time needs an explicit UTC offset")
-    if local.utcoffset() != local.replace(fold=1).utcoffset():
-        raise InvalidContract("ambiguous filename time needs an explicit UTC offset")
-    return instant
-
-
-def _window_bound(value: str, column_type: str, timezone: tzinfo | None) -> Scalar:
-    if column_type == "datetime":
-        return _instant(value, timezone)
-    if column_type == "date":
-        return date.fromisoformat(value)
-    if column_type == "int":
-        return int(value)
-    if column_type == "str":
-        return value
-    raise InvalidContract("window column must be an ordered scalar")
+_DECLARED = ", or a declared timezone"
 
 
 def _literal_path(path: Path) -> None:
@@ -98,15 +72,15 @@ class FilePattern:
         if self.shape is not None and groups.get("shape") is not None and self.shape != groups["shape"]:
             raise InvalidContract("filename shape differs from the declared feed shape")
         shape = contract.shape(shape_name)
-        produced_at = _instant(groups["produced_at"], self.timezone)
+        produced_at = _instant(groups["produced_at"], self.timezone, remedy=_DECLARED)
         window: Window | None = None
         column_type = contract.types.get(contract.window_column) if contract.window_column else None
         if "low" in groups:
             if groups.get("low") is None or groups.get("high") is None:
                 raise InvalidContract("filename needs both window bounds")
             window = (
-                _window_bound(groups["low"], column_type or "str", self.timezone),
-                _window_bound(groups["high"], column_type or "str", self.timezone),
+                _scalar(groups["low"], column_type or "str", self.timezone, remedy=_DECLARED),
+                _scalar(groups["high"], column_type or "str", self.timezone, remedy=_DECLARED),
             )
         elif shape.coverage == "window":
             if shape.window_size is None:
@@ -115,34 +89,18 @@ class FilePattern:
                 raise InvalidContract("derived windows need a date or datetime column")
             window = shape.window_ending_at(produced_at, column_type)
 
-        since: str | datetime | None = groups.get("since")
-        if isinstance(since, str) and shape.checkpoint == "timestamp":
-            since = _instant(since, self.timezone)
+        since = groups.get("since")
+        generation = groups.get("generation")
         return Manifest(
             table=contract.table,
             shape=shape_name,
             produced_at=produced_at,
             window=window,
-            since=since,
-            generation=groups.get("generation"),
+            since=_checkpoint(since, shape, self.timezone, remedy=_DECLARED) if since is not None else None,
+            generation=_position(generation, contract) if generation is not None else None,
             rows=int(groups["rows"]) if groups.get("rows") is not None else _count_rows(path),
             schema_hash=groups.get("schema_hash") or contract.schema_hash,
         )
-
-
-def _count_rows(path: Path) -> int:
-    if path.suffix.lower() == ".csv":
-        with path.open(newline="") as stream:
-            return sum(1 for _ in csv.DictReader(stream))
-    if path.suffix.lower() == ".parquet":
-        import duckdb
-
-        with duckdb.connect() as connection:
-            row = connection.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
-            if row is None or not isinstance(row[0], int):
-                raise InvalidContract("Parquet row count is unavailable")
-            return row[0]
-    raise InvalidContract("row counting supports CSV and Parquet files")
 
 
 class FileDrop:

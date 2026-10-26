@@ -20,6 +20,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 
+[project.scripts]
+dogana = "dogana.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/fpiped/dogana"
 Repository = "https://github.com/fpiped/dogana"
