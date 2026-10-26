@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+<a href="https://github.com/fpiped/dogana/actions/workflows/ci.yml"><img src="https://github.com/fpiped/dogana/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="Python 3.11+"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-355eaa" alt="Licence Apache-2.0"></a>
 </p>
