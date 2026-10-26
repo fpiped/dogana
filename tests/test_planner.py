@@ -303,7 +303,7 @@ def test_requirement_constructors_reject_invalid_wire_values(field, value):
         ("shape", 1),
         ("shape", ""),
         ("until", "today"),
-        ("since", 1),
+        ("since", True),
         ("since", ""),
         ("since", at(19)),
         ("cost", True),

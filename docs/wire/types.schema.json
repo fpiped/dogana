@@ -145,6 +145,9 @@
           "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
         },
         {
+          "type": "integer"
+        },
+        {
           "type": "null"
         }
       ]

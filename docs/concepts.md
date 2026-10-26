@@ -2,7 +2,7 @@
 
 | Concept | Meaning |
 |---|---|
-| Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, and the hash of the data contract's columns. |
+| Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, the hash of the data contract's columns, and optionally the finite `domain` of window values. |
 | Shape | Coverage, completeness, deletion signal and checkpoint; helpers include `full`, `window`, `changes`, `feed` and `append`. |
 | Manifest | One source read's shape, boundary, coverage, count and optional SHA-256 of the delivered bytes. |
 | Gate | Fixed checks that turn a manifest and row outcomes into a publication decision. |
@@ -26,13 +26,14 @@ The core never computes a full schema.
 | Nightly full export | `Shape.full()` | Both dates advance everywhere. |
 | Daily window, weekly full | `Shape.window(size=...)` and `Shape.full()` | Both dates advance inside delivered coverage. |
 | Changes since `updated_at` | `Shape.changes()` | Completeness advances; deletion knowledge waits. |
-| One export per plant | Complete singleton windows | Each plant has dates; undelivered space stays unknown. |
+| One export per plant | Complete singleton windows, plants listed in `domain` | Each plant has dates; once every listed plant is delivered, the whole table has them. |
 | Cursor feed with tombstones | `Shape.feed()` | Continuous changes and deleted keys preserve an exact base. |
 | Immutable keyless history | `Shape.append()` with `start_at` | Contiguous intervals advance both dates. |
-| A change feed consumed in offset batches | `Shape.feed()` after a snapshot | Each committed range preserves an exact base. |
+| A change feed consumed in offset batches | `Shape.feed(checkpoint="sequence")` after a snapshot | Each committed range of offsets continues the last, checked by order. |
+| Rows read after a high-water mark (auto-increment id, log position) | `Shape.changes(checkpoint="sequence")` | Each read continues the position; an `int` cursor column checks every row. |
 
-Window membership must be immutable at the source. A generation is an opaque table-wide cursor;
-a tombstone names a deleted key. The [shape decision table](protocol.md#choosing-a-shape)
+Window membership must be immutable at the source. A generation is an opaque table-wide cursor,
+a sequence an ordered integer one; a tombstone names a deleted key. The [shape decision table](protocol.md#choosing-a-shape)
 details what each pattern cannot prove.
 
 ## What it is not

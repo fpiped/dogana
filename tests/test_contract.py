@@ -17,7 +17,7 @@ from dogana import (
 from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
-def test_the_twelve_semantic_shapes_and_no_other_are_admitted():
+def test_the_sixteen_semantic_shapes_and_no_other_are_admitted():
     valid = []
     for properties in product(Coverage, Completeness, Deletions, Checkpoint):
         try:
@@ -30,8 +30,11 @@ def test_the_twelve_semantic_shapes_and_no_other_are_admitted():
             )
         except InvalidContract:
             pass
-    assert len(valid) == 12
-    assert not any(s.coverage is Coverage.WINDOW and s.checkpoint is Checkpoint.GENERATION for s in valid)
+    assert len(valid) == 16
+    assert not any(
+        s.coverage is Coverage.WINDOW and s.checkpoint in (Checkpoint.GENERATION, Checkpoint.SEQUENCE)
+        for s in valid
+    )
 
 
 @pytest.mark.parametrize(
@@ -258,9 +261,9 @@ def test_contract_constructor_rejects_invalid_types_before_normalization(field, 
         ("tombstones", {1}),
         ("window", "ab"),
         ("window", {1: 2, 3: 4}),
-        ("since", 1),
+        ("since", True),
         ("since", ""),
-        ("generation", 1),
+        ("generation", 1.5),
         ("generation", ""),
         ("schema_hash", 1),
         ("content_hash", 1),

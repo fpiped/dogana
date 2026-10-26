@@ -13,7 +13,7 @@ from dogana import (
     Receipt,
     StoreError,
 )
-from dogana.contract import LOGICAL_TYPES, FullDelivery
+from dogana.contract import LOGICAL_TYPES, FullDelivery, cursor_interval
 from dogana.errors import LedgerAhead, SerializationError
 from tests.support import schema_hash
 
@@ -93,10 +93,14 @@ def check_rows(contract, manifest, rows, previous):
         or shrink is None
         or (len(covered) - len(rows)) / len(covered) <= shrink,
         "content_hash": False,  # rows in memory have no delivered bytes
+        "rows_in_domain": contract.domain is None
+        or all(row.get(col) is None or row[col] in contract.domain for row in rows),
     }
     if any(r.name == "rows_in_interval" for r in requirements):
+        interval = cursor_interval(contract, manifest.check(contract))
+        assert interval is not None
         outcomes["rows_in_interval"] = all(
-            typed(row, cursor) and manifest.since < row[cursor] <= manifest.produced_at for row in rows
+            typed(row, cursor) and interval[0] < row[cursor] <= interval[1] for row in rows
         )
     return tuple(Check(r.name, outcomes[r.name]) for r in requirements)
 

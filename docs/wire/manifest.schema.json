@@ -39,6 +39,9 @@
           "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
         },
         {
+          "type": "integer"
+        },
+        {
           "type": "null"
         }
       ]

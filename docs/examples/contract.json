@@ -1,5 +1,6 @@
 {
   "cursor_column":null,
+  "domain":null,
   "freshness":{
     "$seconds":604800
   },

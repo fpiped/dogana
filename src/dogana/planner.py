@@ -35,7 +35,7 @@ class ExtractionRequest(Wire):
     shape: str
     until: datetime
     window: Window | None = None
-    since: str | datetime | None = None
+    since: str | datetime | int | None = None
     cost: float = 1
 
     def __post_init__(self) -> None:
@@ -95,17 +95,17 @@ def _request(ledger: Ledger, shape_name: str, until: datetime, window: Window | 
         raise PlanningError("only window shapes can extract a window")
     window = bounds(window)
     regions = ledger.covered(window)
-    since: str | datetime | None = None
+    since: str | datetime | int | None = None
     if not shape.complete:
         dates = [r.complete_as_of for r in regions if r.complete_as_of is not None]
         if not ledger.contract.key and ledger.publication_id is None and not dates:
             since = ledger.contract.start_at
         elif len(dates) != len(regions):
             raise PlanningError("changed-only reads need a known base throughout coverage")
-        elif shape.checkpoint is Checkpoint.GENERATION:
+        elif shape.checkpoint in (Checkpoint.GENERATION, Checkpoint.SEQUENCE):
             since = ledger.generation
             if since is None:
-                raise PlanningError("generation continuity is unavailable; extract a complete base")
+                raise PlanningError("position continuity is unavailable; extract a complete base")
         else:
             try:
                 since = min(dates) - (shape.lookback or timedelta(0))
@@ -118,9 +118,11 @@ def _request(ledger: Ledger, shape_name: str, until: datetime, window: Window | 
 
 def _apply_request(ledger: Ledger, request: ExtractionRequest) -> Ledger:
     shape = ledger.contract.shape(request.shape)
-    generation = None
+    generation: str | int | None = None
     if shape.checkpoint is Checkpoint.GENERATION:
         generation = f"{ledger.generation}:next"
+    elif shape.checkpoint is Checkpoint.SEQUENCE and type(request.since) is int:
+        generation = request.since
     try:
         return ledger.apply(
             Manifest(
@@ -169,7 +171,7 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
         try:
             covered = ledger.covered(window)
             dates = [r.complete_as_of for r in covered if r.complete_as_of is not None]
-            if not dates and not shape.complete and ledger.contract.start_at is not None:
+            if not dates and not shape.complete and isinstance(ledger.contract.start_at, datetime):
                 dates.append(ledger.contract.start_at)
             try:
                 until = max(required, max(dates) + timedelta(microseconds=1)) if dates else required

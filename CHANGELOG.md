@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the `sequence` checkpoint: an ordered integer position (auto-increment id, log sequence number, offset) that keyed reads continue without skipping or moving back and appends continue exactly. `Shape.feed` and `Shape.append` take a `checkpoint`; `cursor_column` may be `int` and then checks every row against `(since, generation]`; keyless sequence appends start at an integer `start_at`. A table holds one kind of position. Sixteen semantic shapes.
+- Add `Contract.domain`, the ascending values a window column takes. Space holding no listed value cannot hold rows, so one complete window per listed value closes the whole table; windows name listed values and the `rows_in_domain` check refuses unlisted rows. Breaking pre-release change: serialized contracts carry `domain`; identities without one are unchanged.
 - Breaking pre-release change: `content_hash` is the lowercase hex SHA-256 of the delivered bytes, and a manifest that declares one requires a `content_hash` check from the store. A stale sidecar over changed bytes is refused instead of replayed: a replay with a declared digest is answered only after the store hashes the bytes. The DuckDB store hashes delivered paths before and after reading them; `FileDrop` adds the file's digest to derived manifests. Conformance factories supply `content_hash(source)`.
 - Breaking pre-release change: remove `Contract.schema` and `Column`; require `Contract.types` to cover exactly the key, window and cursor columns, with an optional opaque `schema_hash` supplied by the data contract. Contract identities change; wire version remains 1.
 - Keep full column definitions outside the core. The reference column-hash recipe is unchanged, so existing schema hashes remain valid.

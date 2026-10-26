@@ -20,6 +20,8 @@ from .contract import (
     Manifest,
     ParsedDelivery,
     Scalar,
+    SequenceAppend,
+    SequenceChanges,
     TimestampChanges,
     Window,
     WindowCoverage,
@@ -226,6 +228,11 @@ def _segments(steps: _Steps, low: _Cut = _START, high: _Cut = _END) -> Iterator[
             yield start, end, evidence
 
 
+def _holds_domain(contract: Contract, low: _Cut, high: _Cut) -> bool:
+    """Whether rows can exist between the cuts: always, unless a declared domain has no value there."""
+    return contract.domain is None or any(low <= _cut(value, after=False) < high for value in contract.domain)
+
+
 def _window_cuts(window: Window | None) -> tuple[_Cut, _Cut]:
     return (_START, _END) if window is None else (_cut(window[0], after=False), _cut(window[1], after=True))
 
@@ -296,7 +303,7 @@ class Claims(Wire):
 class _LedgerView(Wire):
     contract: Contract
     regions: tuple[Region, ...] = _INITIAL_REGIONS
-    generation: str | None = None
+    generation: str | int | None = None
     publication_id: str | None = None
 
 
@@ -304,14 +311,14 @@ class _LedgerView(Wire):
 class Ledger(Wire):
     contract: Contract
     _cuts: _Steps = field(repr=False)
-    generation: str | None = None
+    generation: str | int | None = None
     publication_id: str | None = None
 
     def __init__(
         self,
         contract: Contract,
         regions: tuple[Region, ...] = _INITIAL_REGIONS,
-        generation: str | None = None,
+        generation: str | int | None = None,
         publication_id: str | None = None,
         *,
         _cuts: _Steps | None = None,
@@ -332,7 +339,7 @@ class Ledger(Wire):
         if finite:
             self._check_window_type((finite[0], finite[0]))
         for token in (self.generation, self.publication_id):
-            if token is not None and not token:
+            if isinstance(token, str) and not token:
                 raise InvalidContract("generation and publication identities must be nonempty")
 
     @classmethod
@@ -446,6 +453,7 @@ class Ledger(Wire):
         return tuple(
             _region(low, high, evidence)
             for low, high, evidence in _segments(self._cuts, *_window_cuts(window))
+            if _holds_domain(self.contract, low, high)
         )
 
     def apply(self, manifest: Manifest) -> Ledger:
@@ -456,7 +464,11 @@ class Ledger(Wire):
         except InvalidContract as exc:
             raise _rejection(manifest, str(exc)) from exc
         low, high = _window_cuts(window)
-        target = tuple(evidence for _, _, evidence in _segments(self._cuts, low, high))
+        target = tuple(
+            evidence
+            for start, end, evidence in _segments(self._cuts, low, high)
+            if _holds_domain(self.contract, start, end)
+        )
         for name, passed, detail in _guards(self, delivery, target):
             if not passed:
                 raise _rejection(manifest, f"{name}: {detail}")
@@ -481,7 +493,14 @@ def _coverage_window(delivery: ParsedDelivery) -> Window | None:
     match delivery:
         case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
             return window
-        case FullDelivery() | TimestampChanges() | GenerationChanges() | AppendInterval():
+        case (
+            FullDelivery()
+            | TimestampChanges()
+            | GenerationChanges()
+            | AppendInterval()
+            | SequenceChanges()
+            | SequenceAppend()
+        ):
             return None
         case _:
             assert_never(delivery)
@@ -492,7 +511,7 @@ def _guards(
 ) -> tuple[tuple[str, bool, str], ...]:
     known = tuple(evidence for evidence in target if isinstance(evidence, Known))
     bootstrap = (
-        isinstance(delivery, AppendInterval)
+        isinstance(delivery, (AppendInterval, SequenceAppend))
         and ledger.publication_id is None
         and all(isinstance(evidence, Unknown) for _, evidence in ledger._cuts)
     )
@@ -511,6 +530,12 @@ def _guards(
             "generation_chain",
             not isinstance(delivery, GenerationChanges) or delivery.since == ledger.generation,
             "generation chain differs from the base; request a complete delivery",
+        ),
+        (
+            "sequence_chain",
+            not isinstance(delivery, (SequenceChanges, SequenceAppend))
+            or _continues(ledger, delivery, bootstrap),
+            "a sequence read must continue the table's position without a gap; request a complete delivery",
         ),
         (
             "since_before_boundary",
@@ -534,13 +559,26 @@ def _guards(
     )
 
 
-def _transition(delivery: ParsedDelivery, old: Evidence) -> Known:
+def _continues(ledger: Ledger, delivery: SequenceChanges | SequenceAppend, bootstrap: bool) -> bool:
+    """Appends start exactly at the table's position; keyed reads may start before it, never after it."""
+    if bootstrap:
+        return delivery.since == ledger.contract.start_at
+    position = ledger.generation
+    if type(position) is not int:
+        return False
+    if isinstance(delivery, SequenceAppend):
+        return delivery.since == position
+    return delivery.since <= position <= delivery.through
+
+
+def _transition(delivery: ParsedDelivery, old: Evidence) -> Evidence:
     t = delivery.manifest.produced_at
     match delivery:
-        case FullDelivery() | WindowDelivery() | AppendInterval():
+        case FullDelivery() | WindowDelivery() | AppendInterval() | SequenceAppend():
             return Known(t, t)
-        case TimestampChanges() | GenerationChanges():
-            assert isinstance(old, Known)
+        case TimestampChanges() | GenerationChanges() | SequenceChanges():
+            if isinstance(old, Unknown):
+                return old  # outside the domain: the known_base guard covered every place rows can be
             repairs = delivery.shape.deletions is Deletions.TOMBSTONE and (
                 delivery.since <= old.valid_as_of
                 if isinstance(delivery, TimestampChanges)
@@ -551,12 +589,14 @@ def _transition(delivery: ParsedDelivery, old: Evidence) -> Known:
             assert_never(delivery)
 
 
-def _cursor(previous: str | None, delivery: ParsedDelivery) -> str | None:
+def _cursor(previous: str | int | None, delivery: ParsedDelivery) -> str | int | None:
     match delivery:
         case FullDelivery():
             return delivery.manifest.generation
         case GenerationChanges():
             return delivery.generation
+        case SequenceChanges() | SequenceAppend():
+            return delivery.through
         case WindowDelivery() | TimestampChanges(coverage=WindowCoverage()):
             return previous
         case TimestampChanges() | AppendInterval():

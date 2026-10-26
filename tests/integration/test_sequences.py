@@ -31,6 +31,8 @@ def shapes():
     for coverage, completeness, deletions, checkpoint in product(
         Coverage, Completeness, Deletions, Checkpoint
     ):
+        if checkpoint is Checkpoint.SEQUENCE:
+            continue  # one table holds one kind of position; test_positions.py covers ordered ones
         try:
             shape = Shape(
                 coverage=coverage, completeness=completeness, deletions=deletions, checkpoint=checkpoint

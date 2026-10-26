@@ -67,7 +67,7 @@ def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_key
     assert Contract.from_json(c.to_json()) == c
 
 
-@pytest.mark.parametrize("change", [{"table": 1}, {"generation": 3}, {"schema_hash": 4}, {"rows": True}])
+@pytest.mark.parametrize("change", [{"table": 1}, {"generation": True}, {"schema_hash": 4}, {"rows": True}])
 def test_manifest_wire_types_are_checked_before_any_accounting(change):
     value = Manifest("stock", "full", at(18)).to_dict()
     value.update(change)

@@ -38,6 +38,7 @@ from dogana.contract import (
     Window,
     WindowCoverage,
     WindowDelivery,
+    cursor_interval,
     identifier,
 )
 from dogana.errors import (
@@ -653,6 +654,7 @@ class DuckDBStore:
             "rows_in_window": self._check_rows_in_window,
             "window_stability": self._check_window_stability,
             "rows_in_interval": self._check_rows_in_interval,
+            "rows_in_domain": self._check_rows_in_domain,
             "key_integrity": self._check_key_integrity,
             "named_keys": self._check_named_keys,
             "shrink_tolerance": self._check_shrink_tolerance,
@@ -733,13 +735,25 @@ class DuckDBStore:
         return Check("window_stability", invalid == 0, "window values must be non-null")
 
     def _check_rows_in_interval(self, audit: _Audit) -> Check:
-        assert audit.contract.cursor_column is not None
+        interval = cursor_interval(audit.contract, audit.delivery)
+        assert audit.contract.cursor_column is not None and interval is not None
         column = _quote(audit.contract.cursor_column)
         invalid = self._one(
             f"SELECT count(*) FROM {audit.staging} WHERE {column} IS NULL OR {column} <= ? OR {column} > ?",
-            [audit.manifest.since, audit.manifest.produced_at],
+            list(interval),
         )[0]
-        return Check("rows_in_interval", invalid == 0, "row timestamps must be inside (since, produced_at]")
+        low, high = interval
+        return Check("rows_in_interval", invalid == 0, f"cursor values must be inside ({low}, {high}]")
+
+    def _check_rows_in_domain(self, audit: _Audit) -> Check:
+        domain, column = audit.contract.domain, audit.contract.window_column
+        assert domain is not None and column is not None
+        invalid = self._one(
+            f"SELECT count(*) FROM {audit.staging} WHERE {_quote(column)} IS NOT NULL "
+            f"AND {_quote(column)} NOT IN ({', '.join('?' for _ in domain)})",
+            list(domain),
+        )[0]
+        return Check("rows_in_domain", invalid == 0, "window values must belong to the contract's domain")
 
     def _check_named_keys(self, audit: _Audit) -> Check:
         contract, manifest = audit.contract, audit.manifest

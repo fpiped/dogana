@@ -62,6 +62,9 @@
           "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
         },
         {
+          "type": "integer"
+        },
+        {
           "type": "null"
         }
       ]
@@ -101,6 +104,20 @@
           "type": "null"
         }
       ]
+    },
+    "domain": {
+      "anyOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "urn:dogana:wire:1:types#/$defs/scalar"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -115,7 +132,8 @@
     "start_at",
     "cursor_column",
     "types",
-    "schema_hash"
+    "schema_hash",
+    "domain"
   ],
   "additionalProperties": false
 }

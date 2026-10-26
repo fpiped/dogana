@@ -829,6 +829,52 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c) == first.ledger
         assert self._rows(factory, store, c.table) == [_row(1)]
 
+    def test_a_sequence_read_refuses_rows_outside_its_positions(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        columns = {"id": "int", "seq": "int", "value": "str"}
+        c = Contract(
+            "positions",
+            ("id",),
+            {"full": FULL, "changes": Shape.changes(checkpoint=Checkpoint.SEQUENCE)},
+            types={"id": "int", "seq": "int"},
+            cursor_column="seq",
+            schema_hash=_schema_hash(columns),
+            max_shrink_fraction=None,
+        )
+
+        def read(day: int, rows: list[dict[str, Any]], **kwargs: Any) -> Receipt:
+            shape = "changes" if "since" in kwargs else "full"
+            manifest = Manifest(c.table, shape, _at(day), rows=len(rows), schema_hash=c.schema_hash, **kwargs)
+            return _submit(store, c, factory.write_source(rows, columns), manifest)
+
+        assert read(18, [{"id": 1, "seq": 90, "value": "a"}], generation=90).accepted
+        assert read(19, [{"id": 2, "seq": 100, "value": "b"}], since=90, generation=100).accepted
+        refused = read(20, [{"id": 3, "seq": 99, "value": "c"}], since=100, generation=110)
+        assert not refused.accepted
+        assert any(check.name == "rows_in_interval" and not check.passed for check in refused.checks)
+        assert store.load_ledger(c).generation == 100
+        assert [row["id"] for row in self._rows(factory, store, c.table)] == [1, 2]
+
+    def test_rows_outside_a_declared_domain_are_refused(self, factory: StoreFactory, store: Store) -> None:
+        columns = {"id": "int", "plant": "str"}
+        c = Contract(
+            "plants",
+            ("id",),
+            {"full": FULL, "plant": WINDOW},
+            window_column="plant",
+            types=columns,
+            schema_hash=_schema_hash(columns),
+            max_shrink_fraction=None,
+            domain=("A", "B"),
+        )
+        rows = [{"id": 1, "plant": "A"}, {"id": 2, "plant": "C"}]
+        manifest = Manifest(c.table, "full", _at(18), rows=2, schema_hash=c.schema_hash)
+        refused = _submit(store, c, factory.write_source(rows, columns), manifest)
+        assert not refused.accepted
+        assert any(check.name == "rows_in_domain" and not check.passed for check in refused.checks)
+        assert store.load_ledger(c).publication_id is None
+
     def test_corrected_content_hash_is_a_new_delivery_subject_to_time_admission(
         self, factory: StoreFactory, store: Store
     ) -> None:
