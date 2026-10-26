@@ -54,13 +54,13 @@ class Unknown:
 @dataclass(frozen=True)
 class Known:
     complete_as_of: datetime
-    valid_as_of: datetime
+    deletions_as_of: datetime
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "complete_as_of", utc(self.complete_as_of))
-        object.__setattr__(self, "valid_as_of", utc(self.valid_as_of))
-        if self.valid_as_of > self.complete_as_of:
-            raise InvalidContract("validity cannot be newer than completeness")
+        object.__setattr__(self, "deletions_as_of", utc(self.deletions_as_of))
+        if self.deletions_as_of > self.complete_as_of:
+            raise InvalidContract("deletion evidence cannot be newer than completeness")
 
 
 Evidence: TypeAlias = Unknown | Known
@@ -119,7 +119,7 @@ class Region(Wire):
     low: Scalar | None = None
     high: Scalar | None = None
     complete_as_of: datetime | None = None
-    valid_as_of: datetime | None = None
+    deletions_as_of: datetime | None = None
     low_open: bool = False
     high_open: bool = False
 
@@ -139,11 +139,11 @@ class Region(Wire):
 
     @property
     def evidence(self) -> Evidence:
-        if self.complete_as_of is None and self.valid_as_of is None:
+        if self.complete_as_of is None and self.deletions_as_of is None:
             return Unknown()
-        if self.complete_as_of is None or self.valid_as_of is None:
+        if self.complete_as_of is None or self.deletions_as_of is None:
             raise InvalidContract("region dates must be present or absent together")
-        return Known(self.complete_as_of, self.valid_as_of)
+        return Known(self.complete_as_of, self.deletions_as_of)
 
     def state(self, now: datetime, limit: timedelta) -> State:
         now = utc(now)
@@ -152,10 +152,10 @@ class Region(Wire):
         match self.evidence:
             case Unknown():
                 return State.UNKNOWN
-            case Known(complete, valid):
+            case Known(complete, deletions):
                 if now - complete > limit:
                     return State.EXPIRED
-                return State.COMPLETE if complete == valid else State.PATCHED
+                return State.COMPLETE if complete == deletions else State.PATCHED
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -181,8 +181,8 @@ _INITIAL_REGIONS = (Region(),)
 
 
 def _region(low: _Cut, high: _Cut, evidence: Evidence) -> Region:
-    complete, valid = (
-        (evidence.complete_as_of, evidence.valid_as_of) if isinstance(evidence, Known) else (None, None)
+    complete, deletions = (
+        (evidence.complete_as_of, evidence.deletions_as_of) if isinstance(evidence, Known) else (None, None)
     )
     low_value, low_after = _endpoint(low)
     high_value, high_after = _endpoint(high)
@@ -190,7 +190,7 @@ def _region(low: _Cut, high: _Cut, evidence: Evidence) -> Region:
         low_value,
         high_value,
         complete,
-        valid,
+        deletions,
         low_open=low_after,
         high_open=high.rank == 0 and not high_after,
     )
@@ -286,8 +286,8 @@ class Claims(Wire):
         return None if any(t is None for t in dates) else min(t for t in dates if t is not None)
 
     @property
-    def valid_as_of(self) -> datetime | None:
-        dates = [r.region.valid_as_of for r in self.regions]
+    def deletions_as_of(self) -> datetime | None:
+        dates = [r.region.deletions_as_of for r in self.regions]
         return None if any(t is None for t in dates) else min(t for t in dates if t is not None)
 
     def in_state(self, state: State) -> tuple[RegionClaim, ...]:
@@ -580,11 +580,11 @@ def _transition(delivery: ParsedDelivery, old: Evidence) -> Evidence:
             if isinstance(old, Unknown):
                 return old  # outside the domain: the known_base guard covered every place rows can be
             repairs = delivery.shape.deletions is Deletions.TOMBSTONE and (
-                delivery.since <= old.valid_as_of
+                delivery.since <= old.deletions_as_of
                 if isinstance(delivery, TimestampChanges)
-                else old.valid_as_of == old.complete_as_of
+                else old.deletions_as_of == old.complete_as_of
             )
-            return Known(t, t if repairs else old.valid_as_of)
+            return Known(t, t if repairs else old.deletions_as_of)
         case _:
             assert_never(delivery)
 

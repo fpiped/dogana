@@ -87,16 +87,16 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 assert store.receipts(c.table)[-1] == Receipt.from_json(receipt.to_json())
                 claim = ledger.claims(at(day))
                 if day in (18, 25) or c.table == "stock":
-                    assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (
+                    assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.COMPLETE,
                         at(day),
                         at(day),
                     )
                 elif c.table == "moves":
-                    assert (claim.complete_as_of, claim.valid_as_of) == (at(18), at(18))
-                    assert ledger.claims(at(day), window=kwargs["window"]).valid_as_of == at(day)
+                    assert (claim.complete_as_of, claim.deletions_as_of) == (at(18), at(18))
+                    assert ledger.claims(at(day), window=kwargs["window"]).deletions_as_of == at(day)
                 else:
-                    assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (
+                    assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.PATCHED,
                         at(day),
                         at(18),
@@ -108,7 +108,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
             assert len(store.receipts()) == receipt_count
             surface = Claims.combine(*(store.load_ledger(c).claims(at(day)) for c in contracts))
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
-            assert surface.valid_as_of == at(day if day in (18, 25) else 18)
+            assert surface.deletions_as_of == at(day if day in (18, 25) else 18)
             assert store.read("moves", publication_ids["moves", 18]) == sorted(
                 [{"id": 1, "day": date(2026, 9, 1), "value": "old"}, row(2)], key=lambda r: r["id"]
             )
@@ -206,7 +206,7 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
         accepted = FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30))
         assert accepted.accepted
         assert store.read(c.table) == [row(3), row(4)]
-        assert accepted.claims.valid_as_of == at(21)
+        assert accepted.claims.deletions_as_of == at(21)
 
 
 def test_parquet_and_csv_use_the_same_gate_and_deletions_by_absence(tmp_path):
@@ -260,7 +260,7 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
             receipt = FileDrop(store, c, columns=columns).ingest(path, now=at(30))
             assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 2, "plant": "DE01"}]
-        assert store.load_ledger(c).claims(at(20), window=("IT01", "IT01")).valid_as_of == at(20)
+        assert store.load_ledger(c).claims(at(20), window=("IT01", "IT01")).deletions_as_of == at(20)
         assert store.load_ledger(c).claims(at(20), window=("US01", "US01")).state is State.UNKNOWN
 
 
@@ -369,7 +369,7 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
             {"plant": "A", "qty": 5},
             {"plant": "B", "qty": 2},
         ]
-        assert store.load_ledger(c).claims(at(19), window=("B", "B")).valid_as_of == at(18)
+        assert store.load_ledger(c).claims(at(19), window=("B", "B")).deletions_as_of == at(18)
 
 
 def test_a_window_that_moves_a_published_key_into_coverage_removes_its_old_copy(tmp_path):
@@ -519,7 +519,7 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
         assert receipt.claims.complete_as_of == at(19)
-        assert receipt.claims.valid_as_of == at(18)
+        assert receipt.claims.deletions_as_of == at(18)
         assert receipt.claims.state is State.EXPIRED
         assert receipt.ledger.claims(at(19)).state is State.PATCHED
 

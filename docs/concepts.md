@@ -8,7 +8,7 @@
 | Gate | Fixed checks that turn a manifest and row outcomes into a publication decision. |
 | Ledger | Evidence for the table, rebuilt from accepted receipts. |
 | Region | An interval on one declared window column, including explicitly unknown space. |
-| The two dates | `complete_as_of`: no live source row missing; `valid_as_of`: deletions accounted for through that boundary. |
+| The two dates | `complete_as_of`: no live source row missing; `deletions_as_of`: deletions accounted for through that boundary. |
 | State | Unknown, complete, patched or expired, evaluated at the reader's `now`; default freshness is seven days. |
 | Claims | Regional evidence and weakest input dates; neither a common snapshot nor a guarantee about a joined result. |
 | Receipt | Accepted, rejected or replayed outcome, checks, receiver time and resulting evidence. |
@@ -57,7 +57,7 @@ See [reference implementations](reference.md), [integrations](integrations.md) a
 
 ## Grounding and status
 
-The dates adapt table completeness and validity to regions and source history: missing live rows
+The dates adapt table completeness and deletion evidence to regions and source history: missing live rows
 and retained deleted rows are different failures. Protocol version 1 is unreleased. Compatible
 policy changes preserve history; key and window bindings cannot change. DuckDB and file drop are
 executable reference implementations, not production warehouse support.

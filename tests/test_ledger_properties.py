@@ -49,10 +49,10 @@ def at(tick: int) -> datetime:
 
 def evidence(region: Region) -> Evidence:
     if region.complete_as_of is None:
-        assert region.valid_as_of is None
+        assert region.deletions_as_of is None
         return None
-    assert region.valid_as_of is not None
-    return region.complete_as_of, region.valid_as_of
+    assert region.deletions_as_of is not None
+    return region.complete_as_of, region.deletions_as_of
 
 
 def advance(old: Evidence, manifest: Manifest) -> Evidence:
@@ -306,7 +306,7 @@ def evidence_regions(draw: st.DrawFn) -> Region:
     if draw(st.booleans()):
         return Region()
     valid, complete = sorted(draw(st.tuples(st.integers(-100, 100), st.integers(-100, 100))))
-    return Region(complete_as_of=at(complete), valid_as_of=at(valid))
+    return Region(complete_as_of=at(complete), deletions_as_of=at(valid))
 
 
 def join(left: Region, right: Region) -> Region:
@@ -315,19 +315,19 @@ def join(left: Region, right: Region) -> Region:
         return right
     if b is None:
         return left
-    return Region(complete_as_of=max(a[0], b[0]), valid_as_of=max(a[1], b[1]))
+    return Region(complete_as_of=max(a[0], b[0]), deletions_as_of=max(a[1], b[1]))
 
 
 def meet(left: Region, right: Region) -> Region:
     claims = Claims.combine(*(Ledger(CONTRACT, (region,)).claims(at(200)) for region in (left, right)))
-    return Region(complete_as_of=claims.complete_as_of, valid_as_of=claims.valid_as_of)
+    return Region(complete_as_of=claims.complete_as_of, deletions_as_of=claims.deletions_as_of)
 
 
 @LAWS
 @given(left=evidence_regions(), right=evidence_regions(), third=evidence_regions())
 @example(
-    left=Region(complete_as_of=at(10), valid_as_of=at(4)),
-    right=Region(complete_as_of=at(8), valid_as_of=at(7)),
+    left=Region(complete_as_of=at(10), deletions_as_of=at(4)),
+    right=Region(complete_as_of=at(8), deletions_as_of=at(7)),
     third=Region(),
 )
 def test_region_evidence_is_a_coordinate_lattice_with_unknown_bottom(

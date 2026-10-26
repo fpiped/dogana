@@ -67,14 +67,14 @@
           "complete_as_of":{
             "$datetime":"2026-10-18T00:00:00+00:00"
           },
+          "deletions_as_of":{
+            "$datetime":"2026-10-18T00:00:00+00:00"
+          },
           "high":null,
           "high_open":false,
           "kind":"Region",
           "low":null,
           "low_open":false,
-          "valid_as_of":{
-            "$datetime":"2026-10-18T00:00:00+00:00"
-          },
           "version":1
         },
         "state":"complete",
@@ -127,14 +127,14 @@
         "complete_as_of":{
           "$datetime":"2026-10-18T00:00:00+00:00"
         },
+        "deletions_as_of":{
+          "$datetime":"2026-10-18T00:00:00+00:00"
+        },
         "high":null,
         "high_open":false,
         "kind":"Region",
         "low":null,
         "low_open":false,
-        "valid_as_of":{
-          "$datetime":"2026-10-18T00:00:00+00:00"
-        },
         "version":1
       }
     ],
@@ -169,26 +169,26 @@
         "complete_as_of":{
           "$datetime":"2026-10-18T00:00:00+00:00"
         },
+        "deletions_as_of":{
+          "$datetime":"2026-10-18T00:00:00+00:00"
+        },
         "high":null,
         "high_open":false,
         "kind":"Region",
         "low":null,
         "low_open":false,
-        "valid_as_of":{
-          "$datetime":"2026-10-18T00:00:00+00:00"
-        },
         "version":1
       }
     ],
     "before":[
       {
         "complete_as_of":null,
+        "deletions_as_of":null,
         "high":null,
         "high_open":false,
         "kind":"Region",
         "low":null,
         "low_open":false,
-        "valid_as_of":null,
         "version":1
       }
     ],

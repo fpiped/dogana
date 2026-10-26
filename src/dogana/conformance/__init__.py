@@ -179,7 +179,7 @@ class StoreConformance(_StoreScenarios):
         assert all(check.name != "schema_hash" for check in receipt.checks)
         assert factory.read_table(store, c.table) == rows
         assert store.load_ledger(c) == receipt.ledger
-        assert receipt.claims.complete_as_of == receipt.claims.valid_as_of == _at(18)
+        assert receipt.claims.complete_as_of == receipt.claims.deletions_as_of == _at(18)
         assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
         assert store.receipts(c.table) == (receipt,)
 
@@ -254,16 +254,16 @@ class StoreConformance(_StoreScenarios):
                 ledger = store.load_ledger(c)
                 claim = ledger.claims(_at(day))
                 if day in (18, 25) or c.table == "stock":
-                    assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (
+                    assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.COMPLETE,
                         _at(day),
                         _at(day),
                     )
                 elif c.table == "moves":
-                    assert (claim.complete_as_of, claim.valid_as_of) == (_at(18), _at(18))
-                    assert ledger.claims(_at(day), window=kwargs["window"]).valid_as_of == _at(day)
+                    assert (claim.complete_as_of, claim.deletions_as_of) == (_at(18), _at(18))
+                    assert ledger.claims(_at(day), window=kwargs["window"]).deletions_as_of == _at(day)
                 else:
-                    assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (
+                    assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.PATCHED,
                         _at(day),
                         _at(18),
@@ -276,7 +276,7 @@ class StoreConformance(_StoreScenarios):
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             surface = Claims.combine(*(store.load_ledger(c).claims(_at(day)) for c in contracts))
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
-            assert surface.valid_as_of == _at(day if day in (18, 25) else 18)
+            assert surface.deletions_as_of == _at(day if day in (18, 25) else 18)
         assert sum(len(store.receipts(c.table)) for c in contracts) == 25
 
     @pytest.mark.parametrize(
@@ -459,7 +459,7 @@ class StoreConformance(_StoreScenarios):
             assert receipt.accepted, receipt.checks
             assert receipt.base_publication_id == previous.publication_id
             assert receipt.ledger.generation == offset
-            assert (receipt.claims.complete_as_of, receipt.claims.valid_as_of) == (_at(day), _at(day))
+            assert (receipt.claims.complete_as_of, receipt.claims.deletions_as_of) == (_at(day), _at(day))
             retained = store.receipts(c.table)
             replay = _submit(store, c, object(), receipt.manifest)
             assert replay == replace(receipt, outcome=Outcome.REPLAYED)
@@ -539,7 +539,7 @@ class StoreConformance(_StoreScenarios):
         assert request.since == _at(19)
         second = _submit(store, c, source, c.manifest("append", request.until, since=request.since, rows=1))
         assert second.accepted
-        assert (second.claims.complete_as_of, second.claims.valid_as_of) == (_at(20), _at(20))
+        assert (second.claims.complete_as_of, second.claims.deletions_as_of) == (_at(20), _at(20))
         assert factory.read_table(store, c.table) == [event, event]
         retained = store.receipts(c.table)
         assert _submit(store, c, object(), second.manifest) == replace(second, outcome=Outcome.REPLAYED)
@@ -577,7 +577,7 @@ class StoreConformance(_StoreScenarios):
             manifest = c.manifest("upserts", until, since=request.since, rows=len(rows))
             receipt = _submit(store, c, factory.write_source(rows, columns), manifest)
             assert receipt.accepted, receipt.checks
-            assert (receipt.claims.complete_as_of, receipt.claims.valid_as_of) == (until, start)
+            assert (receipt.claims.complete_as_of, receipt.claims.deletions_as_of) == (until, start)
             assert self._rows(factory, store, c.table) == visible
         assert late["updated_at"] < start + timedelta(seconds=5) < committed_at
         assert receipt.ledger.claims(until).state is State.PATCHED
@@ -654,7 +654,8 @@ class StoreConformance(_StoreScenarios):
         assert receipt.accepted
         assert self._rows(factory, store, c.table) == []
         assert receipt.ledger.claims(_at(19)).state is State.UNKNOWN
-        assert receipt.ledger.claims(_at(19), window=(_at(18).date(), _at(18).date())).valid_as_of == _at(19)
+        day = (_at(18).date(), _at(18).date())
+        assert receipt.ledger.claims(_at(19), window=day).deletions_as_of == _at(19)
 
     def test_a_foreign_manifest_is_audited_under_the_receiving_contract(
         self, factory: StoreFactory, store: Store
@@ -702,7 +703,7 @@ class StoreConformance(_StoreScenarios):
             ).accepted
         assert factory.read_table(store, c.table) == [{"id": 2, "plant": "DE01"}]
         ledger = store.load_ledger(c)
-        assert ledger.claims(_at(20), window=("IT01", "IT01")).valid_as_of == _at(20)
+        assert ledger.claims(_at(20), window=("IT01", "IT01")).deletions_as_of == _at(20)
         assert ledger.claims(_at(20), window=("US01", "US01")).state is State.UNKNOWN
 
     def test_push_and_pull_publish_the_same_rows_ledger_and_receipt(
@@ -767,7 +768,7 @@ class StoreConformance(_StoreScenarios):
             *source,
         ]
         assert receipt.claims.complete_as_of == _at(19)
-        assert receipt.claims.valid_as_of == _at(18)
+        assert receipt.claims.deletions_as_of == _at(18)
 
     def test_two_writers_from_one_base_publish_only_one_candidate(
         self, factory: StoreFactory, store: Store

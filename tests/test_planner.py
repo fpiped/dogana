@@ -82,7 +82,7 @@ def test_the_next_read_cannot_go_backwards_in_source_time():
         next_extraction(ledger, "since", at(19))
 
 
-def test_a_tombstone_feed_can_advance_completeness_when_its_old_validity_already_satisfies_the_reader():
+def test_a_tombstone_feed_can_advance_completeness_when_its_old_deletion_date_already_satisfies_the_reader():
     c = contract(shapes={"full": FULL, "since": SINCE, "feed": FEED})
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation="g1"))
     ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18), generation="g2"))
@@ -99,7 +99,7 @@ def test_a_minimum_requirement_can_use_a_snapshot_later_than_newer_local_evidenc
     assert request.shape == "full"
     assert request.until == at(20) + timedelta(microseconds=1)
     after = ledger.apply(Manifest(request.table, request.shape, request.until))
-    assert after.claims(request.until).valid_as_of >= at(19)
+    assert after.claims(request.until).deletions_as_of >= at(19)
 
 
 def test_an_admissible_boundary_considers_only_the_chosen_shapes_coverage():
@@ -111,7 +111,7 @@ def test_an_admissible_boundary_considers_only_the_chosen_shapes_coverage():
     assert request.until == at(19)
 
 
-def test_validity_can_require_a_later_read_even_when_completeness_is_already_sufficient():
+def test_deletion_date_can_require_a_later_read_even_when_completeness_is_already_sufficient():
     c = contract(shapes={"full": FULL, "since": SINCE})
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
     ledger = ledger.apply(Manifest(c.table, "since", at(20), since=at(18)))
@@ -232,7 +232,7 @@ def test_a_windowed_timestamp_lookback_uses_only_covered_evidence():
 
 
 @pytest.mark.parametrize("lookback", [None, timedelta(0), timedelta(days=2)])
-def test_timestamp_tombstones_can_repair_validity_by_rereading_the_missing_deletions(lookback):
+def test_timestamp_tombstones_can_repair_deletion_date_by_rereading_the_missing_deletions(lookback):
     tombstones = replace(SINCE, deletions=Deletions.TOMBSTONE, cost=1, lookback=lookback)
     c = contract(shapes={"full": FULL, "since": SINCE, "deletes": tombstones})
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
@@ -241,10 +241,10 @@ def test_timestamp_tombstones_can_repair_validity_by_rereading_the_missing_delet
     assert request.shape == "deletes"
     assert request.since == min(at(18), at(19) - (lookback or timedelta(0)))
     after = ledger.apply(Manifest(c.table, request.shape, request.until, since=request.since))
-    assert after.claims(request.until).valid_as_of == at(20)
+    assert after.claims(request.until).deletions_as_of == at(20)
 
 
-def test_sufficient_validity_does_not_force_timestamp_tombstones_to_reread_older_history():
+def test_sufficient_deletion_date_does_not_force_timestamp_tombstones_to_reread_older_history():
     c = contract(
         shapes={
             "full": FULL,
@@ -286,7 +286,7 @@ def test_lookback_underflow_is_reported_as_an_unavailable_request():
         ("table", 1),
         ("table", "bad table"),
         ("complete_as_of", "today"),
-        ("valid_as_of", False),
+        ("deletions_as_of", False),
         ("window", "ab"),
     ],
 )
@@ -347,7 +347,7 @@ def test_a_rolling_anchor_includes_an_open_previous_endpoint(date_window):
     ledger = Ledger(
         c,
         (
-            Region(high=endpoint, high_open=True, complete_as_of=at(19), valid_as_of=at(19)),
+            Region(high=endpoint, high_open=True, complete_as_of=at(19), deletions_as_of=at(19)),
             Region(low=endpoint),
         ),
     )
@@ -414,4 +414,4 @@ def test_an_initial_append_plan_can_advance_past_the_retained_history_start(requ
     assert request.until == max(required, at(18) + timedelta(microseconds=1))
     assert request.since == at(18)
     after = Ledger(c).apply(Manifest(c.table, request.shape, request.until, since=request.since))
-    assert after.claims(request.until).valid_as_of >= required
+    assert after.claims(request.until).deletions_as_of >= required

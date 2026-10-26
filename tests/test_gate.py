@@ -63,7 +63,7 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
     assert receipt.transition.before == Ledger(c).regions
     assert receipt.transition.after == receipt.ledger.regions
     assert receipt.publication_id == receipt.ledger.publication_id
-    assert receipt.claims.valid_as_of == at(18)
+    assert receipt.claims.deletions_as_of == at(18)
     assert Receipt.from_json(receipt.to_json()) == receipt
     changed = replace(m, rows=3)
     assert changed.identity != m.identity
@@ -220,7 +220,7 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
 
     c = contract()
     plan = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
-    transition = Transition([Region()], [Region(complete_as_of=at(18), valid_as_of=at(18))], plan)
+    transition = Transition([Region()], [Region(complete_as_of=at(18), deletions_as_of=at(18))], plan)
     assert Transition.from_json(transition.to_json()) == transition
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
 

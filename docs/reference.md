@@ -73,7 +73,7 @@ These tables are implementation details, useful for inspection and SQL consumers
 
 `document` in the ledger table contains `version`, `kind`, `contract`, `regions`, `generation` and
 `publication_id`. It has no accepted-identity array. Every region contains `low`, `high`, `low_open`,
-`high_open`, `complete_as_of` and `valid_as_of`. Unknown dates and unbounded endpoints are JSON null;
+`high_open`, `complete_as_of` and `deletions_as_of`. Unknown dates and unbounded endpoints are JSON null;
 a datetime is `{"$datetime":"2026-10-18T00:00:00+00:00"}` and a date is
 `{"$date":"2026-10-18"}`. Contract and region values also carry `version` and `kind`.
 The [complete ledger fixture](examples/ledger.json) is executable JSON.
@@ -90,7 +90,7 @@ select l.table_name,
        json_extract(r.value, '$.low_open')::boolean as low_open,
        json_extract(r.value, '$.high_open')::boolean as high_open,
        json_extract_string(r.value, '$.complete_as_of."$datetime"')::timestamptz as complete_as_of,
-       json_extract_string(r.value, '$.valid_as_of."$datetime"')::timestamptz as valid_as_of
+       json_extract_string(r.value, '$.deletions_as_of."$datetime"')::timestamptz as deletions_as_of
 from __dogana_ledgers l,
      json_each(l.document, '$.regions') r;
 ```

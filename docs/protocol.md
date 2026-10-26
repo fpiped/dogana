@@ -146,8 +146,8 @@ recover rows. Supersession at the same boundary remains an open decision.
 
 `Ledger` contains only its contract, disjoint regions covering the domain, table generation and
 `publication_id`. Initially one unbounded region is unknown. `Region` has `low`, `high`, open-endpoint
-flags, `complete_as_of` and `valid_as_of`. `None` endpoints are unbounded. Evidence dates are absent
-together, or `valid_as_of <= complete_as_of`. No accepted-identity history is embedded in the ledger.
+flags, `complete_as_of` and `deletions_as_of`. `None` endpoints are unbounded. Evidence dates are absent
+together, or `deletions_as_of <= complete_as_of`. No accepted-identity history is embedded in the ledger.
 
 For a region with dates `(c, v)`, every source row live there at `c` is present. Every retained row
 was live at some source instant in `[v, c]`; deletions after `v` may remain. Equal dates mean the
@@ -245,23 +245,23 @@ freshness, not historical time travel. Equality at the freshness limit is fresh.
 |---|---|
 | unknown | Both dates absent. |
 | complete | Dates equal and completeness within the freshness limit. |
-| patched | Completeness newer than validity and within the freshness limit. |
-| expired | Completeness older than the freshness limit, even if validity is also older. |
+| patched | `complete_as_of` newer than `deletions_as_of` and within the freshness limit. |
+| expired | `complete_as_of` older than the freshness limit, whatever `deletions_as_of` says. |
 
 State priority is unknown, expired, patched, complete. Aggregate dates are separate minima, absent
-if any region is unknown; equal aggregate dates do not imply that every region is exact. Validity
+if any region is unknown; equal aggregate dates do not imply that every region is exact. The deletion date
 remains visible even when recent patches hide old deletion knowledge.
 
 `Claims.combine` takes those minima across tables. These are lower bounds on input evidence dates,
-not completeness or validity statements about one common snapshot or a joined result. Regions at
+not completeness or deletion statements about one common snapshot or a joined result. Regions at
 different dates may form a table exact at no instant. Common-time evidence is needed to propagate
 row guarantees through monotone queries such as filters, joins and unions. Negation (`NOT EXISTS`,
-anti-joins, difference) swaps completeness and validity requirements for the negated input. With
+anti-joins, difference) swaps the completeness and deletion requirements for the negated input. With
 exact items and complete-but-patched movements at the same boundary, "items with no movement" is
 valid but possibly incomplete: a retained deleted movement hides an item. Exact aggregates need
 both guarantees; `COUNT` and `SUM` as exact values are not ordinary monotone row queries.
 
-`Requirement` names a table, minimum completeness, optional minimum validity and optional window.
+`Requirement` names a table, minimum `complete_as_of`, optional minimum `deletions_as_of` and optional window.
 `plan_delivery` returns no request if claims suffice; otherwise it chooses the cheapest admitted
 shape that establishes the requirement, breaking ties by shape name. It checks candidate transitions
 against the ledger. Unknown bases or unrepairable deletion gaps exclude feeds; complete windows can

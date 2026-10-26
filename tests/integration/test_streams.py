@@ -73,7 +73,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
             assert retried.identity == stored.identity
             assert retried.received_at == at(19)
         assert restarted.read_publication(c) == (rows, retried.ledger)
-        assert (retried.claims.complete_as_of, retried.claims.valid_as_of) == (at(19), at(19))
+        assert (retried.claims.complete_as_of, retried.claims.deletions_as_of) == (at(19), at(19))
         request = next_extraction(restarted.load_ledger(c), "cdc", at(20))
         assert request.since == "log:103"
         next_batch = c.manifest(
@@ -81,7 +81,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         )
         final = deliver(restarted, c, _RowSource([], columns), next_batch, now=at(20))
         assert final.accepted
-        assert (final.claims.complete_as_of, final.claims.valid_as_of) == (at(20), at(20))
+        assert (final.claims.complete_as_of, final.claims.deletions_as_of) == (at(20), at(20))
         assert restarted.read(c.table) == [{"id": 3, "value": "new"}]
         assert final.ledger == Ledger(c).apply(snapshot).apply(batch).apply(next_batch)
         assert final.ledger == Ledger.from_receipts(c, restarted.receipts(c.table))

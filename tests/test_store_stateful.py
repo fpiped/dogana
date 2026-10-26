@@ -286,7 +286,7 @@ class PublicationSequences(RuleBasedStateMachine):
         assert sorted(self.store.read(table), key=lambda row: row["id"]) == rows_for(self.values)
         for bucket, dates in self.evidence.items():
             claims = current.claims(NOW, window=(bucket, bucket))
-            assert (claims.complete_as_of, claims.valid_as_of) == dates
+            assert (claims.complete_as_of, claims.deletions_as_of) == dates
         for publication, rows in self.snapshots.items():
             assert sorted(self.store.read(table, publication), key=lambda row: row["id"]) == rows
         assert not self.store.candidates

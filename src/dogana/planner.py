@@ -18,7 +18,7 @@ class Requirement(Wire):
 
     table: str
     complete_as_of: datetime
-    valid_as_of: datetime | None = None
+    deletions_as_of: datetime | None = None
     window: Window | None = None
 
     def __post_init__(self) -> None:
@@ -148,11 +148,14 @@ def next_extraction(
 
 
 def _satisfies(claims: Claims, requirement: Requirement) -> bool:
-    complete, valid = claims.complete_as_of, claims.valid_as_of
+    complete, deletions = claims.complete_as_of, claims.deletions_as_of
     return (
         complete is not None
         and complete >= requirement.complete_as_of
-        and (requirement.valid_as_of is None or (valid is not None and valid >= requirement.valid_as_of))
+        and (
+            requirement.deletions_as_of is None
+            or (deletions is not None and deletions >= requirement.deletions_as_of)
+        )
     )
 
 
@@ -162,7 +165,7 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
         raise PlanningError("requirement table differs from contract")
     if _satisfies(ledger.claims(requirement.complete_as_of, window=requirement.window), requirement):
         return None
-    required = max(requirement.complete_as_of, requirement.valid_as_of or requirement.complete_as_of)
+    required = max(requirement.complete_as_of, requirement.deletions_as_of or requirement.complete_as_of)
     candidates: list[ExtractionRequest] = []
     for name, shape in ledger.contract.shapes.items():
         if shape.coverage is Coverage.WINDOW and requirement.window is None:
@@ -181,13 +184,13 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
             if (
                 shape.checkpoint is Checkpoint.TIMESTAMP
                 and shape.deletions is Deletions.TOMBSTONE
-                and requirement.valid_as_of is not None
+                and requirement.deletions_as_of is not None
                 and isinstance(request.since, datetime)
             ):
                 insufficient = [
-                    r.valid_as_of
+                    r.deletions_as_of
                     for r in ledger.covered(requirement.window)
-                    if r.valid_as_of is not None and r.valid_as_of < requirement.valid_as_of
+                    if r.deletions_as_of is not None and r.deletions_as_of < requirement.deletions_as_of
                 ]
                 if insufficient:
                     request = replace(request, since=min(request.since, min(insufficient)))

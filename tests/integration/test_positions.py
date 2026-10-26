@@ -85,7 +85,7 @@ def test_a_keyless_sequence_appends_exactly_from_start_at_without_gap_or_overlap
     )
     ledger = Ledger(c).apply(log(0, 10, 18)).apply(log(10, 20, 19))
     claims = ledger.claims(at(19))
-    assert (ledger.generation, claims.complete_as_of, claims.valid_as_of) == (20, at(19), at(19))
+    assert (ledger.generation, claims.complete_as_of, claims.deletions_as_of) == (20, at(19), at(19))
     for since, through in ((15, 25), (25, 30)):
         with pytest.raises(RejectedDelivery, match="sequence_chain"):
             ledger.apply(log(since, through, 20))
@@ -159,7 +159,7 @@ def test_positions_round_trip_on_the_wire():
     assert '"generation":150' in ledger.identity_json()
 
 
-def test_a_change_feed_by_log_position_repairs_validity_with_its_tombstones():
+def test_a_change_feed_by_log_position_repairs_deletion_date_with_its_tombstones():
     c = Contract(
         "orders",
         ("id",),
@@ -171,4 +171,4 @@ def test_a_change_feed_by_log_position_repairs_validity_with_its_tombstones():
         Manifest(c.table, "feed", at(19), since=100, generation=120, keys=((1,),), tombstones=((2,),))
     )
     claims = fed.claims(at(19))
-    assert (fed.generation, claims.complete_as_of, claims.valid_as_of) == (120, at(19), at(19))
+    assert (fed.generation, claims.complete_as_of, claims.deletions_as_of) == (120, at(19), at(19))

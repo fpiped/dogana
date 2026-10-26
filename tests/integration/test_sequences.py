@@ -49,16 +49,16 @@ def invariants(before, after, manifest, shape):
     assert all(a.touches(b) for a, b in zip(after.regions, after.regions[1:], strict=False))
     for new in after.regions:
         if new.complete_as_of is not None:
-            assert new.valid_as_of <= new.complete_as_of
+            assert new.deletions_as_of <= new.complete_as_of
         if new.intersection(coverage) is not None:
             assert new.complete_as_of == manifest.produced_at
             if shape.complete:
-                assert new.valid_as_of == manifest.produced_at
+                assert new.deletions_as_of == manifest.produced_at
         for old in before.regions:
             if new.intersection(old) is not None and new.intersection(coverage) is None:
-                assert (new.complete_as_of, new.valid_as_of) == (
+                assert (new.complete_as_of, new.deletions_as_of) == (
                     old.complete_as_of,
-                    old.valid_as_of,
+                    old.deletions_as_of,
                 )
 
 

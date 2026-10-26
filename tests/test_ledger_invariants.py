@@ -57,21 +57,22 @@ def test_arbitrary_delivery_sequences_keep_every_ledger_invariant(history: list[
         assert all(a.touches(b) for a, b in zip(after.regions, after.regions[1:], strict=False))
         for region in after.regions:
             if region.complete_as_of is None:
-                assert region.valid_as_of is None
+                assert region.deletions_as_of is None
                 continue
-            assert region.valid_as_of is not None and region.valid_as_of <= region.complete_as_of
+            assert region.deletions_as_of is not None and region.deletions_as_of <= region.complete_as_of
             if region.intersection(coverage) is not None:
                 assert region.complete_as_of == manifest.produced_at
                 if CONTRACT.shapes[manifest.shape].complete:
-                    assert region.valid_as_of == manifest.produced_at
+                    assert region.deletions_as_of == manifest.produced_at
         for new in after.regions:
             for old in ledger.regions:
                 if new.intersection(old) is None:
                     continue
                 if new.intersection(coverage) is None:
-                    assert (new.complete_as_of, new.valid_as_of) == (old.complete_as_of, old.valid_as_of)
+                    before = (old.complete_as_of, old.deletions_as_of)
+                    assert (new.complete_as_of, new.deletions_as_of) == before
                 elif old.complete_as_of is not None:
                     assert new.complete_as_of is not None and new.complete_as_of >= old.complete_as_of
-                    assert new.valid_as_of is not None and old.valid_as_of is not None
-                    assert new.valid_as_of >= old.valid_as_of
+                    assert new.deletions_as_of is not None and old.deletions_as_of is not None
+                    assert new.deletions_as_of >= old.deletions_as_of
         ledger = after

@@ -51,8 +51,8 @@ sources:
         config:
           loaded_at_query: |
             select case
-                     when count(*) > 0 and count(valid_as_of) = count(*)
-                     then min(valid_as_of)
+                     when count(*) > 0 and count(deletions_as_of) = count(*)
+                     then min(deletions_as_of)
                    end
             from main.dogana_regions
             where table_name = 'orders'
@@ -71,8 +71,8 @@ select 'orders' as table_name
 from {{ source('landing', 'dogana_regions') }}
 where table_name = 'orders'
 having count(*) = 0
-    or count(valid_as_of) < count(*)
-    or min(valid_as_of) < cast('{{ var("required_as_of") }}' as timestamptz)
+    or count(deletions_as_of) < count(*)
+    or min(deletions_as_of) < cast('{{ var("required_as_of") }}' as timestamptz)
 ```
 
 Compare completeness too when the consumer needs both guarantees. These tests check input evidence

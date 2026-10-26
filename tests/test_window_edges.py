@@ -29,8 +29,8 @@ def test_equal_adjacent_and_exactly_touching_windows_have_no_phantom_gap(low, un
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=(low + unit, low + 3 * unit)))
     assert ledger.claims(at(20), window=(low, low + 3 * unit)).complete_as_of == at(19)
     ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=(low + 3 * unit, low + 4 * unit)))
-    assert ledger.claims(at(21), window=(low + 3 * unit, low + 3 * unit)).valid_as_of == at(21)
-    assert ledger.claims(at(21), window=(low + 2 * unit, low + 2 * unit)).valid_as_of == at(20)
+    assert ledger.claims(at(21), window=(low + 3 * unit, low + 3 * unit)).deletions_as_of == at(21)
+    assert ledger.claims(at(21), window=(low + 2 * unit, low + 2 * unit)).deletions_as_of == at(20)
 
 
 def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings():
@@ -44,9 +44,9 @@ def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings
     assert ledger == Ledger.from_json(ledger.to_json())
     for offset in (0, 30, 60):
         point = low.astimezone(UTC) + timedelta(minutes=offset)
-        assert ledger.claims(at(26), window=(point, point)).valid_as_of == at(26)
+        assert ledger.claims(at(26), window=(point, point)).deletions_as_of == at(26)
     outside = low.astimezone(UTC) - timedelta(microseconds=1)
-    assert ledger.claims(at(26), window=(outside, outside)).valid_as_of is None
+    assert ledger.claims(at(26), window=(outside, outside)).deletions_as_of is None
 
 
 def test_distinct_fall_back_datetime_keys_are_not_mistaken_for_duplicates():

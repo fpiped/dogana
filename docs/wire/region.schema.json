@@ -41,7 +41,7 @@
         }
       ]
     },
-    "valid_as_of": {
+    "deletions_as_of": {
       "anyOf": [
         {
           "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
@@ -64,7 +64,7 @@
     "low",
     "high",
     "complete_as_of",
-    "valid_as_of",
+    "deletions_as_of",
     "low_open",
     "high_open"
   ],
@@ -180,14 +180,14 @@
       },
       "then": {
         "properties": {
-          "valid_as_of": {
+          "deletions_as_of": {
             "type": "null"
           }
         }
       },
       "else": {
         "properties": {
-          "valid_as_of": {
+          "deletions_as_of": {
             "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
           }
         }

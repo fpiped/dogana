@@ -42,7 +42,7 @@ def test_every_declared_partition_delivered_closes_the_whole_table():
 def test_changes_over_the_whole_table_need_only_the_declared_partitions_as_base():
     changes = Manifest("stock", "changes", at(19), since=at(18))
     claims = per_plant(plants()).apply(changes).claims(at(19))
-    assert (claims.state, claims.complete_as_of, claims.valid_as_of) == (State.PATCHED, at(19), at(18))
+    assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (State.PATCHED, at(19), at(18))
     with pytest.raises(RejectedDelivery, match="known_base"):
         per_plant(plants(domain=None)).apply(changes)
 

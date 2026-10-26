@@ -20,7 +20,7 @@ def test_nightly_full_exports_replace_the_entire_domain_with_current_evidence():
     c = contract(shapes={"full": FULL})
     ledger = full(c).apply(Manifest(c.table, "full", at(19)))
     claim = ledger.claims(at(19))
-    assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (State.COMPLETE, at(19), at(19))
+    assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (State.COMPLETE, at(19), at(19))
     assert len(ledger.regions) == 1
 
 
@@ -30,9 +30,9 @@ def test_weekly_full_plus_changed_since_without_deletes_stays_patched_until_sund
     for day in range(19, 25):
         ledger = ledger.apply(Manifest(c.table, "since", at(day), since=at(day - 1)))
         claim = ledger.claims(at(day))
-        assert (claim.state, claim.complete_as_of, claim.valid_as_of) == (State.PATCHED, at(day), at(18))
+        assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (State.PATCHED, at(day), at(18))
     ledger = ledger.apply(Manifest(c.table, "full", at(25)))
-    assert ledger.claims(at(25)).valid_as_of == at(25)
+    assert ledger.claims(at(25)).deletions_as_of == at(25)
 
 
 def test_weekly_full_plus_daily_thirty_day_windows_keeps_old_dates_outside_the_window():
@@ -41,9 +41,9 @@ def test_weekly_full_plus_daily_thirty_day_windows_keeps_old_dates_outside_the_w
     for day in range(19, 25):
         low, high = (at(day) - timedelta(days=30)).date(), at(day).date()
         ledger = ledger.apply(Manifest(c.table, "daily", at(day), window=(low, high)))
-        assert point(ledger, high, at(day)).valid_as_of == at(day)
+        assert point(ledger, high, at(day)).deletions_as_of == at(day)
         assert ledger.claims(at(day)).complete_as_of == at(18)
-        assert ledger.claims(at(day)).valid_as_of == at(18)
+        assert ledger.claims(at(day)).deletions_as_of == at(18)
 
 
 def test_sliding_daily_windows_split_earlier_regions_and_leave_unknown_history_visible():
@@ -94,7 +94,7 @@ def test_an_older_window_overlapping_newer_evidence_is_refused_as_a_whole():
     with pytest.raises(RejectedDelivery, match="later"):
         ledger.apply(Manifest(c.table, "daily", at(20), window=(1, 15)))
     assert ledger.to_json() == before
-    assert point(ledger, 10).valid_as_of == at(21)
+    assert point(ledger, 10).deletions_as_of == at(21)
     assert point(ledger, 1).state is State.UNKNOWN
 
 
@@ -123,8 +123,8 @@ def test_independent_plant_exports_include_unknown_plants_and_empty_decommission
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(18), window=("IT01", "IT01"), rows=50))
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=("DE01", "DE01"), rows=20))
     ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=("IT01", "IT01"), rows=0))
-    assert point(ledger, "IT01").valid_as_of == at(21)
-    assert point(ledger, "DE01").valid_as_of == at(20)
+    assert point(ledger, "IT01").deletions_as_of == at(21)
+    assert point(ledger, "DE01").deletions_as_of == at(20)
     assert point(ledger, "US01").state is State.UNKNOWN
     assert ledger.claims(at(21)).state is State.UNKNOWN
 
@@ -143,7 +143,7 @@ def test_changed_only_windows_split_only_their_intersection_with_known_regions()
         (16, 18, 18),
     ]:
         claim = point(ledger, value)
-        assert (claim.complete_as_of, claim.valid_as_of) == (at(complete), at(valid))
+        assert (claim.complete_as_of, claim.deletions_as_of) == (at(complete), at(valid))
 
 
 def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage():
@@ -159,7 +159,7 @@ def test_a_change_feed_with_tombstones_keeps_a_clean_base_complete():
     ledger = ledger.apply(Manifest(c.table, "feed", at(19), since="g1", generation="g2", tombstones=((7,),)))
     assert ledger.generation == "g2"
     assert ledger.claims(at(19)).state is State.COMPLETE
-    assert ledger.claims(at(19)).valid_as_of == at(19)
+    assert ledger.claims(at(19)).deletions_as_of == at(19)
 
 
 def test_a_source_restore_breaks_the_generation_chain_until_a_full_delivery_recovers_it():
@@ -169,7 +169,7 @@ def test_a_source_restore_breaks_the_generation_chain_until_a_full_delivery_reco
         ledger.apply(Manifest(c.table, "feed", at(19), since="backup-g3", generation="backup-g4"))
     ledger = ledger.apply(Manifest(c.table, "full", at(20), generation="restored-g1"))
     ledger = ledger.apply(Manifest(c.table, "feed", at(21), since="restored-g1", generation="restored-g2"))
-    assert ledger.claims(at(21)).valid_as_of == at(21)
+    assert ledger.claims(at(21)).deletions_as_of == at(21)
 
 
 def test_a_feed_arriving_before_any_base_is_refused():
@@ -184,7 +184,7 @@ def test_tombstones_after_an_interval_without_deletes_do_not_repair_earlier_miss
     ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18), generation="g2"))
     ledger = ledger.apply(Manifest(c.table, "feed", at(20), since="g2", generation="g3"))
     assert ledger.claims(at(20)).state is State.PATCHED
-    assert ledger.claims(at(20)).valid_as_of == at(18)
+    assert ledger.claims(at(20)).deletions_as_of == at(18)
 
 
 def test_a_timestamp_gap_cannot_raise_completeness_but_overlapping_upserts_can():
@@ -208,7 +208,7 @@ def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_over
     c = Contract("events", (), {"log": SINCE}, start_at=at(1))
     ledger = Ledger(c).apply(Manifest(c.table, "log", at(18), since=at(1)))
     ledger = ledger.apply(Manifest(c.table, "log", at(19), since=at(18)))
-    assert ledger.claims(at(19)).valid_as_of == at(19)
+    assert ledger.claims(at(19)).deletions_as_of == at(19)
     for since in (at(17), at(19, 1)):
         with pytest.raises(RejectedDelivery, match="contiguous"):
             ledger.apply(Manifest(c.table, "log", at(20), since=since))
@@ -217,7 +217,7 @@ def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_over
 def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_append_history():
     c = Contract("receipts", (), {"full": FULL, "log": SINCE}, start_at=at(1))
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    assert ledger.claims(at(18)).valid_as_of == at(18)
+    assert ledger.claims(at(18)).deletions_as_of == at(18)
     with pytest.raises(RejectedDelivery, match="contiguous"):
         ledger.apply(Manifest(c.table, "log", at(19), since=at(1)))
     ledger = ledger.apply(Manifest(c.table, "log", at(19), since=at(18)))
@@ -272,7 +272,7 @@ def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     invoices = invoices.apply(Manifest("invoices", "since", at(21), since=at(18)))
     plants = full(contract("plants"), 19)
     claims = Claims.combine(*(ledger.claims(at(21)) for ledger in (stocks, invoices, plants)))
-    assert (claims.state, claims.complete_as_of, claims.valid_as_of) == (State.PATCHED, at(19), at(18))
+    assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (State.PATCHED, at(19), at(18))
     unknown = Claims.combine(claims, Ledger(contract("missing")).claims(at(21)))
     assert unknown.state is State.UNKNOWN
     assert unknown.complete_as_of is None
@@ -287,7 +287,7 @@ def test_window_deliveries_preserve_the_table_cursor_for_the_next_global_feed():
     assert not hasattr(ledger.regions[0], "generation")
     ledger = ledger.apply(Manifest(c.table, "feed", at(20), since="g1", generation="g2"))
     assert ledger.generation == "g2"
-    assert ledger.claims(at(20)).valid_as_of == at(20)
+    assert ledger.claims(at(20)).deletions_as_of == at(20)
 
 
 @pytest.mark.parametrize(
@@ -351,7 +351,7 @@ def test_timestamp_tombstones_repair_patch_deletion_debt_only_when_the_checkpoin
     c = contract(shapes={"full": FULL, "since": SINCE, "deletes": tombstones})
     ledger = full(c).apply(Manifest(c.table, "since", at(19), since=at(18)))
     ledger = ledger.apply(Manifest(c.table, "deletes", at(20), since=at(since)))
-    assert ledger.claims(at(20)).valid_as_of == at(expected_valid)
+    assert ledger.claims(at(20)).deletions_as_of == at(expected_valid)
 
 
 def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletions():
@@ -362,7 +362,7 @@ def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletio
     ledger = full(c, generation="g1")
     ledger = ledger.apply(Manifest(c.table, "patch", at(19), since="g1", generation="g2"))
     ledger = ledger.apply(Manifest(c.table, "feed", at(20), since="g2", generation="g3"))
-    assert ledger.claims(at(20)).valid_as_of == at(18)
+    assert ledger.claims(at(20)).deletions_as_of == at(18)
 
 
 def test_typed_window_queries_refuse_a_different_domain_even_before_the_first_delivery():

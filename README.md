@@ -21,7 +21,7 @@ remembers which proved what.
 dogana remembers, as two dates for every part of a table:
 
 - **complete as of**: nothing is missing;
-- **valid as of**: nothing deleted is still here.
+- **deletions as of**: nothing deleted is still here.
 
 A delivery never raises a date above what it proves.
 
@@ -55,11 +55,13 @@ ledger = (
 )
 
 claims = ledger.claims(monday)
-print(f"{claims.state}: complete as of {claims.complete_as_of:%A}, valid as of {claims.valid_as_of:%A}")
+print(
+    f"{claims.state}: complete as of {claims.complete_as_of:%A}, deletions as of {claims.deletions_as_of:%A}"
+)
 ```
 
 ```text
-patched: complete as of Monday, valid as of Sunday
+patched: complete as of Monday, deletions as of Sunday
 ```
 
 Monday's changes brought every new and updated row, but no deletions: a row deleted at the

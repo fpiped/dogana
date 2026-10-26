@@ -53,7 +53,7 @@ deliveries = [
 def show(table, span, claims):
     print(
         f"{table:<9}  {span:<26} complete as of {claims.complete_as_of.date()}"
-        f"   valid as of {claims.valid_as_of.date()}   {claims.state.value}"
+        f"   deletions as of {claims.deletions_as_of.date()}   {claims.state.value}"
     )
 
 
@@ -100,20 +100,20 @@ with DuckDBStore("landing.duckdb") as store:
     print(f"Same file again: {replay.outcome.value}, rows [3]")
     ledger = store.load_ledger(contract)
     claims = ledger.claims(now=boundary)
-    print(f"Whole table: complete {claims.complete_as_of.date()}, valid {claims.valid_as_of.date()}")
+    print(f"Whole table: complete {claims.complete_as_of.date()}, deletions {claims.deletions_as_of.date()}")
     assert ledger.claims(now=boundary + timedelta(days=8)).state.value == "expired"
 ```
 
 ```text
-orders     2026-09-20 to 2026-10-19   complete as of 2026-10-19   valid as of 2026-10-19   complete
-orders     before 2026-09-20          complete as of 2026-10-18   valid as of 2026-10-18   complete
-movements  whole table                complete as of 2026-10-19   valid as of 2026-10-12   patched
+orders     2026-09-20 to 2026-10-19   complete as of 2026-10-19   deletions as of 2026-10-19   complete
+orders     before 2026-09-20          complete as of 2026-10-18   deletions as of 2026-10-18   complete
+movements  whole table                complete as of 2026-10-19   deletions as of 2026-10-12   patched
 Sunday full: accepted, rows [1, 2]
 Monday window: accepted, rows [1, 3]
 Truncated full: rejected, rows [1, 3]
 Next Sunday full: accepted, rows [3]
 Same file again: replayed, rows [3]
-Whole table: complete 2026-10-25, valid 2026-10-25
+Whole table: complete 2026-10-25, deletions 2026-10-25
 ```
 
 The first three lines are the regions on Monday, the ones the README shows. Monday removes order 2 inside the window and retains order 1 outside it. The next full export
