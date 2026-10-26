@@ -74,6 +74,7 @@ pipeline. The core is pure Python with no dependencies. The `duckdb` extra adds 
 commits rows and dates in one transaction, and a conformance suite proves a store for your own
 warehouse. Senders in any language write their manifest with `dogana manifest`.
 
+dogana is in beta: the manifest and ledger format may still change before 1.0.
 Not on PyPI yet: `pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`.
 
 If all your sources have change data capture with deletes, you already know which rows to trust.

@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = []
 keywords = ["data-integration", "data-contract", "incremental-loading", "completeness", "ingestion", "deletions"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
