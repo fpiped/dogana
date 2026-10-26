@@ -69,11 +69,21 @@ The sender writes it next to the file, or the receiver derives it from a filenam
 once. It is plain JSON:
 
 ```json
-{"kind": "Manifest", "version": 1, "table": "orders", "shape": "changes", "rows": 42,
- "produced_at": {"$datetime": "2026-10-19T00:00:00+00:00"},
- "since": {"$datetime": "2026-10-12T00:00:00+00:00"},
- "window": null, "generation": null, "schema_hash": null, "keys": [], "tombstones": [],
- "content_hash": "5b45cc300fc9c1dfa3d3d479a5b4cf93a93bd269afccabc199d3b2ba98a7ded5"}
+{
+  "kind": "Manifest",
+  "version": 1,
+  "table": "orders",
+  "shape": "changes",
+  "produced_at": {"$datetime": "2026-10-19T00:00:00+00:00"},
+  "since": {"$datetime": "2026-10-12T00:00:00+00:00"},
+  "window": null,
+  "generation": null,
+  "rows": 42,
+  "content_hash": "5b45cc300fc9c1dfa3d3d479a5b4cf93a93bd269afccabc199d3b2ba98a7ded5",
+  "schema_hash": null,
+  "keys": [],
+  "tombstones": []
+}
 ```
 
 The gate checks the delivery against it: the count, unique keys, every row inside the window, a full
