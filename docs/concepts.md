@@ -30,7 +30,7 @@ The core never computes a full schema.
 | Cursor feed with tombstones | `Shape.feed()` | Continuous changes and deleted keys preserve an exact base. |
 | Immutable keyless history | `Shape.append()` with `start_at` | Contiguous intervals advance both dates. |
 | A change feed consumed in offset batches | `Shape.feed(checkpoint="sequence")` after a snapshot | Each committed range of offsets continues the last, checked by order. |
-| Rows read after a high-water mark (auto-increment id, log position) | `Shape.changes(checkpoint="sequence")` | Each read continues the position; an `int` cursor column checks every row. |
+| Rows read after a commit-ordered position (log position, offset) | `Shape.changes(checkpoint="sequence")` | Each read continues the position; an `int` cursor column checks every row. Auto-increment ids need a safe margin. |
 
 Window membership must be immutable at the source. A generation is an opaque table-wide cursor,
 a sequence an ordered integer one; a tombstone names a deleted key. The [shape decision table](protocol.md#choosing-a-shape)

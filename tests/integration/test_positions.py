@@ -1,4 +1,4 @@
-"""Ordered integer positions: auto-increment ids, log sequence numbers and offsets."""
+"""Ordered integer positions: log sequence numbers and offsets."""
 
 import pytest
 

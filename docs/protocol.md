@@ -57,6 +57,10 @@ plant codes does not close the rest of the string domain, unless the contract de
 the ascending, unique values the window column takes. Space holding no listed value cannot hold rows,
 so claims, admission and planning ignore it; windows name listed values, and `rows_in_domain` refuses
 a row whose window value is not listed. Without a domain, whole-table evidence requires a full read.
+A domain is the receiver's declaration and goes stale when the source adds a value: a complete
+whole-table read refuses the unlisted rows, but per-partition reads never deliver the new partition,
+so the table reads complete without it. Declare a domain only for a set the receiver reconciles with
+the source, and change the contract when the set changes.
 
 An empty `key` means rows have no identity. Complete shapes replace their coverage wholesale.
 Keyless rows form a multiset: equal events retain separate occurrences.
@@ -101,7 +105,7 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 | Every changed row since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="none")` | Deletions or repair of a missed full export without another full export. |
 | Every changed row and deleted key since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
 | Continuous opaque-cursor feed with deleted keys | `Shape.feed()` | Window-local cursors, missing generations or repair of an unknown base. |
-| Every change after an ordered position (auto-increment id, log sequence number, offset) | `Shape.changes(checkpoint="sequence")` or `Shape.feed(checkpoint="sequence")` | Updates that do not advance the position; positions beyond 2^53. |
+| Every change after a commit-ordered position (log sequence number, CDC or Kafka offset) | `Shape.changes(checkpoint="sequence")` or `Shape.feed(checkpoint="sequence")` | Positions assigned before commit, such as auto-increment ids under concurrent writers; updates that do not advance the position; positions beyond 2^53. |
 | Immutable events numbered by position | `Shape.append(checkpoint="sequence")` with an integer `start_at` | Positions the source never assigned. |
 | Immutable events retained from a declared start | `Shape.append()` | Updates, deletion or overlapping keyless intervals. |
 | CDC stream in offset batches | `Shape.feed(checkpoint="sequence")` after a full snapshot issuing its offset | Missing offset ranges or source completeness inferred from offsets alone. |
@@ -118,7 +122,11 @@ content_hash)` describes one read. `window` is required exactly for window cover
 for changed-only shapes. Timestamp checkpoints are aware datetimes; generation checkpoints and
 issued generations are nonempty strings. A generation feed must issue its next generation.
 Sequence reads carry integer `since` and `generation` and cover the positions `(since, generation]`;
-`generation` is at least `since`, and an empty interval carries no rows. A delivery that issues a
+`generation` is at least `since`, and an empty interval carries no rows. Like `produced_at`,
+`generation` is the extractor's promise that every change up to it is present, so positions must
+follow commit order. An auto-increment id is assigned at insert: a transaction can commit a lower id
+after a read has seen a higher one, and the next read starts past it. Read such ids only up to a
+position below every open transaction, or reread with overlap, which keyed sequence reads admit. A delivery that issues a
 position issues the table's kind: an integer when the contract has sequence shapes, else a string.
 A complete whole-domain delivery may issue a generation; a complete window carries none.
 
