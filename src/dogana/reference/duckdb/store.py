@@ -654,7 +654,6 @@ class DuckDBStore:
             "rows_in_window": self._check_rows_in_window,
             "window_stability": self._check_window_stability,
             "rows_in_interval": self._check_rows_in_interval,
-            "rows_in_domain": self._check_rows_in_domain,
             "key_integrity": self._check_key_integrity,
             "named_keys": self._check_named_keys,
             "shrink_tolerance": self._check_shrink_tolerance,
@@ -744,16 +743,6 @@ class DuckDBStore:
         )[0]
         low, high = interval
         return Check("rows_in_interval", invalid == 0, f"cursor values must be inside ({low}, {high}]")
-
-    def _check_rows_in_domain(self, audit: _Audit) -> Check:
-        domain, column = audit.contract.domain, audit.contract.window_column
-        assert domain is not None and column is not None
-        invalid = self._one(
-            f"SELECT count(*) FROM {audit.staging} WHERE {_quote(column)} IS NOT NULL "
-            f"AND {_quote(column)} NOT IN ({', '.join('?' for _ in domain)})",
-            list(domain),
-        )[0]
-        return Check("rows_in_domain", invalid == 0, "window values must belong to the contract's domain")
 
     def _check_named_keys(self, audit: _Audit) -> Check:
         contract, manifest = audit.contract, audit.manifest

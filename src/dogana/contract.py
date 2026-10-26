@@ -207,8 +207,8 @@ class Shape(Wire):
         )
 
     @classmethod
-    def append(cls, *, checkpoint: Checkpoint = Checkpoint.TIMESTAMP, cost: float = 1) -> Shape:
-        return cls.changes(checkpoint=checkpoint, cost=cost)
+    def append(cls, *, cost: float = 1) -> Shape:
+        return cls.changes(cost=cost)
 
     def window_ending_at(self, until: datetime, logical_type: str = "datetime") -> Window:
         until = utc(until)
@@ -235,9 +235,8 @@ class Contract(Wire):
     schema_hash: str | None = None
     max_shrink_fraction: float | None = 0.5
     freshness: timedelta = timedelta(days=7)
-    start_at: datetime | int | None = None
+    start_at: datetime | None = None
     cursor_column: str | None = None
-    domain: tuple[Scalar, ...] | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -265,9 +264,14 @@ class Contract(Wire):
             identifier(name)
             if logical_type not in LOGICAL_TYPES:
                 raise InvalidContract(f"unsupported logical type {logical_type!r} for {name!r}")
-        if self.cursor_column is not None and self.types[self.cursor_column] not in ("datetime", "int"):
-            raise InvalidContract("cursor_column must have type datetime or int")
         checkpoints = {s.checkpoint for s in self.shapes.values()}
+        cursor_type = self.types.get(self.cursor_column or "")
+        if cursor_type not in (None, "datetime", "int"):
+            raise InvalidContract("cursor_column must have type datetime or int")
+        checked = {"datetime": Checkpoint.TIMESTAMP, "int": Checkpoint.SEQUENCE}.get(cursor_type or "")
+        incremental = {s.checkpoint for s in self.shapes.values() if not s.complete}
+        if cursor_type is not None and incremental and checked not in incremental:
+            raise InvalidContract(f"a {cursor_type} cursor_column checks none of the changed-only shapes")
         if {Checkpoint.GENERATION, Checkpoint.SEQUENCE} <= checkpoints:
             raise InvalidContract("a table position is either an opaque generation or an ordered sequence")
         if any(
@@ -276,13 +280,6 @@ class Contract(Wire):
         ):
             raise InvalidContract("key and window columns must use ordered scalar logical types")
         window_type = self.types.get(self.window_column or "")
-        if self.domain is not None:
-            if window_type is None or not self.domain:
-                raise InvalidContract("a domain lists the values a window column takes")
-            if any(type(value) is not LOGICAL_TYPES[window_type].python_type for value in self.domain):
-                raise InvalidContract("domain values must have the window column's type")
-            if any(scalar_compare(a, b) >= 0 for a, b in zip(self.domain, self.domain[1:], strict=False)):
-                raise InvalidContract("domain values must be unique and ascending")
         if window_type not in (None, "date", "datetime") and any(
             shape.window_size is not None for shape in self.shapes.values()
         ):
@@ -300,17 +297,17 @@ class Contract(Wire):
             if any(shape.lookback is not None for shape in self.shapes.values()):
                 raise InvalidContract("lookback requires a keyed contract")
             changed = [s for s in self.shapes.values() if not s.complete]
-            if (
-                any(s.deletions is not Deletions.NONE or s.coverage is not Coverage.ALL for s in changed)
-                or len({s.checkpoint for s in changed}) > 1
+            if any(
+                s.deletions is not Deletions.NONE
+                or s.checkpoint is not Checkpoint.TIMESTAMP
+                or s.coverage is not Coverage.ALL
+                for s in changed
             ):
                 raise InvalidContract(
-                    "without a key, changed-only shapes are append-only intervals of one checkpoint"
+                    "without a key, changed-only shapes are append-only timestamp intervals"
                 )
             if bool(changed) != (self.start_at is not None):
                 raise InvalidContract("start_at exists exactly when an append-only shape exists")
-            if changed and (type(self.start_at) is int) != (changed[0].checkpoint is Checkpoint.SEQUENCE):
-                raise InvalidContract("start_at is a position for sequence appends and a time otherwise")
         elif self.start_at is not None:
             raise InvalidContract("start_at belongs to append-only history")
 
@@ -346,7 +343,6 @@ class Contract(Wire):
                 self.freshness,
                 self.start_at,
                 self.cursor_column,
-                self.domain,
             )
         )
 
@@ -455,8 +451,6 @@ class Manifest(Wire):
             assert contract.window_column is not None
             if type(self.window[0]) is not LOGICAL_TYPES[declared[contract.window_column]].python_type:
                 raise InvalidContract("window bound types differ from the contract types")
-            if contract.domain is not None and not set(self.window) <= set(contract.domain):
-                raise InvalidContract("window bounds must be values of the contract's domain")
         for key in (*self.keys, *self.tombstones):
             if any(
                 type(value) is not LOGICAL_TYPES[declared[name]].python_type
@@ -473,8 +467,6 @@ class Manifest(Wire):
         coverage: DeliveryCoverage
         if type(self.since) is int:
             assert type(self.generation) is int
-            if not contract.key:
-                return SequenceAppend(self, shape, self.since, self.generation)
             coverage = KeyCoverage(self.keys) if shape.coverage is Coverage.KEYS else AllCoverage()
             return SequenceChanges(self, shape, self.since, self.generation, coverage)
         assert isinstance(self.since, datetime)
@@ -553,22 +545,8 @@ class SequenceChanges:
     coverage: DeliveryCoverage
 
 
-@dataclass(frozen=True)
-class SequenceAppend:
-    manifest: Manifest
-    shape: Shape
-    since: int
-    through: int
-
-
 ParsedDelivery: TypeAlias = (
-    FullDelivery
-    | WindowDelivery
-    | TimestampChanges
-    | GenerationChanges
-    | AppendInterval
-    | SequenceChanges
-    | SequenceAppend
+    FullDelivery | WindowDelivery | TimestampChanges | GenerationChanges | AppendInterval | SequenceChanges
 )
 
 
@@ -580,9 +558,7 @@ def cursor_interval(
     match delivery:
         case TimestampChanges(since=since) | AppendInterval(since=since) if kind == "datetime":
             return since, delivery.manifest.produced_at
-        case SequenceChanges(since=low, through=high) | SequenceAppend(since=low, through=high) if (
-            kind == "int"
-        ):
+        case SequenceChanges(since=low, through=high) if kind == "int":
             return low, high
         case _:
             return None

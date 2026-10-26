@@ -20,7 +20,6 @@ from dogana.reference._sources import _RowSource
 from dogana.reference.duckdb import DuckDBStore
 
 COLUMNS = {"id": "int", "seq": "int", "value": "str"}
-EVENTS = {"seq": "int", "value": "str"}
 
 
 def keyed(**kwargs):
@@ -33,18 +32,6 @@ def keyed(**kwargs):
         schema_hash=schema_hash(COLUMNS),
         max_shrink_fraction=None,
         **kwargs,
-    )
-
-
-def events():
-    return Contract(
-        "events",
-        (),
-        {"log": Shape.append(checkpoint=Checkpoint.SEQUENCE)},
-        types={"seq": "int"},
-        cursor_column="seq",
-        schema_hash=schema_hash(EVENTS),
-        start_at=0,
     )
 
 
@@ -78,21 +65,6 @@ def test_a_sequence_needs_a_position_issued_by_a_complete_delivery():
         Manifest(c.table, "full", at(18), generation="g1", schema_hash=c.schema_hash).check(c)
 
 
-def test_a_keyless_sequence_appends_exactly_from_start_at_without_gap_or_overlap():
-    c = events()
-    log = lambda since, through, day: Manifest(  # noqa: E731
-        c.table, "log", at(day), since=since, generation=through, schema_hash=c.schema_hash
-    )
-    ledger = Ledger(c).apply(log(0, 10, 18)).apply(log(10, 20, 19))
-    claims = ledger.claims(at(19))
-    assert (ledger.generation, claims.complete_as_of, claims.deletions_as_of) == (20, at(19), at(19))
-    for since, through in ((15, 25), (25, 30)):
-        with pytest.raises(RejectedDelivery, match="sequence_chain"):
-            ledger.apply(log(since, through, 20))
-    with pytest.raises(RejectedDelivery, match="sequence_chain"):
-        Ledger(c).apply(log(5, 10, 18))
-
-
 @pytest.mark.parametrize(
     ("since", "through", "rows", "message"),
     [
@@ -109,7 +81,7 @@ def test_sequence_manifests_need_ordered_integer_bounds(since, through, rows, me
         changes(c, since, through, rows=rows).check(c)
 
 
-def test_contracts_keep_one_kind_of_position_and_type_their_start():
+def test_contracts_keep_one_kind_of_position_and_a_cursor_that_checks_something():
     with pytest.raises(InvalidContract, match="opaque generation or an ordered sequence"):
         Contract(
             "orders",
@@ -117,21 +89,47 @@ def test_contracts_keep_one_kind_of_position_and_type_their_start():
             {"feed": Shape.feed(), "changes": Shape.changes(checkpoint=Checkpoint.SEQUENCE)},
             types={"id": "int"},
         )
-    with pytest.raises(InvalidContract, match="position for sequence appends"):
-        Contract("events", (), {"log": Shape.append(checkpoint=Checkpoint.SEQUENCE)}, start_at=at(1))
-    with pytest.raises(InvalidContract, match="position for sequence appends"):
-        Contract("events", (), {"log": Shape.append()}, start_at=0)
-    with pytest.raises(InvalidContract, match="one checkpoint"):
+    with pytest.raises(InvalidContract, match="append-only timestamp intervals"):
+        Contract("events", (), {"log": Shape.changes(checkpoint=Checkpoint.SEQUENCE)}, start_at=at(1))
+    with pytest.raises(InvalidContract, match="int cursor_column checks none of the changed-only shapes"):
         Contract(
-            "events",
-            (),
-            {"log": Shape.append(), "seq": Shape.append(checkpoint=Checkpoint.SEQUENCE)},
-            start_at=0,
+            "orders",
+            ("id",),
+            {"changes": Shape.changes()},
+            types={"id": "int", "seq": "int"},
+            cursor_column="seq",
+        )
+    with pytest.raises(
+        InvalidContract, match="datetime cursor_column checks none of the changed-only shapes"
+    ):
+        Contract(
+            "orders",
+            ("id",),
+            {"changes": Shape.changes(checkpoint=Checkpoint.SEQUENCE)},
+            types={"id": "int", "at": "datetime"},
+            cursor_column="at",
         )
     with pytest.raises(InvalidContract, match="datetime or int"):
         Contract(
             "orders", ("id",), {"full": Shape.full()}, types={"id": "int", "c": "str"}, cursor_column="c"
         )
+
+
+def test_a_timestamp_read_may_issue_position_zero():
+    c = Contract(
+        "orders",
+        ("id",),
+        {
+            "full": Shape.full(),
+            "since": Shape.changes(),
+            "changes": Shape.changes(checkpoint=Checkpoint.SEQUENCE),
+        },
+        types={"id": "int"},
+    )
+    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation=7))
+    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18), generation=0))
+    assert ledger.generation == 0
+    assert ledger.apply(Manifest(c.table, "changes", at(20), since=0, generation=3)).generation == 3
 
 
 def test_the_store_refuses_rows_whose_cursor_is_outside_the_declared_interval():
@@ -155,7 +153,7 @@ def test_positions_round_trip_on_the_wire():
     ledger = Ledger(c).apply(full(c)).apply(changes(c, 100, 150))
     assert Ledger.from_json(ledger.to_json()) == ledger
     assert Manifest.from_json(changes(c, 100, 150).to_json()) == changes(c, 100, 150)
-    assert Contract.from_json(events().to_json()) == events()
+    assert Contract.from_json(c.to_json()) == c
     assert '"generation":150' in ledger.identity_json()
 
 

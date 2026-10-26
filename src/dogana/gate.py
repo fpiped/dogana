@@ -13,7 +13,6 @@ from .contract import (
     FullDelivery,
     Manifest,
     Scalar,
-    SequenceAppend,
     TimestampChanges,
     Window,
     WindowCoverage,
@@ -81,7 +80,7 @@ class ApplyPlan(Wire):
         delivery = manifest.check(contract)
         actions: tuple[Action, ...]
         match delivery:
-            case AppendInterval() | SequenceAppend():
+            case AppendInterval():
                 actions = (Action(Operation.APPEND),)
             case FullDelivery():
                 actions = (Action(Operation.REPLACE_ALL),)
@@ -187,8 +186,6 @@ class Gate:
             names.append("rows_in_window")
         if contract.window_column is not None:
             names.append("window_stability")
-        if contract.domain is not None:
-            names.append("rows_in_domain")
         if cursor_interval(contract, delivery) is not None:
             names.append("rows_in_interval")
         if contract.key:

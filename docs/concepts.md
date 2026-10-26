@@ -2,7 +2,7 @@
 
 | Concept | Meaning |
 |---|---|
-| Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, the hash of the data contract's columns, and optionally the finite `domain` of window values. |
+| Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, and the hash of the data contract's columns. |
 | Shape | Coverage, completeness, deletion signal and checkpoint; helpers include `full`, `window`, `changes`, `feed` and `append`. |
 | Manifest | One source read's shape, boundary, coverage, count and optional SHA-256 of the delivered bytes. |
 | Gate | Fixed checks that turn a manifest and row outcomes into a publication decision. |
@@ -26,7 +26,7 @@ The core never computes a full schema.
 | Nightly full export | `Shape.full()` | Both dates advance everywhere. |
 | Daily window, weekly full | `Shape.window(size=...)` and `Shape.full()` | Both dates advance inside delivered coverage. |
 | Changes since `updated_at` | `Shape.changes()` | Completeness advances; deletion knowledge waits. |
-| One export per plant | Complete singleton windows, plants listed in `domain` | Each plant has dates; once every listed plant is delivered, the whole table has them. |
+| One export per plant | Complete singleton windows | Each plant has dates; undelivered space stays unknown. |
 | Cursor feed with tombstones | `Shape.feed()` | Continuous changes and deleted keys preserve an exact base. |
 | Immutable keyless history | `Shape.append()` with `start_at` | Contiguous intervals advance both dates. |
 | A change feed consumed in offset batches | `Shape.feed(checkpoint="sequence")` after a snapshot | Each committed range of offsets continues the last, checked by order. |

@@ -857,25 +857,6 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).generation == 100
         assert [row["id"] for row in self._rows(factory, store, c.table)] == [1, 2]
 
-    def test_rows_outside_a_declared_domain_are_refused(self, factory: StoreFactory, store: Store) -> None:
-        columns = {"id": "int", "plant": "str"}
-        c = Contract(
-            "plants",
-            ("id",),
-            {"full": FULL, "plant": WINDOW},
-            window_column="plant",
-            types=columns,
-            schema_hash=_schema_hash(columns),
-            max_shrink_fraction=None,
-            domain=("A", "B"),
-        )
-        rows = [{"id": 1, "plant": "A"}, {"id": 2, "plant": "C"}]
-        manifest = Manifest(c.table, "full", _at(18), rows=2, schema_hash=c.schema_hash)
-        refused = _submit(store, c, factory.write_source(rows, columns), manifest)
-        assert not refused.accepted
-        assert any(check.name == "rows_in_domain" and not check.passed for check in refused.checks)
-        assert store.load_ledger(c).publication_id is None
-
     def test_corrected_content_hash_is_a_new_delivery_subject_to_time_admission(
         self, factory: StoreFactory, store: Store
     ) -> None:

@@ -93,8 +93,6 @@ def check_rows(contract, manifest, rows, previous):
         or shrink is None
         or (len(covered) - len(rows)) / len(covered) <= shrink,
         "content_hash": False,  # rows in memory have no delivered bytes
-        "rows_in_domain": contract.domain is None
-        or all(row.get(col) is None or row[col] in contract.domain for row in rows),
     }
     if any(r.name == "rows_in_interval" for r in requirements):
         interval = cursor_interval(contract, manifest.check(contract))

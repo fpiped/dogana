@@ -53,24 +53,17 @@ Keys are unique and non-null. Key and window values are strings, integers, dates
 equality or interval arithmetic, including DST folds. Strings use code-point order, without Unicode
 normalization or locale collation. Equal-endpoint windows denote one partition. String adjacency uses successor `s + "\x00"` and minimum `""`. Date and datetime domains respect
 their representable minima and maxima; empty exterior intervals are discarded. A set of delivered
-plant codes does not close the rest of the string domain, unless the contract declares a `domain`:
-the ascending, unique values the window column takes. Space holding no listed value cannot hold rows,
-so claims, admission and planning ignore it; windows name listed values, and `rows_in_domain` refuses
-a row whose window value is not listed. Without a domain, whole-table evidence requires a full read.
-A domain is the receiver's declaration and goes stale when the source adds a value: a complete
-whole-table read refuses the unlisted rows, but per-partition reads never deliver the new partition,
-so the table reads complete without it. Declare a domain only for a set the receiver reconciles with
-the source, and change the contract when the set changes.
+plant codes does not close the rest of the string domain; whole-table evidence requires a full read.
 
 An empty `key` means rows have no identity. Complete shapes replace their coverage wholesale.
 Keyless rows form a multiset: equal events retain separate occurrences.
-Keyless changed-only shapes must be whole-domain appends of one checkpoint, timestamp or sequence,
-with no deletion signal and a `start_at` bounding retained history: a time, or a position for sequence. This declares that the source only appends and never deletes
+Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
+`start_at` bounding retained history. This declares that the source only appends and never deletes
 or revises retained events. Named-key coverage, tombstones and generation checkpoints require keys.
 An optional `cursor_column` names a column declared as `datetime` or `int` in `types`. A `datetime`
 cursor checks timestamp reads against `(since, produced_at]`; an `int` cursor checks sequence reads
-against `(since, generation]`. Without it, the gate cannot check individual rows against the declared
-extraction interval.
+against `(since, generation]`; a cursor column must check one of the contract's changed-only shapes. Without it,
+the gate cannot check individual rows against the declared extraction interval.
 
 A `Shape` has four semantic properties:
 
@@ -101,12 +94,11 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 |---|---|---|
 | Exhaustive table export | `Shape.full()` | Completeness inferred from a received count alone. |
 | Exhaustive rolling window | `Shape.window(size=...)` | Mutable window membership or more than one window column. |
-| One complete partition per file | Complete singleton window, with a `domain` listing the partitions | Partitions outside the domain; without one, space outside delivered partitions remains unknown. |
+| One complete partition per file | Complete singleton window | A finite registered domain; space outside delivered partitions remains unknown. |
 | Every changed row since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="none")` | Deletions or repair of a missed full export without another full export. |
 | Every changed row and deleted key since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
 | Continuous opaque-cursor feed with deleted keys | `Shape.feed()` | Window-local cursors, missing generations or repair of an unknown base. |
 | Every change after a commit-ordered position (log sequence number, CDC or Kafka offset) | `Shape.changes(checkpoint="sequence")` or `Shape.feed(checkpoint="sequence")` | Positions assigned before commit, such as auto-increment ids under concurrent writers; updates that do not advance the position; positions beyond 2^53. |
-| Immutable events numbered by position | `Shape.append(checkpoint="sequence")` with an integer `start_at` | Positions the source never assigned. |
 | Immutable events retained from a declared start | `Shape.append()` | Updates, deletion or overlapping keyless intervals. |
 | CDC stream in offset batches | `Shape.feed(checkpoint="sequence")` after a full snapshot issuing its offset | Missing offset ranges or source completeness inferred from offsets alone. |
 | Immutable event stream in arrival-order intervals | `Shape.append()` with `start_at` | Event-time completeness or deduplication of a re-emitted event in a new batch. |
@@ -126,8 +118,11 @@ Sequence reads carry integer `since` and `generation` and cover the positions `(
 `generation` is the extractor's promise that every change up to it is present, so positions must
 follow commit order. An auto-increment id is assigned at insert: a transaction can commit a lower id
 after a read has seen a higher one, and the next read starts past it. Read such ids only up to a
-position below every open transaction, or reread with overlap, which keyed sequence reads admit. A delivery that issues a
-position issues the table's kind: an integer when the contract has sequence shapes, else a string.
+position below every open transaction, or reread with overlap, which keyed sequence reads admit.
+`produced_at` must not be later than the commit of the first change after `generation`: a consumer
+behind the head uses the commit time of the last change it read, never the time it runs. Sequence
+positions need a key; keyless tables append by timestamp. A delivery that issues a position issues
+the table's kind: an integer when the contract has sequence shapes, else a string.
 A complete whole-domain delivery may issue a generation; a complete window carries none.
 
 Changed-only delivery collapses changes to one final live row or terminal tombstone per key at its
@@ -181,7 +176,6 @@ certification or replay lookup. Store delivery owns replay idempotency.
 | Generation tombstones, `(c, v)`, `c = v` | `(t, t)` | Issued generation. |
 | Generation tombstones, `(c, v)`, `c > v` | `(t, v)` | Issued generation. |
 | Keyed sequence changes, as generation changes | as generation changes | `generation`, the read's last position. |
-| Keyless sequence append | `(t, t)` | `generation`, the read's last position. |
 
 - Manifest fields must match its admitted shape and contract, including bounds and key types.
 - Every affected known region requires `t > complete_as_of`; a late full cannot overwrite a newer window.
@@ -191,8 +185,7 @@ certification or replay lookup. Store delivery owns replay idempotency.
 - Timestamp changes require `since <= t` and `since <= complete_as_of` everywhere covered.
 - Generation changes require `since` equal to the held table generation; a broken chain needs a full reset.
 - Keyed sequence reads require `since <= position <= generation` for the held integer position: they may
-  reread, never skip or move back. Sequence appends require `since` equal to the position, or to
-  `start_at` on an untouched ledger. A missing or opaque position needs a complete delivery issuing one.
+  reread, never skip or move back. A missing or opaque position needs a complete delivery issuing one.
 - The gate additionally requires `t <= receiver now`; accounting alone has no receiver clock.
 - Each accepted delivery extends the publication chain with the previous head, contract and manifest
   identities; disjoint windows commute only on evidence, never on this ordered chain.
@@ -217,7 +210,6 @@ matching. Keyless replacement does not match keys. The core describes operations
 | named_keys | Required live-key enumeration equals candidate keys; window tombstones cannot delete published keys outside coverage. |
 | shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
 | rows_in_interval | With a `datetime` cursor and a timestamp read, every cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. |
-| rows_in_domain | With a `domain`, every non-null window value is one of its values. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes the store read equals it. |
 
 Moving a key into a window is safe: replacement removes its old copy. Moving out can leave a hole
