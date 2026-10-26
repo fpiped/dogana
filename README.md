@@ -1,14 +1,14 @@
 <p align="center">
 <picture>
-<source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
-<img src="docs/assets/wordmark-light.svg" alt="dogana" width="400">
+<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fpiped/dogana/main/docs/assets/wordmark-dark.svg">
+<img src="https://raw.githubusercontent.com/fpiped/dogana/main/docs/assets/wordmark-light.svg" alt="dogana" width="400">
 </picture>
 </p>
 
 <p align="center">
 <a href="https://github.com/fpiped/dogana/actions/workflows/ci.yml"><img src="https://github.com/fpiped/dogana/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-<a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="Python 3.11+"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-355eaa" alt="Licence Apache-2.0"></a>
+<a href="https://github.com/fpiped/dogana/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-3776ab" alt="Python 3.11+"></a>
+<a href="https://github.com/fpiped/dogana/blob/main/LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-355eaa" alt="Licence Apache-2.0"></a>
 </p>
 
 # Know which rows you can trust
@@ -81,9 +81,9 @@ dogana is for everything else.
 
 ## Learn more
 
-- [Quick start](docs/quickstart.md): a store, a refused file, a replay.
-- [Concepts](docs/concepts.md): every term, and what dogana is not.
-- [Protocol](docs/protocol.md): the specification.
-- [Integrations](docs/integrations.md): dlt, dbt, Iceberg, Spark, orchestrators.
+- [Quick start](https://github.com/fpiped/dogana/blob/main/docs/quickstart.md): a store, a refused file, a replay.
+- [Concepts](https://github.com/fpiped/dogana/blob/main/docs/concepts.md): every term, and what dogana is not.
+- [Protocol](https://github.com/fpiped/dogana/blob/main/docs/protocol.md): the specification.
+- [Integrations](https://github.com/fpiped/dogana/blob/main/docs/integrations.md): dlt, dbt, Iceberg, Spark, orchestrators.
 
-Licensed under [Apache-2.0](LICENSE).
+Licensed under [Apache-2.0](https://github.com/fpiped/dogana/blob/main/LICENSE).
