@@ -75,7 +75,7 @@ commits rows and dates in one transaction, and a conformance suite proves a stor
 warehouse. Senders in any language write their manifest with `dogana manifest`.
 
 dogana is in beta: the manifest and ledger format may still change before 1.0.
-Not on PyPI yet: `pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`.
+Install it with `pip install "dogana[duckdb]"`, or `pip install dogana` for the core alone.
 
 If all your sources have change data capture with deletes, you already know which rows to trust.
 dogana is for everything else.

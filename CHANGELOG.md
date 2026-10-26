@@ -1,68 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-10-26)
 
-- Breaking pre-release change: `valid_as_of` becomes `deletions_as_of` on regions, claims, evidence and requirements, so the second date says what it covers and no longer reads as SQL:2011 or SCD2 valid time. Ledger and receipt identities change.
-- Add the `dogana` command line: `manifest` writes a delivery's sidecar with counted rows, the SHA-256 of its bytes and values typed by the contract, atomically and never over an existing one without `--force`; `check` verifies a file against its manifest and the manifest against the contract. Filename patterns and the command line share one parser, so derived manifests now type sequence positions too.
-- Add the `sequence` checkpoint: an ordered integer position in commit order (log sequence number, CDC or Kafka offset; auto-increment ids only below every open transaction) that keyed reads continue without skipping or moving back; keyless tables keep timestamp appends. `Shape.feed` takes a `checkpoint`; `cursor_column` may be `int` and then checks every row against `(since, generation]`, and a cursor column must check one of the changed-only shapes. A table holds one kind of position. Sixteen semantic shapes.
-- Breaking pre-release change: `content_hash` is the lowercase hex SHA-256 of the delivered bytes, and a manifest that declares one requires a `content_hash` check from the store. A stale sidecar over changed bytes is refused instead of replayed: a replay with a declared digest is answered only after the store hashes the bytes. The DuckDB store hashes delivered paths before and after reading them; `FileDrop` adds the file's digest to derived manifests. Conformance factories supply `content_hash(source)`.
-- Breaking pre-release change: remove `Contract.schema` and `Column`; require `Contract.types` to cover exactly the key, window and cursor columns, with an optional opaque `schema_hash` supplied by the data contract. Contract identities change; wire version remains 1.
-- Keep full column definitions outside the core. The reference column-hash recipe is unchanged, so existing schema hashes remain valid.
-- Require keyword-only `columns` on `FileDrop` for typed CSV and column hashing; infer types for row mappings in `DuckDBStore`.
-- Account for micro-batches committed from a stream with the existing shapes; tests cover CDC offsets, event intervals, lookback, restarts, concurrent consumers and 1,000 batches; no stream-processing claims.
-- Store regional evidence as sorted boundary cuts and expose Known or Unknown evidence internally.
-- Parse manifests into shape-specific deliveries and separate guards, date transitions, cursor rules and publication chaining.
-- Replace receipt flags with accepted, rejected or replayed outcomes, retaining derived compatibility properties.
-- Require keyword arguments for shape properties and optional contract and manifest fields.
-- Add shape factories, contract manifest construction and shared rolling-window and logical-type metadata.
-- Reduce the store port to seven methods; execute plans inside publication and compare rejected bases too.
-- Make stamped recovery an optional conformance tier using shared LedgerAhead and StampAhead diagnosis.
-- Refuse undecodable rejected receipts and unexpected destination column order before publication.
-- Split reference row checks by requirement and share their SQL predicates.
-- Canonicalize identities with RFC 8785, exact binary64 inputs, UTF-8 output and UTF-16 key ordering.
-- Publish JSON Schema 2020-12 for all fifteen wire kinds and validate suite serialization against them.
-- Replace seeded loops with Hypothesis properties, an independent boundary oracle and crash/replay state machines.
-- Print and test regional evidence, a refused file and replay in the README example.
-- Considered: a DuckLake reference store as the executable table-format publication mechanism; deferred for the owner.
+First public release, in beta: the manifest and ledger format may change before 1.0.
 
-- Define source declarations, store checks and atomic publication as separate trust boundaries.
-- Require receiver time for gate decisions and delivery; reject future source boundaries.
-- Record receipt arrival time, source, checked base and an explicit outcome.
-- Preserve original receipt identity and arrival time when replay returns an acceptance.
-- Move delivery orchestration into the core over storage primitives, including receipt lookup.
-- Remove accepted identities from embedded ledgers; keep replay history in the store's receipt index.
-- Limit atomic publication to transactions or table-format commits carrying durable receipts and expected-parent checks.
-- Bind candidate checks and publication to the same base; refuse stale cached plans and automatic rebase.
-- Retain accepted receipts in publication order and read rows with evidence from one publication.
-- Fail closed on missing publication evidence and repair ledgers only against a matching row stamp.
-- Treat publication stamps as association labels, not content checksums.
-- Normalize canonical identity defaults, numeric spelling, UTC times and key ordering; publish fixed identity vectors.
-- Normalize replay outcome to acceptance for receipt identity and distinguish wire compatibility from identity compatibility.
-- Add optional manifest content hashes so corrected payloads cannot masquerade as accepted replays.
-- Raise shrink protection to a default of one half, with explicit disabling and per-delivery limits.
-- Permit compatible contract changes while preserving table, key and window bindings in history.
-- Keep full historical contract identities in the publication chain, including policy settings.
-- Restrict generations to one table-wide cursor and forbid window generation feeds.
-- Allow timestamp tombstones to repair validity when their checkpoint covers the deletion gap.
-- Require keyless append continuity at every covered boundary and reject nonempty zero-length intervals.
-- Declare retained keyless events immutable and never deleted, explaining why append advances validity.
-- Add optional cursor columns and timestamp row checks over `(since, produced_at]`.
-- Add keyed timestamp lookback to mitigate bounded late commits without claiming completeness proof.
-- Anchor rolling reads to existing evidence and choose feasible boundaries beyond requirement minima.
-- Normalize datetime bounds and keys before comparison; enforce declared window types and representable-domain adjacency.
-- Admit keys moving into a window while retaining source immutability as the guarantee against unseen moves out.
-- Report dependent checks as not evaluated when earlier validation prevents execution.
-- Distinguish declared delivery failures from storage errors and programming failures through a public error hierarchy.
-- Preserve successful commits across cleanup failures and release failed candidates and transactions.
-- Parse CSV with `FileDrop.columns` and infer types for iterable row dictionaries in the reference store.
-- Derive file manifests from fixed shapes, optional counts and rolling bounds, with source descriptions in receipts.
-- Require explicit filename timezones and reject ambiguous or nonexistent local boundaries.
-- Refuse glob paths, drop-root escapes and implicit adoption of unmanaged tables.
-- Retain changed row versions and commit metadata instead of copying every published table.
-- Exercise both transaction and atomic-commit stores through the shared conformance suite.
-- Define combined claims as input-date bounds, with common-time and negation limits for queries.
-- State deterministic ordered folding, store replay idempotency and regional commutativity without claiming a join-semilattice.
-- Document a dlt store design that gates one load, with one cursor owner and explicit endpoint handling.
-- Add dbt freshness and singular-test recipes, SQLMesh positioning and inspectable store metadata.
-- Run every README block with explicit checkout installation, an empty example directory and visible success output.
-- Keep Python 3.11+, standard-library core boundaries, strict typing and protocol-first contribution rules.
+- Contracts, manifests, a gate and a ledger that keep `complete_as_of` and `deletions_as_of` for every
+  region of a table, with receipts that rebuild the ledger.
+- Sixteen delivery shapes: full exports, complete windows, changes since a timestamp, an opaque
+  generation or a commit-ordered position, change feeds with tombstones, and keyless timestamp appends.
+- Deliveries checked against their manifest: row count, keys, windows, cursor intervals, column hash,
+  shrink tolerance and the SHA-256 of the delivered bytes.
+- A DuckDB reference store, a file drop reading sidecar or filename-derived manifests, and a
+  conformance suite for other stores.
+- A planner that names the next read, and the `dogana` command line to write and check manifests.
+- JSON Schema for every wire value, with identity test vectors.

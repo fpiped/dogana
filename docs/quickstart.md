@@ -1,10 +1,8 @@
 # Quick start
 
-Python 3.11 or later. After the first release, install with `pip install dogana`.
-The core has no dependencies. The `duckdb` extra adds the reference store the quick start uses; nothing in the core imports it.
-For this quick start, use `pip install 'dogana[duckdb]'`. No release is on PyPI yet. Install from GitHub with
-`pip install "dogana[duckdb] @ git+https://github.com/fpiped/dogana"`, or, with uv and an active
-virtual environment, from the source checkout containing `pyproject.toml`:
+Python 3.11 or later. Install with `pip install "dogana[duckdb]"`: the core has no dependencies, and
+the `duckdb` extra adds the reference store this quick start uses. From a source checkout, with uv
+and an active virtual environment:
 
 ```sh
 uv pip install -e '.[duckdb]'
