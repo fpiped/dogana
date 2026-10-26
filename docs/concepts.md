@@ -4,7 +4,7 @@
 |---|---|
 | Contract | Receiver declaration of table, key, window column, their types, admitted shapes, policy, and the hash of the data contract's columns. |
 | Shape | Coverage, completeness, deletion signal and checkpoint; helpers include `full`, `window`, `changes`, `feed` and `append`. |
-| Manifest | One source read's shape, boundary, coverage, count and optional content digest. |
+| Manifest | One source read's shape, boundary, coverage, count and optional SHA-256 of the delivered bytes. |
 | Gate | Fixed checks that turn a manifest and row outcomes into a publication decision. |
 | Ledger | Evidence for the table, rebuilt from accepted receipts. |
 | Region | An interval on one declared window column, including explicitly unknown space. |

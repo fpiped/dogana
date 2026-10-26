@@ -11,6 +11,10 @@
       "pattern": "^(?:[^\\ud800-\\udfff]|[\\ud800-\\udbff][\\udc00-\\udfff])*$",
       "minLength": 1
     },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
     "identifier": {
       "type": "string",
       "pattern": "^(?!__[dD][oO][gG][aA][nN][aA]_)[A-Za-z_][A-Za-z0-9_]*(?![\\s\\S])"

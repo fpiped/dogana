@@ -37,12 +37,35 @@ def _base(store: Store, contract: Contract, manifest: Manifest) -> Ledger:
         return Ledger.from_receipts(contract, _call(store.receipts, contract.table))
 
 
+def _description(source: object) -> str | None:
+    return fsdecode(source) if isinstance(source, (str, bytes, PathLike)) else None
+
+
+def _replay(
+    store: Store, contract: Contract, source: object, previous: Receipt, ledger: Ledger, now: datetime
+) -> Receipt:
+    """A stored acceptance answers for a declared digest only once the store has hashed these bytes."""
+    manifest, description = previous.manifest, _description(source)
+    candidate = _call(store.hold, source, manifest, contract)
+    try:
+        checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
+    finally:
+        _call(store.abort, candidate)
+    if all(check.passed for check in checks if check.name == "content_hash"):
+        return replace(previous, outcome=Outcome.REPLAYED)
+    refused = Gate.reject(ledger, manifest, checks, now=now, source=description)
+    _call(store.publish, None, refused)
+    return refused
+
+
 def deliver(store: Store, contract: Contract, source: object, manifest: Manifest, now: datetime) -> Receipt:
     """Check and publish once, retaining refusals and propagating storage failures."""
     now = utc(now)
-    description = fsdecode(source) if isinstance(source, (str, bytes, PathLike)) else None
+    description = _description(source)
     ledger = _base(store, contract, manifest)
     previous = _call(store.accepted_receipt, manifest.identity)
+    if previous is not None and manifest.content_hash is not None:
+        return _replay(store, contract, source, previous, ledger, now)
     if previous is not None:
         return replace(previous, outcome=Outcome.REPLAYED)
     if not all(check.passed for check in Gate.preflight(ledger, manifest, now=now)):

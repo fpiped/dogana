@@ -120,8 +120,9 @@ require a tombstone shape. A zero-length timestamp interval contains no rows.
 Timestamp deliveries with `cursor_column` use `(since, produced_at]`, including for keyed feeds.
 Without that column, keyed extraction may include `since`; overlapping keyed reads are admissible.
 Keyless appends always use `(since, produced_at]`, without overlap. `content_hash` is an optional
-digest of the bytes or canonical rows, supplied by sender or receiver. It participates in identity.
-Without a digest, manifest identity does not identify the content.
+lowercase hex SHA-256 of the delivered bytes, supplied by sender or receiver. It participates in
+identity, and the store verifies it against the bytes it read; a source without bytes cannot carry
+one. Without a digest, manifest identity does not identify the content.
 
 ## Corrections
 
@@ -192,6 +193,7 @@ matching. Keyless replacement does not match keys. The core describes operations
 | named_keys | Required live-key enumeration equals candidate keys; window tombstones cannot delete published keys outside coverage. |
 | shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
 | rows_in_interval | With `cursor_column` and a timestamp shape, every cursor value is non-null and in `(since, produced_at]`. |
+| content_hash | With `manifest.content_hash`, the SHA-256 of the bytes the store read equals it. |
 
 Moving a key into a window is safe: replacement removes its old copy. Moving out can leave a hole
 that no candidate check sees, hence source immutability remains necessary. Checks blocked by an
@@ -264,6 +266,7 @@ the store. `dogana.deliver(store, contract, source, manifest, now)` owns the sha
 
 1. `load_ledger(contract)` obtains the current evidence. `accepted_receipt(manifest.identity)`
    returns a stored acceptance on replay, with `outcome="replayed"`, original identity and receiver time.
+   A manifest with `content_hash` replays only after the store checks the bytes; different bytes are refused.
 2. Preflight the declaration and transition. `publish(None, receipt)` records a rejection against
    its expected parent without changing published rows or evidence.
 3. `hold(source, manifest, contract)` stages a candidate; `check(candidate, contract, manifest,
@@ -286,7 +289,8 @@ The store must satisfy six obligations:
 3. Compare and set against `receipt.base_publication_id`. Refuse a changed head, including cached
    checks against a stale base. A commit retry may not silently rebase an already approved plan.
 4. Persist accepted and rejected receipts; retain accepted receipts in publication order for recovery.
-5. Replay accepted manifest identity by returning its original receipt, with no second publication.
+5. Replay accepted manifest identity by returning its original receipt, with no second publication,
+   after verifying a declared `content_hash` against the delivered bytes.
 6. Read rows and claims under one publication identity; separate current reads can straddle a commit.
 
 The publication chain is SHA-256 of UTF-8 `f"{previous}:{contract.identity}:{manifest.identity}"`;

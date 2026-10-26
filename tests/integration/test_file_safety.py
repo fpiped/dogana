@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from dogana import (
     SerializationError,
     Shape,
     State,
+    StoreError,
 )
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
@@ -67,7 +69,8 @@ def test_a_malformed_sidecar_is_a_serialization_error_without_publication(
 def test_a_utf8_sidecar_preserves_the_manifest_and_submitted_source(tmp_path: Path) -> None:
     path = tmp_path / "data.csv"
     c = _contract()
-    manifest = replace(_delivery(path, c), generation="\u00e9", content_hash="declared-digest")
+    manifest = replace(_delivery(path, c), generation="\u00e9")
+    manifest = replace(manifest, content_hash=sha256(path.read_bytes()).hexdigest())
     document = json.dumps(json.loads(manifest.to_json()), ensure_ascii=False)
     path.with_suffix(".csv.json").write_bytes(document.encode("utf-8"))
     with DuckDBStore(":memory:") as store:
@@ -162,6 +165,8 @@ def test_an_internal_symlink_preserves_the_submitted_filename_and_manifest(
     if use_sidecar:
         path.with_suffix(".csv.json").symlink_to(data.with_suffix(".csv.json"))
     pattern = FilePattern(r"(?P<produced_at>.*)\.csv", shape="full")
+    if not use_sidecar:
+        expected = replace(expected, content_hash=sha256(data.read_bytes()).hexdigest())
     with DuckDBStore(":memory:") as store:
         receipt = FileDrop(store, c, pattern, root=tmp_path, columns=COLUMNS).ingest(path)
         assert receipt.accepted, receipt.checks
@@ -357,3 +362,68 @@ def test_a_window_derived_from_local_time_uses_utc_duration_across_dst() -> None
     )
     manifest = pattern.manifest("2026-03-30T00:00:00_0.csv", c)
     assert manifest.window == (datetime(2026, 3, 28, 22, tzinfo=UTC), datetime(2026, 3, 29, 22, tzinfo=UTC))
+
+
+def test_a_stale_sidecar_over_changed_bytes_is_refused_not_replayed(tmp_path: Path) -> None:
+    path = tmp_path / "data.csv"
+    c = _contract()
+    path.write_text("id\n1\n")
+    manifest = Manifest(
+        c.table,
+        "full",
+        BOUNDARY,
+        rows=1,
+        schema_hash=c.schema_hash,
+        content_hash=sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".csv.json").write_text(manifest.to_json())
+    with DuckDBStore(":memory:") as store:
+        drop = FileDrop(store, c, columns=COLUMNS)
+        assert drop.ingest(path, now=BOUNDARY).accepted
+        path.write_text("id\n2\n")
+        refused = drop.ingest(path, now=BOUNDARY)
+        assert not refused.accepted and not refused.replayed
+        assert any(check.name == "content_hash" and not check.passed for check in refused.checks)
+        assert store.read(c.table) == [{"id": 1}]
+
+
+def test_a_derived_manifest_replays_the_same_bytes_and_refuses_changed_bytes_at_its_boundary(
+    tmp_path: Path,
+) -> None:
+    c = _contract()
+    path = tmp_path / "2026-10-18T00:00:00Z.csv"
+    path.write_text("id\n1\n")
+    pattern = FilePattern(r"(?P<produced_at>.*)\.csv", shape="full")
+    with DuckDBStore(":memory:") as store:
+        drop = FileDrop(store, c, pattern, columns=COLUMNS)
+        first = drop.ingest(path, now=BOUNDARY)
+        assert first.accepted and first.manifest.content_hash == sha256(b"id\n1\n").hexdigest()
+        assert drop.ingest(path, now=BOUNDARY).replayed
+        path.write_text("id\n2\n")
+        changed = drop.ingest(path, now=BOUNDARY)
+        assert not changed.accepted and not changed.replayed
+        assert store.read(c.table) == [{"id": 1}]
+
+
+def test_a_file_that_changes_while_it_is_read_is_a_store_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dogana.reference.duckdb import store as module
+
+    path = tmp_path / "data.csv"
+    c = _contract()
+    path.write_text("id\n1\n")
+    manifest = Manifest(
+        c.table,
+        "full",
+        BOUNDARY,
+        rows=1,
+        schema_hash=c.schema_hash,
+        content_hash=sha256(path.read_bytes()).hexdigest(),
+    )
+    digests = iter((manifest.content_hash, "f" * 64))
+    monkeypatch.setattr(module, "_file_digest", lambda _: next(digests))
+    with DuckDBStore(":memory:") as store:
+        with pytest.raises(StoreError, match="changed while it was read"):
+            store.hold(path, manifest, c)
+        assert store.load_ledger(c).publication_id is None

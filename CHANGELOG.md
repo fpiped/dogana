@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Breaking pre-release change: `content_hash` is the lowercase hex SHA-256 of the delivered bytes, and a manifest that declares one requires a `content_hash` check from the store. A stale sidecar over changed bytes is refused instead of replayed: a replay with a declared digest is answered only after the store hashes the bytes. The DuckDB store hashes delivered paths before and after reading them; `FileDrop` adds the file's digest to derived manifests. Conformance factories supply `content_hash(source)`.
 - Breaking pre-release change: remove `Contract.schema` and `Column`; require `Contract.types` to cover exactly the key, window and cursor columns, with an optional opaque `schema_hash` supplied by the data contract. Contract identities change; wire version remains 1.
 - Keep full column definitions outside the core. The reference column-hash recipe is unchanged, so existing schema hashes remain valid.
 - Require keyword-only `columns` on `FileDrop` for typed CSV and column hashing; infer types for row mappings in `DuckDBStore`.

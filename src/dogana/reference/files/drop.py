@@ -5,13 +5,13 @@ from __future__ import annotations
 import csv
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
 from dogana.contract import Scalar, Window
-from dogana.reference._sources import _column_hash, _columns, _FileSource
+from dogana.reference._sources import _column_hash, _columns, _file_digest, _FileSource
 from dogana.wire import utc
 
 
@@ -182,7 +182,9 @@ class FileDrop:
                 raise SerializationError("sidecar manifest must be UTF-8") from exc
             manifest = Manifest.from_json(document)
         elif self.pattern is not None:
-            manifest = self.pattern.manifest(path, self.contract)
+            # The receiver hashes what it derives, so a changed file under the same name is not a replay.
+            derived = self.pattern.manifest(path, self.contract)
+            manifest = replace(derived, content_hash=_file_digest(resolved))
         else:
             raise InvalidContract("delivery needs a sidecar manifest or a declared filename pattern")
         return deliver(

@@ -71,6 +71,10 @@ class StoreFactory(Protocol):
 
     def make_store(self) -> Store: ...
     def write_source(self, rows: Sequence[Mapping[str, Any]], columns: Mapping[str, str]) -> object: ...
+    def content_hash(self, source: object) -> str | None:
+        """The SHA-256 of the bytes `source` delivers, or None when it delivers rows without bytes."""
+        ...
+
     def read_table(self, store: Store, table: str) -> list[dict[str, Any]]: ...
     def fail_after_rows(self, store: Store) -> AbstractContextManager[None]: ...
     def read_publication(self, store: Store, contract: Contract) -> tuple[list[dict[str, Any]], Ledger]: ...
@@ -776,12 +780,7 @@ class StoreConformance(_StoreScenarios):
         prepared = []
         for key in (2, 3):
             manifest = Manifest(
-                table=c.table,
-                shape="full",
-                produced_at=_at(19),
-                rows=1,
-                schema_hash=c.schema_hash,
-                content_hash=str(key),
+                table=c.table, shape="full", produced_at=_at(17 + key), rows=1, schema_hash=c.schema_hash
             )
             candidate = store.hold(factory.write_source([_row(key)], COLUMNS), manifest, c)
             checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
@@ -801,18 +800,50 @@ class StoreConformance(_StoreScenarios):
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, receipt)
 
+    def test_a_declared_content_hash_that_differs_from_the_delivered_bytes_is_refused(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = _contract()
+        source = factory.write_source([_row(1)], COLUMNS)
+        manifest = Manifest(
+            c.table, "full", _at(18), rows=1, schema_hash=c.schema_hash, content_hash="0" * 64
+        )
+        refused = _submit(store, c, source, manifest)
+        assert not refused.accepted
+        assert any(check.name == "content_hash" and not check.passed for check in refused.checks)
+        assert store.receipts(c.table) == (refused,)
+        assert store.load_ledger(c).publication_id is None
+
+    def test_a_replayed_manifest_over_different_bytes_is_refused(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        c = _contract()
+        original = factory.write_source([_row(1)], COLUMNS)
+        if factory.content_hash(original) is None:
+            pytest.skip("the store's sources deliver rows without bytes")
+        first = self._deliver(factory, store, c, [_row(1)], content_hash=factory.content_hash(original))
+        assert _submit(store, c, factory.write_source([_row(1)], COLUMNS), first.manifest).replayed
+        refused = _submit(store, c, factory.write_source([_row(2)], COLUMNS), first.manifest)
+        assert not refused.accepted and not refused.replayed
+        assert any(check.name == "content_hash" and not check.passed for check in refused.checks)
+        assert store.load_ledger(c) == first.ledger
+        assert self._rows(factory, store, c.table) == [_row(1)]
+
     def test_corrected_content_hash_is_a_new_delivery_subject_to_time_admission(
         self, factory: StoreFactory, store: Store
     ) -> None:
         c = _contract()
-        first = self._deliver(factory, store, c, [_row(1)], content_hash="original")
-        corrected = replace(first.manifest, content_hash="corrected")
-        refused = _submit(store, c, factory.write_source([_row(2)], COLUMNS), corrected)
+        original = factory.write_source([_row(1)], COLUMNS)
+        if factory.content_hash(original) is None:
+            pytest.skip("the store's sources deliver rows without bytes")
+        first = self._deliver(factory, store, c, [_row(1)], content_hash=factory.content_hash(original))
+        assert any(check.name == "content_hash" and check.passed for check in first.checks)
+        source = factory.write_source([_row(2)], COLUMNS)
+        corrected = replace(first.manifest, content_hash=factory.content_hash(source))
+        refused = _submit(store, c, source, corrected)
         assert not refused.accepted and not refused.replayed
         assert corrected.identity != first.manifest.identity
-        accepted = _submit(
-            store, c, factory.write_source([_row(2)], COLUMNS), replace(corrected, produced_at=_at(19))
-        )
+        accepted = _submit(store, c, source, replace(corrected, produced_at=_at(19)))
         assert accepted.accepted and not accepted.replayed
         assert self._rows(factory, store, c.table) == [_row(2)]
 

@@ -69,15 +69,17 @@ The sender writes it next to the file, or the receiver derives it from a filenam
 once. It is plain JSON:
 
 ```json
-{"kind": "Manifest", "version": 1, "table": "orders", "shape": "changes",
+{"kind": "Manifest", "version": 1, "table": "orders", "shape": "changes", "rows": 42,
  "produced_at": {"$datetime": "2026-10-19T00:00:00+00:00"},
- "since": {"$datetime": "2026-10-12T00:00:00+00:00"}, "window": null, "generation": null,
- "rows": 42, "content_hash": "9f2c41d8", "schema_hash": null, "keys": [], "tombstones": []}
+ "since": {"$datetime": "2026-10-12T00:00:00+00:00"},
+ "window": null, "generation": null, "schema_hash": null, "keys": [], "tombstones": [],
+ "content_hash": "5b45cc300fc9c1dfa3d3d479a5b4cf93a93bd269afccabc199d3b2ba98a7ded5"}
 ```
 
-The gate checks the rows against it: the count, unique keys, every row inside the window, and a full
-export that would shrink the table by more than half. A contradiction is refused whole, and nothing
-is written. The same manifest sent twice is a replay, answered with the stored receipt.
+The gate checks the delivery against it: the count, unique keys, every row inside the window, a full
+export that would shrink the table by more than half, and the SHA-256 of the bytes. A contradiction
+is refused whole, and nothing is written. The same manifest over the same bytes is a replay, answered
+with the stored receipt.
 
 ## Where it runs
 

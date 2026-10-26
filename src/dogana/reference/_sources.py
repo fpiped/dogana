@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from hashlib import sha256
+from hashlib import file_digest, sha256
 from json import dumps
 from os import PathLike, fspath
 from types import MappingProxyType
@@ -28,6 +28,11 @@ def _column_hash(columns: Mapping[str, str]) -> str:
     return sha256(
         dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
     ).hexdigest()
+
+
+def _file_digest(path: str | PathLike[str]) -> str:
+    with open(path, "rb") as stream:
+        return file_digest(stream, "sha256").hexdigest()
 
 
 @dataclass(frozen=True)

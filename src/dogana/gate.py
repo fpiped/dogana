@@ -193,6 +193,8 @@ class Gate:
             names.append("named_keys")
         if shape.complete and contract.max_shrink_fraction is not None:
             names.append("shrink_tolerance")
+        if manifest.content_hash is not None:
+            names.append("content_hash")
         return tuple(CheckRequirement(n) for n in names)
 
     @staticmethod

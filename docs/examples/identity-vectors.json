@@ -99,10 +99,10 @@
             "a"
           ]
         ],
-        "content_hash": "sha256:changed"
+        "content_hash": "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
       },
-      "canonical": "{\"content_hash\":\"sha256:changed\",\"keys\":[[10,\"e\u0301\"],[2,\"\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
-      "sha256": "0ffb40ba8260274efbbe80bfbaf9ee18a0dc7665e4b6ca32205d94fa3419ea0f"
+      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"keys\":[[10,\"e\u0301\"],[2,\"\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
+      "sha256": "5e86d9555170b7e30b4fc12944b09708b702cc72eb8527afab0c1c9b35aee24d"
     },
     {
       "name": "explicit-disabled-shrink",

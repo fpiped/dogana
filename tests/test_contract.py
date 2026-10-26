@@ -265,6 +265,9 @@ def test_contract_constructor_rejects_invalid_types_before_normalization(field, 
         ("schema_hash", 1),
         ("content_hash", 1),
         ("content_hash", ""),
+        ("content_hash", "sha256:" + "0" * 64),
+        ("content_hash", "A" * 64),
+        ("content_hash", "0" * 63),
     ],
 )
 def test_manifest_constructor_rejects_invalid_types_without_needing_a_contract(field, value):
@@ -298,8 +301,8 @@ def test_window_deliveries_cannot_issue_a_table_wide_generation():
 
 
 def test_corrected_content_changes_manifest_identity():
-    original = Manifest("stock", "full", at(18), rows=2, content_hash="sha256:first")
-    corrected = replace(original, content_hash="sha256:corrected")
+    original = Manifest("stock", "full", at(18), rows=2, content_hash="1" * 64)
+    corrected = replace(original, content_hash="2" * 64)
     assert original.identity != corrected.identity
     assert Manifest.from_json(corrected.to_json()) == corrected
 

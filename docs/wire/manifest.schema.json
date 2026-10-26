@@ -73,7 +73,7 @@
     "content_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:1:types#/$defs/sha256"
         },
         {
           "type": "null"

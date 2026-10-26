@@ -153,9 +153,10 @@ Thirty DATE days ending October 19 start September 20. A window lacking both bou
 is refused. The duration is not a restriction on explicitly declared push windows.
 
 Without a `rows` group, CSV records are counted, including quoted newlines; Parquet counting needs
-the DuckDB extra. Path-based receipts identify the source. Filename derivation does not add a content hash;
-compute one and include it in a supplied manifest when payload identity is required. Count and hash
-describe the received file, not whether it contains all source rows.
+the DuckDB extra. Path-based receipts identify the source. A derived manifest carries the file's SHA-256, so a changed
+file under the same name is a new delivery, not a replay. The DuckDB store hashes every path whose
+manifest declares a digest, before and after reading it, and refuses a file that changed in between.
+Count and hash describe the received file, not whether it contains all source rows.
 Literal regular files are required; glob characters are refused. Resolved files and sidecars must
 remain inside the drop root, including through symlinks. With no root, the submitted file's parent
 is the boundary. These checks are not a sandbox or a resource quota: limit input size and memory

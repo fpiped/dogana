@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import cached_property, wraps
 from hashlib import sha256
@@ -47,7 +47,7 @@ from dogana.errors import (
     SerializationError,
     StoreError,
 )
-from dogana.reference._sources import _column_hash, _columns, _FileSource, _RowSource
+from dogana.reference._sources import _column_hash, _columns, _file_digest, _FileSource, _RowSource
 
 _TYPES = {
     "int": "BIGINT",
@@ -119,6 +119,7 @@ class _Candidate:
     csv: bool = False
     columns: Mapping[str, str] | None = None
     header: tuple[str, ...] | None = None
+    digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ class _Audit:
     count: int
     columns: Mapping[str, str]
     schema_error: str | None
+    digest: str | None
 
     @property
     def manifest(self) -> Manifest:
@@ -423,6 +425,8 @@ class DuckDBStore:
                     raise InvalidContract("delivered paths must be literal and contain no glob characters")
                 if not path.is_file():
                     raise StoreError("the delivered path must be a regular file")
+                digest = _file_digest(path) if manifest.content_hash is not None else None
+                self._candidates[candidate] = _Candidate(manifest, contract, columns=columns, digest=digest)
                 suffix = path.suffix.lower()
                 if suffix == ".csv":
                     header = self.connection.execute(
@@ -435,6 +439,7 @@ class DuckDBStore:
                         csv=columns is not None,
                         columns=columns,
                         header=tuple(value if value is not None else "" for value in header or ()),
+                        digest=digest,
                     )
                     self.connection.execute(
                         f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
@@ -448,6 +453,8 @@ class DuckDBStore:
                     )
                 else:
                     raise InvalidContract("only CSV and Parquet paths are supported")
+                if digest is not None and _file_digest(path) != digest:
+                    raise StoreError("the delivered file changed while it was read")
             elif type(source).__module__.startswith("pyarrow"):
                 relation = candidate + "_input"
                 try:
@@ -598,9 +605,7 @@ class DuckDBStore:
             assert held.columns is not None
             if not self._typed_csv(candidate, held.columns):
                 return columns, "CSV values cannot be converted to the supplied column types"
-            self._candidates[candidate] = _Candidate(
-                held.manifest, held.contract, columns=held.columns, header=held.header
-            )
+            self._candidates[candidate] = replace(held, csv=False)
             columns = dict(held.columns)
         if held.columns is not None and columns != held.columns:
             return columns, "source types differ from the supplied column types"
@@ -640,6 +645,7 @@ class DuckDBStore:
             int(self._one(f"SELECT count(*) FROM {_quote(candidate)}")[0]),
             columns,
             schema_error,
+            self._candidates[candidate].digest,
         )
         handlers = {
             "row_count": self._check_row_count,
@@ -650,6 +656,7 @@ class DuckDBStore:
             "key_integrity": self._check_key_integrity,
             "named_keys": self._check_named_keys,
             "shrink_tolerance": self._check_shrink_tolerance,
+            "content_hash": self._check_content_hash,
         }
         checks: dict[str, Check] = {}
         for requirement in requirements:
@@ -688,6 +695,15 @@ class DuckDBStore:
             passed,
             f"actual_hash={actual}, declared_hash={audit.manifest.schema_hash}, expected_hash={expected}"
             + (f"; {audit.schema_error}" if audit.schema_error else ""),
+        )
+
+    def _check_content_hash(self, audit: _Audit) -> Check:
+        if audit.digest is None:
+            return Check("content_hash", False, "the source has no delivered bytes to hash")
+        return Check(
+            "content_hash",
+            audit.digest == audit.manifest.content_hash,
+            f"declared={audit.manifest.content_hash}, actual={audit.digest}",
         )
 
     def _check_key_integrity(self, audit: _Audit) -> Check:

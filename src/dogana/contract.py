@@ -394,8 +394,8 @@ class Manifest(Wire):
             raise InvalidContract("since must be a nonempty generation token")
         if self.generation is not None and not self.generation:
             raise InvalidContract("generation must be a nonempty string")
-        if self.content_hash is not None and not self.content_hash:
-            raise InvalidContract("content_hash must be a nonempty string")
+        if self.content_hash is not None and not re.fullmatch(r"[0-9a-f]{64}", self.content_hash):
+            raise InvalidContract("content_hash must be the lowercase hex SHA-256 of the delivered bytes")
         for group in (self.keys, self.tombstones):
             if any(not key for key in group) or len(set(group)) != len(group):
                 raise InvalidContract("named keys must be nonempty and unique")

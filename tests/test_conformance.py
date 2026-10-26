@@ -20,6 +20,9 @@ class MemoryFactory:
     def write_source(self, rows, columns):
         return RowSource(rows, columns)
 
+    def content_hash(self, source):
+        return None
+
     def read_table(self, store, table):
         return store.state[0][table][0]
 
@@ -95,6 +98,11 @@ class DuckDBFactory:
             writer.writeheader()
             writer.writerows(rows)
         return _FileSource(path, columns)
+
+    def content_hash(self, source):
+        from dogana.reference._sources import _file_digest
+
+        return _file_digest(source)
 
     def read_table(self, store, table):
         return store.read(table)

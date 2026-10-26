@@ -92,6 +92,7 @@ def check_rows(contract, manifest, rows, previous):
         "shrink_tolerance": not covered
         or shrink is None
         or (len(covered) - len(rows)) / len(covered) <= shrink,
+        "content_hash": False,  # rows in memory have no delivered bytes
     }
     if any(r.name == "rows_in_interval" for r in requirements):
         outcomes["rows_in_interval"] = all(
