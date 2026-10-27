@@ -1,5 +1,5 @@
 site_name: dogana
-site_description: Know which rows you can trust
+site_description: A Python library for tables loaded from exports: it checks each delivered file against its manifest and contract, and keeps in a ledger what every delivery shows about the table
 site_url: https://fpiped.github.io/dogana/
 repo_url: https://github.com/fpiped/dogana
 repo_name: fpiped/dogana

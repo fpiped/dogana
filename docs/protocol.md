@@ -1,6 +1,7 @@
 # The dogana protocol
 
-Version 2. This page defines the wire values, transitions and publication obligations.
+Version 2 of the wire format, the `version: 2` every document carries; the package is versioned
+separately. This page defines the wire values, transitions and publication obligations.
 [Concepts](concepts.md) explains the same ideas from the beginning, with examples.
 
 ## Reading this page
@@ -134,7 +135,7 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 
 ## Choosing a shape
 
-| Source behaviour | Shape | What it cannot express |
+| Source behavior | Shape | What it cannot express |
 |---|---|---|
 | Exhaustive table export | `Shape.full()` | Completeness inferred from a received count alone. |
 | Exhaustive rolling window | `Shape.window(size=...)` | Mutable window membership or more than one window column. |
@@ -193,8 +194,8 @@ recover rows. Supersession at the same boundary remains an open decision.
 
 ## Ledger and transitions
 
-`Ledger` contains only its contract, disjoint regions covering the domain, table generation and
-`publication_id`. Initially one unbounded region is unknown. `Region` has `low`, `high`, open-endpoint
+On the wire a `Ledger` carries its contract, disjoint regions covering the domain, table generation
+and `publication_id`. Initially one unbounded region is unknown. `Region` has `low`, `high`, open-endpoint
 flags, `complete_as_of` and `deletions_as_of`. `None` endpoints are unbounded. Evidence dates are absent
 together, or `deletions_as_of <= complete_as_of`. No accepted-identity history is embedded in the ledger.
 
@@ -274,7 +275,7 @@ validate structure, source time, base coverage, timestamp/generation continuity 
 The `Receipt` contains manifest, checks, `outcome` (`accepted`, `rejected` or `replayed`), `received_at`, optional `source`,
 `base_publication_id`, transition, resulting ledger, claims at receipt time, and publication identity.
 Acceptance and replay have a transition; rejection retains the previous ledger and publication.
-`accepted` and `replayed` are derived compatibility properties. Receipts
+`accepted` and `replayed` are read from `outcome`. Receipts
 are indexed by the receiver contract's table even if the rejected manifest names another table.
 Their identity also covers check outcomes. A receipt grows with the ledger's region count, never
 with the number of delivered rows or deleted keys.
@@ -345,7 +346,7 @@ file comes from one consistent read of the source at `p`, stamped with that read
 means one snapshot covering every table. A transaction at READ COMMITTED, the default of Postgres,
 Oracle and SQL Server, takes a new snapshot for each statement and is not one read. Use REPEATABLE
 READ, SERIALIZABLE or one exported snapshot shared by parallel workers in Postgres, `START
-TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL, a read-only transaction or queries `AS OF` one SCN in
+TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL, a read-only transaction or queries `AS OF` one SCN (system change number) in
 Oracle, SNAPSHOT isolation in SQL Server. Separate export jobs are not one read, and stamping them
 with one `produced_at`, for example through one date in their filenames, fabricates the instant.
 No common store transaction is needed for the guarantee: two tables each read with its ledger under
@@ -392,8 +393,8 @@ returns the committed receipts. A failed delivery whose tables another delivery 
 decided the same way, as a replay or a refusal, so the outcome does not depend on timing; when the
 other delivery lands while refusals are being recorded, the call raises `StoreError`, and a retry
 decides it. Only a group publication that committed some of its tables and not others raises
-`InconsistentPublication`. Two deliveries identical down to their receiver time cannot tell their
-commits apart, so the one that published nothing may report `accepted`.
+`InconsistentPublication`. Two deliveries with equal manifests and receiver times produce one
+receipt, and both callers receive it as `accepted`.
 
 The `together` check does not require the result to be exact; the shapes decide that, over what
 each delivery covers: a full delivery everywhere, a window delivery inside its window, so pass the
@@ -497,8 +498,8 @@ and all mismatches still fold the full retained history.
 The same initial ledger and ordered accepted history produce the same ledger. Store delivery is
 replay-idempotent by accepted-receipt lookup; `Ledger.apply` itself is not. Disjoint complete or
 timestamp windows commute on regional evidence when both orders are admissible, but not on the
-publication chain. The fold is not a join-semilattice or a merge of concurrent ledgers: order,
-continuity and row replacement constrain admissibility. Rejection and shrink policy apply per
+publication chain. Two ledgers cannot be merged: order, continuity and row replacement decide
+what is admissible. Rejection and shrink policy apply per
 manifest, not to an arbitrary batch or cumulative history.
 
 ## Contract evolution
@@ -551,6 +552,5 @@ The [reference guide](reference.md) describes concrete transports and the six-ca
 The conformance suite exercises publication obligations against store implementations; passing it
 is evidence for those scenarios, not a proof of arbitrary storage or source correctness.
 
-Open owner decisions are public vocabulary, a table namespace, finite string or multidimensional
-domains, receiver and reader commands, same-boundary supersession, and release and compatibility
-policy; none is added here.
+Not yet decided: a table namespace, finite string domains, more than one window column, receiver and
+reader commands, supersession at the same boundary, and the compatibility policy.

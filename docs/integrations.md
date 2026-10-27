@@ -193,13 +193,8 @@ from the ODCS document, dbt model or hand-written column list. It is opaque to t
 never carries or computes the full schema. The gate compares the manifest and candidate hashes
 with it only when it is present.
 
-For an ODCS schema object, traverse `properties` in declared column order, normalize each
-`logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`, and form ordered `[name, type]`
-pairs from each property's `name` and normalized type. Resolve physical or nested types in the
-receiver. Compute SHA-256 over
-`json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`, excluding document
-metadata. The reference store and file drop use this unchanged recipe, so existing column hashes
-remain valid. Other stores must agree with their receivers on the opaque hash.
+Compute the column hash from the ODCS schema object with the
+[protocol's recipe](protocol.md#contract-and-shapes). Other stores must agree with their receivers on the opaque hash.
 
 Governance fields, owner identity, signatures and service-level objectives stay in the data contract
 system. There is no shipped ODCS carrier or separate namespace field.

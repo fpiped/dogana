@@ -1,7 +1,7 @@
 # Reference implementations
 
 The [protocol](protocol.md) defines required behavior. This page describes the shipped DuckDB and
-file-drop implementations and how to supply your own storage.
+file drop implementations and how to supply your own storage.
 
 ## Column types and hashes
 

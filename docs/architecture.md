@@ -1,13 +1,14 @@
 # Architecture
 
-The [protocol](protocol.md) is the authority on behaviour; this page shows how the code is laid out
+The [protocol](protocol.md) is the authority on behavior; this page shows how the code is laid out
 and why.
 
 ## Layers
 
 ```text
 core          contract ledger gate group planner wire errors     standard library only, no I/O
-sequence      delivery.deliver, deliver_together, Store        the one place that calls storage
+              interfaces (Store, TogetherStore, Extractor)
+sequence      delivery.deliver, deliver_together               the one place that calls storage
 reference     reference.duckdb, reference.files                adapters built on the core
 entry points  cli, conformance                                 the core imports neither
 ```

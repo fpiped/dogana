@@ -19,9 +19,3 @@ These schemas specify the wire structure, scalar domains and local constraints.
 Runtime validation also checks relationships such as endpoint order, region partitioning,
 contract bindings, publication identity and exact binary64 number representation.
 Identity documents omit wire fields and are outside these schemas.
-
-The pytest `validate_wire(value)` fixture validates raw decoded JSON. The session fixture
-also validates every successful public `Wire.to_dict()` result, including calls through
-`to_json()`, and checks schemas against the registered kinds and their public wire fields.
-Nested values are validated through schema references. Subprocesses, collection-time calls,
-direct `encode()` or `_document()` calls, and identity forms bypass that instrumentation.

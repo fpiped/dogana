@@ -8,8 +8,8 @@ and an active virtual environment:
 uv pip install -e '.[duckdb]'
 ```
 
-The blocks below form one script: run them in order, in an empty directory. They follow a table
-of orders through one week of files. [Concepts](concepts.md) explains every term used here.
+The blocks below form one script: run them in order, in an empty directory. Steps 1 to 6 follow
+a table of orders through one week of files; 7 and 8 add deletions and a second table. [Concepts](concepts.md) explains every term used here.
 
 ## 1. Write the contract
 

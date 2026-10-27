@@ -17,6 +17,10 @@ time. A file it sends you is a photograph of part of that table, taken at one in
 Once the files are loaded into one table, a row is just a row: nobody remembers which file proved
 what. dogana keeps that record next to the rows, and rejects any file that would make it lie.
 
+"Proves" here and below means: proves if the sender read the source as its manifest declares. dogana
+checks every file against its declaration (its rows, counts, window and bytes), never the source
+against the file. A full dump that silently left out rows, with a count to match, passes.
+
 ## Two dates
 
 For every part of the table, dogana keeps two instants.
@@ -31,7 +35,8 @@ the source has deleted since `d`.
 
 A full dump on Sunday gives (Sunday, Sunday). Monday's changes, without deletions, bring every new
 and updated row, so `c` moves to Monday; they say nothing about deletions, so `d` stays on Sunday.
-The rule behind every decision: **a delivery never raises a date above what it proves.**
+The rule behind every decision: **a delivery never raises a date above what it proves**, in that
+sense.
 
 ## Where the dates live: the window column
 
@@ -81,7 +86,7 @@ A **shape** is a kind of file the receiver accepts, described by four answers:
 
 The constructors cover the common combinations:
 
-| Source behaviour | Shape | What it proves |
+| Source behavior | Shape | What it proves |
 |---|---|---|
 | A full export | `Shape.full()` | both dates, everywhere |
 | Every order dated in the last 30 days | `Shape.window(size=timedelta(days=30))` | both dates, for those dates |
@@ -259,10 +264,32 @@ Stamping them with one read time would fabricate the instant.
 - Not SQLMesh intervals, Iceberg snapshots or dbt snapshots: those record processed intervals,
   table versions and row history; dogana records source evidence and deletion coverage.
 
+## Related work
+
+The two dates are a dated form of two properties database research has named for decades. Motro split
+a database's integrity into completeness, every true fact is stored, and validity, every stored fact
+is true [1, 2]; complete as of speaks about the first, deletions as of about the part of the second
+that concerns rows the source deleted. Levy, and later Razniewski and Nutt, studied statements that
+one part of a table is complete and when such statements make a query's answer complete [3, 4]. A
+region of the ledger is such a statement, dated and maintained one delivery at a time; the query
+theorem of [tables read together](#tables-read-together) is its case where every part is exact at
+one instant.
+
+1. A. Motro. Completeness Information and Its Application to Query Processing. VLDB 1986, 170-178.
+2. A. Motro. Integrity = Validity + Completeness. ACM Transactions on Database Systems 14(4), 1989,
+   480-502.
+3. A. Y. Levy. Obtaining Complete Answers from Incomplete Databases. VLDB 1996, 402-412.
+4. S. Razniewski, W. Nutt. Completeness of Queries over Incomplete Databases. Proceedings of the
+   VLDB Endowment 4(11), 2011, 749-760.
+
 ## Terms
 
 | Term | Meaning |
 |---|---|
+| Source | The system whose table is exported: an ERP, a SaaS API, a database. |
+| Sender | Whoever produces a file and its manifest from the source. |
+| Receiver | Whoever holds the contract, the store and the ledger, and decides on each file. |
+| Reader | Whoever asks the ledger how far to trust the rows. |
 | Contract | The receiver's declaration for one table: key, window, cursor and deleted columns with their types, accepted shapes, freshness, shrink limit and column hash. |
 | Shape | A kind of file the receiver accepts: coverage, completeness, deletions, checkpoint and cost. |
 | Manifest | The sender's declaration of one file: shape, read boundary, window or checkpoint, live rows, tombstones, column hash and SHA-256. |

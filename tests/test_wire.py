@@ -261,9 +261,9 @@ def test_identity_excludes_versions_recursively(monkeypatch):
 
     value = Ledger(contract())
     identity = value.identity
-    monkeypatch.setattr(Wire, "version", 2)
-    assert value._document(identity=False)["version"] == 2
-    assert value._document(identity=False)["contract"]["version"] == 2
+    monkeypatch.setattr(Wire, "version", 3)
+    assert value._document(identity=False)["version"] == 3
+    assert value._document(identity=False)["contract"]["version"] == 3
     assert value.identity == identity
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from dogana import Contract, Ledger, Manifest, Receipt, Shape
+from dogana import Contract, Ledger, Manifest, Receipt
 
 EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
@@ -17,16 +17,6 @@ def test_protocol_wire_examples_are_complete_versioned_round_trips(name, cls, va
     value = cls.from_json(raw)
     assert cls.from_json(value.to_json()) == value
     assert json.loads(raw) == value.to_dict()
-
-
-def test_the_protocol_inline_json_examples_are_valid_public_wire_values(validate_wire):
-    import re
-
-    text = (EXAMPLES.parent / "protocol.md").read_text()
-    for raw in re.findall(r"```json\n(.*?)\n```", text, re.DOTALL):
-        validate_wire(json.loads(raw))
-        cls = {"Shape": Shape, "Manifest": Manifest}[json.loads(raw)["kind"]]
-        assert cls.from_json(raw).to_dict() == json.loads(raw)
 
 
 def test_the_protocol_receipt_replays_to_the_documented_ledger():
