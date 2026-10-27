@@ -9,12 +9,13 @@ and why.
 core          contract ledger gate group planner wire errors     standard library only, no I/O
               interfaces (Store, TogetherStore, Extractor)
 sequence      delivery.deliver, deliver_together               the one place that calls storage
-reference     reference.duckdb, reference.files                adapters built on the core
 entry points  cli, conformance                                 the core imports neither
+example       examples/duckdb (example_store), not installed   a store and file drop on the core
 ```
 
-Dependencies point inward: reference code and entry points import the core, never the reverse, and
-a test enforces it, together with a test that the command line imports no third-party package.
+Dependencies point inward: entry points and the example import the core, never the reverse. Tests
+enforce it, that the command line imports no third-party package, and that no module of the package
+imports a reader of data files (csv, DuckDB, Arrow).
 
 ## The core
 
@@ -73,7 +74,8 @@ stamp cannot detect a direct edit of the rows that leaves it unchanged.
 
 - **Functional core, imperative shell**: decisions are pure functions of immutable values; only
   `deliver` performs I/O, through the store.
-- **Ports and adapters**: `Store` is the port; DuckDB is one adapter, a warehouse store is another.
+- **Ports and adapters**: `Store` is the port; the DuckDB example is one adapter, a warehouse store
+  another.
 - **Parse, don't validate**: a manifest becomes a typed delivery once, and exhaustive matching
   (`assert_never`) proves every kind is handled.
 - **Write, audit, publish**: candidate rows are staged and checked before visible rows change.

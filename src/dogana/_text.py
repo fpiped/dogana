@@ -2,9 +2,9 @@
 
 from datetime import date, datetime, tzinfo
 
-from dogana import Checkpoint, Contract, InvalidContract, Shape
-from dogana.contract import Scalar
-from dogana.wire import utc
+from .contract import Checkpoint, Contract, Scalar, Shape
+from .errors import InvalidContract
+from .wire import utc
 
 
 def _instant(value: str, timezone: tzinfo | None = None, *, remedy: str = "") -> datetime:

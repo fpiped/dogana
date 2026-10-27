@@ -10,6 +10,9 @@ from tests.support import COLUMNS, at, fold, schema_hash
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, Rows
+from example_store._sources import _FileSource
+
 from dogana import (
     Checkpoint,
     Completeness,
@@ -21,8 +24,6 @@ from dogana import (
     Region,
     Shape,
 )
-from dogana.reference._sources import Rows, _FileSource
-from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file
 
 

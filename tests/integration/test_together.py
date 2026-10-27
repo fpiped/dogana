@@ -1,6 +1,7 @@
 from datetime import UTC, date
 
 import pytest
+from example_store import DuckDBStore, FileDrop, FilePattern, ingest_together
 
 from dogana import (
     Gate,
@@ -12,8 +13,6 @@ from dogana import (
     deliver,
     deliver_together,
 )
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop, FilePattern, ingest_together
 from tests.integration.support import csv_file
 from tests.memory_store import MemoryStore
 from tests.support import COLUMNS, FULL, SINCE, WINDOW, at, contract, fold
@@ -74,7 +73,7 @@ def test_a_delivery_together_carries_one_source_per_table():
     ],
 )
 def test_a_reference_the_rows_cannot_answer_refuses_the_group(tmp_path, lines, columns, problem):
-    from dogana.reference._sources import Rows
+    from example_store import Rows
 
     lines_contract = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
     group = Group((ORDERS, lines_contract), GROUP.references)
@@ -214,7 +213,7 @@ def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypa
 
 
 def test_a_replay_is_one_delivery_of_these_files_under_these_references():
-    from dogana.reference._sources import Rows
+    from example_store import Rows
 
     shapes = {"full": FULL, "daily": WINDOW}
     # Each window delivery empties its day, so shrink tolerance stays out of the way.
@@ -243,7 +242,7 @@ def test_a_replay_is_one_delivery_of_these_files_under_these_references():
 
 
 def test_a_group_replay_with_one_file_changed_refuses_every_table(tmp_path):
-    from dogana.reference._sources import _file_digest, _FileSource
+    from example_store._sources import _file_digest, _FileSource
 
     with DuckDBStore(":memory:") as store:
         files, deliveries = {}, {}
@@ -325,7 +324,7 @@ def test_a_window_to_the_end_of_the_dates_covers_values_past_what_python_can_nam
     path = tmp_path / "far.csv"
     path.write_text("id,day,value\n1,infinity,far\n2,2026-10-18,near\n")
     with DuckDBStore(":memory:") as store:
-        from dogana.reference._sources import _FileSource
+        from example_store._sources import _FileSource
 
         first = Manifest("moves", "full", at(18), rows=2, schema_hash=moves.schema_hash)
         assert deliver(store, moves, _FileSource(path, COLUMNS), first, at(20)).accepted
@@ -342,7 +341,7 @@ def test_a_window_to_the_end_of_the_dates_covers_values_past_what_python_can_nam
     [([None, None], "str"), ([1.0, None], "float")],
 )
 def test_a_reference_compares_values_not_type_names(values, kind):
-    from dogana.reference._sources import Rows
+    from example_store import Rows
 
     columns = {**LINE_COLUMNS, "order_id": kind}
     lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
@@ -389,7 +388,7 @@ def test_the_log_is_unreadable_while_a_transaction_is_unresolved():
 
 @pytest.mark.parametrize(("value", "names"), [(9007199254740992.0, False), (1.5, False), (2.0, True)])
 def test_a_float_reference_names_an_int_key_only_with_its_exact_integer(value, names):
-    from dogana.reference._sources import Rows
+    from example_store import Rows
 
     columns = {**LINE_COLUMNS, "order_id": "float"}
     lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
@@ -405,7 +404,7 @@ def test_a_float_reference_names_an_int_key_only_with_its_exact_integer(value, n
 
 
 def test_a_quoted_empty_field_is_the_empty_string_and_an_unquoted_one_is_null(tmp_path):
-    from dogana.reference._sources import _FileSource
+    from example_store._sources import _FileSource
 
     path = tmp_path / "values.csv"
     path.write_text('id,day,value\n1,2026-10-18,""\n2,2026-10-18,\n')
@@ -441,14 +440,14 @@ def test_an_int_window_bound_past_bigint_covers_every_stored_value():
         ).accepted
         window = (0, 2**127)
         empty = Manifest("moves", "range", at(19), window=window, rows=0)
-        from dogana.reference._sources import Rows
+        from example_store import Rows
 
         assert deliver(store, moves, Rows([], columns), empty, at(20)).accepted
         assert store.read("moves") == []
 
 
 def test_a_replay_whose_bytes_no_longer_read_is_refused_in_every_table(tmp_path):
-    from dogana.reference._sources import _file_digest, _FileSource
+    from example_store._sources import _file_digest, _FileSource
 
     with DuckDBStore(":memory:") as store:
         deliveries = {}

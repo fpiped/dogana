@@ -6,11 +6,10 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from example_store import DuckDBStore, FileDrop, FilePattern
+from example_store._sources import _count_rows, _FileSource
 
 from dogana import Contract, InvalidContract, Manifest, deliver
-from dogana.reference._sources import _count_rows, _FileSource
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop, FilePattern
 from tests.support import FULL, at, schema_hash
 
 COLUMNS = {"id": "int", "v": "str"}
@@ -217,7 +216,7 @@ def test_a_csv_decimal_is_read_exactly_or_refused(tmp_path, value, accepted):
 def test_rows_carry_decimals_into_a_declared_decimal_column():
     from decimal import Decimal
 
-    from dogana.reference._sources import Rows
+    from example_store import Rows
 
     rows = Rows([{"id": 1, "amount": Decimal("0.10")}], MONEY)
     with DuckDBStore(":memory:") as store:
@@ -226,8 +225,9 @@ def test_rows_carry_decimals_into_a_declared_decimal_column():
 
 
 def test_an_empty_poll_with_typed_rows_is_a_delivery():
+    from example_store import Rows
+
     from dogana import Shape
-    from dogana.reference.duckdb import Rows
 
     contract = replace(C, shapes={"full": FULL, "changes": Shape.changes()})
     with DuckDBStore(":memory:") as store:
@@ -240,7 +240,7 @@ def test_an_empty_poll_with_typed_rows_is_a_delivery():
 def test_a_folder_swapped_for_a_link_after_the_root_check_is_refused_not_read(tmp_path, monkeypatch):
     import os
 
-    from dogana.reference import _sources
+    from example_store import _sources
 
     root, outside = tmp_path / "root", tmp_path / "outside"
     (root / "in").mkdir(parents=True)
@@ -264,7 +264,7 @@ def test_a_folder_swapped_for_a_link_after_the_root_check_is_refused_not_read(tm
 def test_a_fifo_is_refused_without_waiting_for_a_writer(tmp_path):
     import os
 
-    from dogana.reference._sources import _open
+    from example_store._sources import _open
 
     fifo = tmp_path / "f.csv"
     os.mkfifo(fifo)
@@ -325,7 +325,7 @@ def test_a_blank_line_is_an_empty_value_in_a_one_column_file(tmp_path):
 def test_rows_never_round_a_decimal(value):
     from decimal import Decimal
 
-    from dogana.reference.duckdb import Rows
+    from example_store import Rows
 
     rows = Rows([{"id": 1, "amount": Decimal(value)}], MONEY)
     with DuckDBStore(":memory:") as store:

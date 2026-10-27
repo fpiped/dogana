@@ -48,7 +48,7 @@ from dogana.errors import (
     SerializationError,
     StoreError,
 )
-from dogana.reference._sources import (
+from example_store._sources import (
     Rows,
     _column_hash,
     _columns,

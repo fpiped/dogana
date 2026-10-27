@@ -61,7 +61,7 @@ name and logical type to an ordered `[name, type]` pair, then compute SHA-256 of
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`. Use dogana's six
 logical type names, or `decimal(p,s)` for an exact decimal of precision `p` and scale `s`, resolving
 physical or nested types explicitly in the receiver. Hash only
-these pairs, not the ODCS document, metadata or wire JSON. The reference store and file drop use
+these pairs, not the ODCS document, metadata or wire JSON. The example store and file drop use
 this recipe; another store must agree with its receiver on the opaque hash.
 
 `freshness` defaults to seven days; choose cadence plus arrival slack. `max_shrink_fraction` defaults
@@ -553,7 +553,8 @@ and [receipt](examples/receipt.json) are executable wire examples.
 
 ## Boundaries
 
-The core uses only Python's standard library; reference stores and conformance support are separate.
+The package uses only Python's standard library, beside pytest for the conformance suite, and parses
+no data file: rows are read by a store, and the repository's example store sits outside the package.
 The [reference guide](reference.md) describes concrete transports and the six-call accounting path.
 The conformance suite exercises publication obligations against store implementations; passing it
 is evidence for those scenarios, not a proof of arbitrary storage or source correctness.

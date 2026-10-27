@@ -4,10 +4,11 @@ from tests.support import COLUMNS, at, fold, schema_hash
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore
+from example_store._sources import _FileSource
+
 from dogana import Contract, Ledger, Manifest, Shape
 from dogana.errors import StoreError
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import MARKED, csv_file, marked, row, sidecar
 from tests.support import contract
 

@@ -1,11 +1,12 @@
 # Quick start
 
-Python 3.11 or later. Install with `pip install "dogana[duckdb]"`: the core has no dependencies, and
-the `duckdb` extra adds the reference store this quick start uses. From a source checkout, with uv
-and an active virtual environment:
+Python 3.11 or later. dogana itself never reads a data file, so this quick start publishes through
+the example store in the repository's `examples/duckdb`, a DuckDB database and a file drop that are
+not part of the package. From a checkout of the repository, with uv and an active virtual
+environment:
 
 ```sh
-uv pip install -e '.[duckdb]'
+uv pip install -e . -e examples/duckdb
 ```
 
 The blocks below form one script: run them in order, in an empty directory. Steps 1 to 6 follow
@@ -21,8 +22,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from dogana import Contract, Requirement, Shape, deliver, next_extraction, plan_delivery
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop
+from example_store import DuckDBStore, FileDrop
 
 columns = {"id": "int", "day": "date", "amount": "int"}
 schema_hash = sha256(

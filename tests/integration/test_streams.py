@@ -8,9 +8,9 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, Rows
+
 from dogana import Contract, Ledger, Shape, deliver, next_extraction
-from dogana.reference._sources import Rows
-from dogana.reference.duckdb import DuckDBStore
 from tests.support import at, fold, schema_hash
 
 

@@ -5,9 +5,9 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, FileDrop, FilePattern
+
 from dogana import InvalidContract
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop, FilePattern
 from tests.integration.support import csv_file, row
 from tests.support import COLUMNS, FULL, WINDOW, at, contract
 

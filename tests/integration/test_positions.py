@@ -16,8 +16,7 @@ from tests.support import at, schema_hash
 
 pytest.importorskip("duckdb")
 
-from dogana.reference._sources import Rows
-from dogana.reference.duckdb import DuckDBStore
+from example_store import DuckDBStore, Rows
 
 COLUMNS = {"id": "int", "seq": "int", "value": "str"}
 

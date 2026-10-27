@@ -5,9 +5,10 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore
+from example_store._sources import _FileSource
+
 from dogana import Contract, Manifest, Receipt
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
 
 EXAMPLES = Path(__file__).parents[2] / "docs" / "examples"
 

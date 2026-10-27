@@ -19,7 +19,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: uv venv && uv pip install -e ".[dev,duckdb]"
+      - run: uv venv && uv pip install -e . -e examples/duckdb --group dev
       - run: .venv/bin/python -m pytest -q
       - run: uvx ruff check . && uvx ruff format --check .
-      - run: .venv/bin/python -m mypy --strict src
+      - run: .venv/bin/python -m mypy --strict src examples/duckdb

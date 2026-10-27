@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dogana import Checkpoint, Contract, Manifest, Shape
+from dogana import Check, Checkpoint, Contract, Gate, Ledger, Manifest, Shape
 from dogana.cli import main
 from tests.support import schema_hash
 
@@ -47,12 +47,15 @@ def written(data):
     return Manifest.from_json(Path(str(data) + ".json").read_text())
 
 
-def test_a_manifest_counts_rows_hashes_bytes_and_lands_beside_the_file(files, capsys):
+FULL = ("--shape", "full", "--produced-at", BOUNDARY, "--rows", "2")
+
+
+def test_a_manifest_declares_the_counts_hashes_the_bytes_and_lands_beside_the_file(files, capsys):
     tmp_path, data = files
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
+    assert run(tmp_path, "manifest", str(data), *FULL) == 0
     assert capsys.readouterr().out == f"{data}.json\n"
     manifest = written(data)
-    assert manifest.rows == 2
+    assert (manifest.rows, manifest.tombstones) == (2, 0)
     assert manifest.content_hash == sha256(data.read_bytes()).hexdigest()
     assert manifest.schema_hash == contract().schema_hash
     assert manifest.produced_at == datetime(2026, 10, 26, 6, tzinfo=UTC)
@@ -63,13 +66,23 @@ def test_a_manifest_counts_rows_hashes_bytes_and_lands_beside_the_file(files, ca
     ]
 
 
-def test_the_written_sidecar_is_what_the_receivers_file_drop_accepts(files):
+def test_the_rows_are_declared_by_the_sender_never_counted(files, capsys):
+    tmp_path, data = files
+    with pytest.raises(SystemExit) as exit:
+        run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY)
+    assert exit.value.code == 2
+    assert "--rows" in capsys.readouterr().err
+    data.write_text("not, a, table\n")
+    assert run(tmp_path, "manifest", str(data), *FULL) == 0
+    assert written(data).rows == 2
+
+
+def test_the_written_sidecar_is_what_the_example_file_drop_accepts(files):
     pytest.importorskip("duckdb")
-    from dogana.reference.duckdb import DuckDBStore
-    from dogana.reference.files import FileDrop
+    from example_store import DuckDBStore, FileDrop
 
     tmp_path, data = files
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
+    assert run(tmp_path, "manifest", str(data), *FULL) == 0
     with DuckDBStore(":memory:") as store:
         receipt = FileDrop(store, contract(), columns=COLUMNS).ingest(
             data, now=datetime(2026, 10, 27, tzinfo=UTC)
@@ -80,7 +93,7 @@ def test_the_written_sidecar_is_what_the_receivers_file_drop_accepts(files):
 
 def test_an_existing_manifest_is_replaced_only_on_request(files, capsys):
     tmp_path, data = files
-    command = ("manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY)
+    command = ("manifest", str(data), *FULL)
     assert run(tmp_path, *command) == 0
     assert run(tmp_path, *command) == 1
     assert "exists; pass --force" in capsys.readouterr().err
@@ -90,17 +103,18 @@ def test_an_existing_manifest_is_replaced_only_on_request(files, capsys):
 
 def test_standard_output_receives_the_manifest_and_no_file_is_written(files, capsys):
     tmp_path, data = files
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY, "-o", "-") == 0
+    assert run(tmp_path, "manifest", str(data), *FULL, "-o", "-") == 0
     assert json.loads(capsys.readouterr().out)["kind"] == "Manifest"
     assert not Path(str(data) + ".json").exists()
 
 
 def test_windows_are_typed_by_the_window_column_or_derived_from_the_shape(files):
     tmp_path, data = files
+    daily = ("--shape", "daily", "--produced-at", BOUNDARY, "--rows", "2")
     window = ("--window", "2026-10-01", "2026-10-26")
-    assert run(tmp_path, "manifest", str(data), "--shape", "daily", "--produced-at", BOUNDARY, *window) == 0
+    assert run(tmp_path, "manifest", str(data), *daily, *window) == 0
     assert written(data).window == (date(2026, 10, 1), date(2026, 10, 26))
-    assert run(tmp_path, "manifest", str(data), "--shape", "daily", "--produced-at", BOUNDARY, "--force") == 0
+    assert run(tmp_path, "manifest", str(data), *daily, "--force") == 0
     assert written(data).window == (date(2026, 9, 27), date(2026, 10, 26))
 
 
@@ -111,26 +125,24 @@ def test_windows_are_typed_by_the_window_column_or_derived_from_the_shape(files)
         (("--shape", "weekly"), 1, "admits no shape named 'weekly'"),
         (("--shape", "changes", "--since", "2026-10-25T06:00:00"), 1, "needs a UTC offset"),
         (("--shape", "changes", "--since", "yesterday"), 1, "not an ISO 8601 time"),
-        (("--shape", "full", "--rows", "3", "--generation", "g1", "-o", "-", "--force"), 0, ""),
+        (("--shape", "feed", "--since", "g1", "--generation", "g2"), 2, "pass --tombstones"),
+        (("--shape", "full", "--generation", "g1", "-o", "-", "--force"), 0, ""),
     ],
 )
 def test_arguments_are_refused_with_a_reason_and_a_status(files, capsys, arguments, status, message):
     tmp_path, data = files
-    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == status
+    assert (
+        run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, "--rows", "2", *arguments) == status
+    )
     assert message in capsys.readouterr().err
 
 
-def test_a_feed_counts_live_rows_and_the_rows_its_deleted_column_marks(files, capsys):
+def test_a_tombstone_shape_declares_its_tombstones(files):
     tmp_path, data = files
-    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,,,TRUE\n3,,,t\n")
-    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2")
+    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2", "--rows", "1", "--tombstones", "2")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
     manifest = written(data)
     assert (manifest.rows, manifest.tombstones, manifest.since, manifest.generation) == (1, 2, "g1", "g2")
-    assert run(tmp_path, "check", str(data)) == 0
-    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,,,\n")
-    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments, "--force") == 1
-    assert "deleted must be true or false in every row" in capsys.readouterr().err
 
 
 def test_sequence_positions_are_integers(tmp_path):
@@ -143,45 +155,68 @@ def test_sequence_positions_are_integers(tmp_path):
     (tmp_path / "orders.contract.json").write_text(c.to_json())
     data = tmp_path / "events.csv"
     data.write_text("id\n1\n")
-    arguments = ("--shape", "changes", "--since", "100", "--generation", "150")
+    arguments = ("--shape", "changes", "--since", "100", "--generation", "150", "--rows", "1")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
     assert (written(data).since, written(data).generation) == (100, 150)
-
-
-def test_a_file_dogana_cannot_count_needs_its_rows(tmp_path, capsys):
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    data = tmp_path / "orders.jsonl"
-    data.write_text('{"id": 1}\n')
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 2
-    assert "pass --rows" in capsys.readouterr().err
-    assert (
-        run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY, "--rows", "1") == 0
-    )
 
 
 def test_a_missing_file_is_named(files, capsys):
     tmp_path, _ = files
     missing = tmp_path / "missing.csv"
-    assert (
-        run(tmp_path, "manifest", str(missing), "--shape", "full", "--produced-at", BOUNDARY, "--rows", "0")
-        == 1
-    )
+    assert run(tmp_path, "manifest", str(missing), *FULL) == 1
     assert f"{missing}: no such file" in capsys.readouterr().err
 
 
-def test_check_accepts_a_matching_file_and_names_what_changed(files, capsys):
+def test_check_accepts_the_bytes_the_manifest_names_and_refuses_others(files, capsys):
     tmp_path, data = files
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
+    assert run(tmp_path, "manifest", str(data), *FULL) == 0
     capsys.readouterr()
     assert run(tmp_path, "check", str(data)) == 0
     assert capsys.readouterr().out == (
-        f"{data}: rows, tombstones and SHA-256 match the manifest; "
-        "keys, windows and types are checked on delivery\n"
+        f"{data}: the manifest fits the contract and names these bytes; the rows are checked on delivery\n"
     )
     data.write_text("id,day,value\n1,2026-10-25,x\n")
     assert run(tmp_path, "check", str(data)) == 1
-    error = capsys.readouterr().err
-    assert "rows: the manifest declares 2" in error and "content_hash: the manifest declares" in error
+    assert "content_hash: the manifest declares" in capsys.readouterr().err
+
+
+def test_check_refuses_a_manifest_without_a_hash_and_a_missing_file(files, capsys):
+    tmp_path, data = files
+    manifest = contract().manifest("full", datetime(2026, 10, 26, 6, tzinfo=UTC), rows=2)
+    (tmp_path / "orders.csv.json").write_text(manifest.to_json())
+    assert run(tmp_path, "check", str(data)) == 1
+    assert "declares no content_hash" in capsys.readouterr().err
+    data.unlink()
+    assert run(tmp_path, "check", str(data)) == 1
+    assert f"{data}: no such file" in capsys.readouterr().err
+
+
+def test_claims_prints_each_region_and_the_instant_the_table_is_exact_at(tmp_path, capsys):
+    c = contract()
+    manifest = c.manifest(
+        "daily", datetime(2026, 10, 26, 6, tzinfo=UTC), window=(date(2026, 9, 27), date(2026, 10, 26)), rows=2
+    )
+    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, manifest))
+    receipt = Gate.evaluate(Ledger(c), manifest, checks, now=datetime(2026, 10, 26, 7, tzinfo=UTC))
+    path = tmp_path / "orders.ledger.json"
+    path.write_text(Ledger(c).follow(receipt).to_json())
+    assert (
+        main(["claims", str(path), "--at", "2026-10-26T08:00:00Z", "--window", "2026-10-01", "2026-10-02"])
+        == 0
+    )
+    assert capsys.readouterr().out == (
+        "orders [2026-10-01, 2026-10-02]: complete; complete as of 2026-10-26T06:00:00+00:00; "
+        "deletions as of 2026-10-26T06:00:00+00:00\n"
+        "orders: complete; exact as of 2026-10-26T06:00:00+00:00\n"
+    )
+    assert main(["claims", str(path), "--at", "2026-10-26T08:00:00Z"]) == 0
+    assert capsys.readouterr().out == (
+        "orders (-inf, 2026-09-26]: unknown; complete as of unknown; deletions as of unknown\n"
+        "orders [2026-09-27, 2026-10-26]: complete; complete as of 2026-10-26T06:00:00+00:00; "
+        "deletions as of 2026-10-26T06:00:00+00:00\n"
+        "orders [2026-10-27, +inf): unknown; complete as of unknown; deletions as of unknown\n"
+        "orders: unknown; exact at no single instant\n"
+    )
 
 
 def test_the_module_and_the_console_script_run_the_same_command():
@@ -197,72 +232,10 @@ def test_the_module_and_the_console_script_run_the_same_command():
         )
 
 
-def test_a_byte_order_mark_or_a_short_row_never_miscounts_tombstones(files, capsys):
+def test_a_written_manifest_is_readable_by_others_and_never_replaces_one_silently(files):
     tmp_path, data = files
-    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2", "--force")
-    data.write_bytes("\ufeffdeleted,id,day,value\nfalse,1,2026-10-25,a\ntrue,2,,\n".encode())
-    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
-    assert (written(data).rows, written(data).tombstones) == (1, 1)
-    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,2026-10-25\n")
-    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 1
-    assert "a record has 2 fields, the header 4" in capsys.readouterr().err
-
-
-def test_parquet_rows_and_tombstones_are_counted_through_the_duckdb_extra(tmp_path):
-    duckdb = pytest.importorskip("duckdb")
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    data = tmp_path / "orders.parquet"
-    duckdb.connect().execute(
-        "COPY (SELECT * FROM (VALUES (3, DATE '2026-10-25', 'c', false), (4, NULL, NULL, true)) "
-        f"t(id, day, value, deleted)) TO '{data}' (FORMAT parquet)"
-    )
-    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2")
-    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
-    assert (written(data).rows, written(data).tombstones) == (1, 1)
-    assert run(tmp_path, "check", str(data)) == 0
-
-
-def test_check_compares_only_the_hash_of_a_file_it_cannot_count(tmp_path, capsys):
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    data = tmp_path / "orders.jsonl"
-    data.write_text('{"id": 1}\n')
-    assert (
-        run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY, "--rows", "1") == 0
-    )
-    assert run(tmp_path, "check", str(data)) == 0
-    assert ": SHA-256 match the manifest" in capsys.readouterr().out
-
-
-def test_check_refuses_a_file_it_could_not_compare(tmp_path, capsys):
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    data = tmp_path / "orders.jsonl"
-    data.write_text('{"id": 1}\n')
-    manifest = contract().manifest("full", datetime(2026, 10, 26, 6, tzinfo=UTC), rows=1)
-    (tmp_path / "orders.jsonl.json").write_text(manifest.to_json())
-    assert run(tmp_path, "check", str(data)) == 1
-    assert "nothing compared" in capsys.readouterr().err
-    data.unlink()
-    assert run(tmp_path, "check", str(data)) == 1
-
-
-@pytest.mark.parametrize(
-    "data", [b"id\n1\ncaf\xe9\n", b"id\n" + b"x" * 200_000 + b"\n"], ids=["latin-1", "200 KB field"]
-)
-def test_manifest_explains_a_file_it_cannot_read(tmp_path, capsys, data):
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    path = tmp_path / "orders.csv"
-    path.write_bytes(data)
-    status = run(tmp_path, "manifest", str(path), "--shape", "full", "--produced-at", BOUNDARY, "-o", "-")
-    assert status == (1 if b"\xe9" in data else 0)
-    assert "Traceback" not in capsys.readouterr().err
-
-
-def test_a_written_manifest_is_readable_by_others_and_never_replaces_one_silently(tmp_path):
-    (tmp_path / "orders.contract.json").write_text(contract().to_json())
-    data = tmp_path / "orders.csv"
-    data.write_text("id\n1\n")
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
+    assert run(tmp_path, "manifest", str(data), *FULL) == 0
     sidecar = tmp_path / "orders.csv.json"
     assert sidecar.stat().st_mode & 0o044 == 0o044
-    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 1
+    assert run(tmp_path, "manifest", str(data), *FULL) == 1
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]

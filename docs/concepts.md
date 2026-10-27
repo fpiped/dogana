@@ -178,7 +178,7 @@ rejects the file rather than claim Wednesday for those orders.
    accepts, the deleted column if a shape has tombstones, and the hash of the table's columns.
 2. Every file arrives with a **manifest**: its shape, its read boundary, its window or checkpoint,
    how many live rows and tombstones it holds, and the SHA-256 of its bytes. A sender writes it with
-   `dogana manifest` or `Contract.manifest`.
+   `dogana manifest` or `Contract.manifest`, declaring the counts its export knows.
 3. The **gate** first checks the manifest against the contract and the ledger (a changes file needs
    a proven base, a checkpoint must leave no gap), then has the **store** check the rows against the
    manifest: counts, keys, windows, cursor values, column hash, bytes, and how much a complete file
@@ -306,6 +306,6 @@ one instant.
 
 The data contract (an ODCS document, a dbt model, a column list) owns the columns; the delivery
 contract carries only the types of the columns it reads and an opaque hash of the rest. Store
-authors run `dogana.conformance.StoreConformance`; see [reference implementations](reference.md),
-[integrations](integrations.md) and [architecture](architecture.md). DuckDB and the file drop are
-executable reference implementations, not production warehouse support.
+authors run `dogana.conformance.StoreConformance`; see the [reference](reference.md),
+[integrations](integrations.md) and [architecture](architecture.md). The repository's example store
+on DuckDB and its file drop show one way to publish; they are not part of the package.

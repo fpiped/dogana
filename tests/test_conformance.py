@@ -85,7 +85,7 @@ class DuckDBFactory:
         self.folder, self.monkeypatch, self.paths = folder, monkeypatch, {}
 
     def make_store(self):
-        from dogana.reference.duckdb import DuckDBStore
+        from example_store import DuckDBStore
 
         path = self.folder / f"{uuid4().hex}.duckdb"
         store = DuckDBStore(path)
@@ -93,12 +93,12 @@ class DuckDBFactory:
         return store
 
     def reopen(self, store):
-        from dogana.reference.duckdb import DuckDBStore
+        from example_store import DuckDBStore
 
         return DuckDBStore(self.paths[id(store)])
 
     def write_source(self, rows, columns):
-        from dogana.reference._sources import _FileSource
+        from example_store._sources import _FileSource
 
         path = self.folder / f"{uuid4().hex}.csv"
         with path.open("w", newline="") as stream:
@@ -108,7 +108,7 @@ class DuckDBFactory:
         return _FileSource(path, columns)
 
     def content_hash(self, source):
-        from dogana.reference._sources import _file_digest
+        from example_store._sources import _file_digest
 
         return _file_digest(source)
 

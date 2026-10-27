@@ -7,10 +7,11 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, Rows
+from example_store._sources import _FileSource
+
 from dogana import Contract, Gate, Ledger, Manifest, deliver
 from dogana.errors import InconsistentPublication, StoreError
-from dogana.reference._sources import Rows, _FileSource
-from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import COLUMNS, FULL, SINCE, at, contract, fold, schema_hash
 

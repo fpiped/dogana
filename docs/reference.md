@@ -1,7 +1,10 @@
-# Reference implementations
+# Reference
 
-The [protocol](protocol.md) defines required behavior. This page describes the shipped DuckDB and
-file drop implementations and how to supply your own storage.
+The [protocol](protocol.md) defines required behavior. This page describes the command line, the
+accounting path without a store, the conformance suite a store passes, and the example store and
+file drop in the repository's `examples/duckdb`. The example is not installed with dogana: install
+it from a checkout with `uv pip install -e examples/duckdb`, copy it, or write a store for your own
+database.
 
 ## Column types and hashes
 
@@ -20,10 +23,10 @@ property's `logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`,
 with that type. Resolve physical or nested types explicitly in the receiver. Hash these ordered
 `[name, type]` pairs with SHA-256 over
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`.
-This excludes document metadata. DuckDB and file drop use this recipe; other stores must agree with their receivers
+This excludes document metadata. The example store and file drop use this recipe; other stores must agree with their receivers
 on the opaque hash. The [quick start](quickstart.md) uses a hand-written ordered column mapping.
 
-## DuckDB store
+## Example store on DuckDB
 
 `DuckDBStore(path, adopt=False)` accepts a CSV or Parquet path, an iterable of row dictionaries,
 or an Arrow table when PyArrow is installed. A path is opened once, without following a final
@@ -32,7 +35,7 @@ uses that copy, so a file changed or replaced afterwards is never read.
 `hold(source, manifest, contract)` stages the candidate and inspects its column names and types.
 Bare CSV paths and row dictionaries use inferred types; `Contract.types` is not a full input schema.
 Row mappings cannot infer types from an empty input or an all-null column; `Rows(rows, columns)`
-from `dogana.reference.duckdb` supplies the types, so an empty API poll is still a delivery. Row
+from `example_store` supplies the types, so an empty API poll is still a delivery. Row
 mappings are inserted in batches of parameterized statements, far slower than a file: deliver large
 batches as CSV, Parquet or an Arrow table. For typed CSV,
 use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
@@ -175,7 +178,7 @@ For filenames such as `orders_2026-10-19.csv`, declare the timezone instead of a
 
 ```python
 from datetime import UTC
-from dogana.reference.files import FilePattern
+from example_store import FilePattern
 
 pattern = FilePattern(r"orders_(?P<produced_at>\d{4}-\d{2}-\d{2})\.csv", shape="daily", timezone=UTC)
 ```
@@ -188,8 +191,8 @@ Thirty DATE days ending October 19 start September 20. A window lacking both bou
 is refused. The duration is not a restriction on explicitly declared push windows.
 
 Without a `rows` group, the file is counted: its live rows and its tombstones, the rows whose
-deleted column is true. CSV records are counted including quoted newlines; Parquet counting needs
-the DuckDB extra. With a `rows` group the filename declares the counts, `rows` and `tombstones`
+deleted column is true. CSV records are counted including quoted newlines, Parquet rows through
+DuckDB. With a `rows` group the filename declares the counts, `rows` and `tombstones`
 (zero when the group is absent), and the file is not read for them. Path-based receipts identify
 the source. A manifest without a digest, derived or from a sidecar, gets the SHA-256 of the received
 file, so a changed file under the same manifest is a new delivery, not a replay.
@@ -211,20 +214,19 @@ A date-only pattern gives separate export jobs the same instant and voids the gu
 
 ## Command line
 
-`dogana` is installed with the package and runs as `python -m dogana` too. It needs no extra for
-CSV; Parquet files are counted through the `duckdb` extra.
+`dogana` is installed with the package and runs as `python -m dogana` too. It hashes files but
+never parses them.
 
 ```text
-dogana manifest FILE --contract PATH --shape NAME --produced-at TIME [options]
+dogana manifest FILE --contract PATH --shape NAME --produced-at TIME --rows N [options]
 dogana check FILE --contract PATH [--manifest PATH]
+dogana claims LEDGER [--at TIME] [--window LOW HIGH]
 ```
 
-`manifest` writes the sidecar a file drop reads, `FILE.json`, validated against the contract. It
-counts the live rows and the tombstones of FILE, CSV records (quoted newlines included) or Parquet
-rows, hashes the bytes with SHA-256 and takes the schema hash from the contract. A tombstone is a row
-whose deleted column is true; in CSV that column holds `true` or `false` (also `t`, `f`, `yes`,
-`no`, `y`, `n`, `1` or `0`, in any case) in every row. `--rows` and `--tombstones` declare the
-counts of any other format. Values
+`manifest` writes the sidecar a file drop reads, `FILE.json`, validated against the contract.
+`--rows` declares the live rows of FILE and, for a tombstone shape, `--tombstones` the rows whose
+deleted column is true: the export that wrote FILE knows them, and the receiver's store counts them
+again. It hashes the bytes with SHA-256 and takes the schema hash from the contract. Values
 are typed by the contract: `--window LOW HIGH` by the window column, omitted for a rolling shape
 whose window ends at `--produced-at`; `--since` as a time, an integer position or a generation
 token by the shape's checkpoint; `--generation` by the table's kind of position.
@@ -232,13 +234,26 @@ Times need a UTC offset. `--produced-at` is the source read boundary, never the 
 runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
 never reads half a manifest; it is readable by the receiver's account under the usual umask; `-o -` writes to standard output instead.
 
-`check` validates FILE's manifest against the contract and FILE against the manifest: the counts of
-rows and tombstones, and the SHA-256 of the bytes. A sender runs it before handing a file over. It
-does not check keys, windows or column types, which need the receiver's store, and it refuses a file
-it could compare in no way (a format it cannot count, under a manifest without a hash).
+`check` validates FILE's manifest against the contract and compares the SHA-256 of FILE with the
+manifest's `content_hash`. A sender runs it before handing a file over. It refuses a manifest
+without a hash. Counts, keys, windows and column types are checked by the receiver's store, which
+reads the rows.
 
-Exit status is 0 on success, 1 when dogana refuses (an invalid contract or manifest, a mismatch, an
-unreadable file, an existing manifest) and 2 when the command cannot describe the delivery as called.
+`claims` prints what a ledger claims at `--at`, now by default. LEDGER is the ledger as JSON, as a
+store returns it: `store.load_ledger(contract).to_json()`. One line per region gives its bounds, its
+state and its two dates, then one line the table's state and the instant it is exact at, if any.
+`--window LOW HIGH`, typed by the window column, keeps the regions meeting that window. Date and
+integer bounds print closed.
+
+```text
+orders (-inf, 2026-09-26]: unknown; complete as of unknown; deletions as of unknown
+orders [2026-09-27, 2026-10-26]: complete; complete as of 2026-10-26T06:00:00+00:00; deletions as of 2026-10-26T06:00:00+00:00
+orders [2026-10-27, +inf): unknown; complete as of unknown; deletions as of unknown
+orders: unknown; exact at no single instant
+```
+
+Exit status is 0 on success, 1 when dogana refuses (an invalid contract, manifest or ledger, a
+mismatch, an unreadable file, an existing manifest) and 2 when the command cannot describe the delivery as called.
 
 ## Without a Store
 
@@ -265,8 +280,9 @@ an atomic publication mechanism gives no guarantee that the evidence describes t
 
 ## Check a store
 
-Install the `dev` extra and run `dogana.conformance.StoreConformance` against a `StoreFactory`.
-The suite depends on pytest, not DuckDB. Required factory hooks are `make_store`, `write_source`,
+Install pytest and run `dogana.conformance.StoreConformance` against a `StoreFactory`. The suite
+depends on pytest, not DuckDB; the example store's factory is in the repository's
+`tests/test_conformance.py`. Required factory hooks are `make_store`, `write_source`,
 `read_table`, `read_publication`, `fail_after_rows` and `pause_after_rows`. The latter two exercise
 one `_publication_point()` hook inside publication after provisional row changes and before commit.
 

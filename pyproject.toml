@@ -1,6 +1,6 @@
 [project]
 name = "dogana"
-version = "0.4.0"
+version = "0.5.0"
 description = "A Python library for tables loaded from exports: it checks each delivered file against its manifest and contract, and keeps in a ledger what every delivery shows about the table"
 readme = "README.md"
 license = "Apache-2.0"
@@ -29,9 +29,16 @@ Repository = "https://github.com/fpiped/dogana"
 Changelog = "https://github.com/fpiped/dogana/blob/main/CHANGELOG.md"
 Issues = "https://github.com/fpiped/dogana/issues"
 
-[project.optional-dependencies]
-dev = ["pytest>=8", "mypy>=1.11", "hypothesis>=6", "jsonschema>=4.18", "types-jsonschema>=4"]
-duckdb = ["duckdb>=1.2", "pytz>=2024.1"]
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "mypy>=1.11",
+  "hypothesis>=6",
+  "jsonschema>=4.18",
+  "types-jsonschema>=4",
+  "duckdb>=1.2",
+  "pytz>=2024.1",
+]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -44,7 +51,7 @@ where = ["src"]
 dogana = ["py.typed"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "examples/duckdb"]
 testpaths = ["tests"]
 
 [tool.ruff]

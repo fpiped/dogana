@@ -6,9 +6,10 @@ from tests.support import COLUMNS, at, schema_hash
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore
+from example_store._sources import _FileSource
+
 from dogana import Contract, Manifest, Shape
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import SINCE, contract
 

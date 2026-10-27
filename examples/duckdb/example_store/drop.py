@@ -19,8 +19,9 @@ from dogana import (
     deliver,
     deliver_together,
 )
+from dogana._text import _checkpoint, _instant, _integer, _position, _scalar
 from dogana.contract import Window
-from dogana.reference._sources import (
+from example_store._sources import (
     _column_hash,
     _columns,
     _count_rows,
@@ -29,7 +30,6 @@ from dogana.reference._sources import (
     _open,
     _published,
 )
-from dogana.reference._text import _checkpoint, _instant, _integer, _position, _scalar
 
 _DECLARED = ", or a declared timezone"
 

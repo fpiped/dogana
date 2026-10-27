@@ -1,4 +1,5 @@
 graft tests
 graft docs
+graft examples
 include mkdocs.yml CHANGELOG.md CONTRIBUTING.md AGENTS.md NOTICE
 global-exclude __pycache__ *.py[cod]

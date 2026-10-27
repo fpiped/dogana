@@ -5,10 +5,10 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, FileDrop, FilePattern
+from example_store._sources import _FileSource
+
 from dogana import Claims, Contract, Ledger, Manifest, Receipt, State, next_extraction
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop, FilePattern
 from tests.integration.support import MARKED, csv_file, marked, row, sidecar
 from tests.support import COLUMNS, FEED, FULL, SINCE, WINDOW, at, contract, schema_hash
 

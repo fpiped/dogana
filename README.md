@@ -86,14 +86,15 @@ the source since Sunday may still be here. That is what patched means. That sent
 ## Use it
 
 dogana runs inside whatever already loads your tables: a cron job, an Airflow task, a dlt
-pipeline. The core is pure Python with no dependencies. The `duckdb` extra adds a store that
-commits rows and dates in one transaction, and a file drop that reads delivered files from a folder;
-both are reference implementations, not production warehouse support. A conformance suite tests a
-store you write for your own warehouse. A sender writes its manifest as JSON, in any language, or
-with `dogana manifest`.
+pipeline. The package is pure Python with no dependencies and never parses a data file: your
+loader checks the rows and hands dogana the results, or a store you write for your database
+publishes rows and dates in one transaction, tested by the conformance suite. The repository's
+[`examples/duckdb`](https://github.com/fpiped/dogana/tree/main/examples/duckdb) holds one such
+store on DuckDB and a file drop that feeds it, outside the package; the quick start runs on them. A
+sender writes its manifest as JSON, in any language, or with `dogana manifest`.
 
 dogana is in beta: the manifest and ledger format may still change before 1.0.
-Install it with `pip install "dogana[duckdb]"`, or `pip install dogana` for the core alone.
+Install it with `pip install dogana`.
 
 If all your sources have change data capture with deletes, you already know which rows to trust.
 dogana is for everything else.

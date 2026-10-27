@@ -1,4 +1,4 @@
-"""I/O boundaries implemented by reference implementations."""
+"""The I/O boundaries a store and an extractor implement outside the core."""
 
 from collections.abc import Mapping
 from typing import Protocol

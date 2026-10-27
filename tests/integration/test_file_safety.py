@@ -9,6 +9,9 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore, FileDrop, FilePattern
+from example_store._sources import _FileSource
+
 from dogana import (
     Checkpoint,
     Completeness,
@@ -22,9 +25,6 @@ from dogana import (
     Shape,
     State,
 )
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
-from dogana.reference.files import FileDrop, FilePattern
 from tests.support import schema_hash
 
 COLUMNS = {"id": "int"}

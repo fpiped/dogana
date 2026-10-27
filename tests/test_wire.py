@@ -45,7 +45,7 @@ def test_a_manifest_cannot_be_decoded_as_a_contract():
 ENTRY_POINTS = {"cli.py", "__main__.py"}
 
 
-def test_the_core_has_no_reference_or_third_party_imports():
+def test_the_core_imports_only_the_standard_library():
     import sys
 
     core = Path(__file__).parents[1] / "src" / "dogana"
@@ -57,7 +57,6 @@ def test_the_core_has_no_reference_or_third_party_imports():
                 names = [a.name.split(".")[0] for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 if node.level:
-                    assert not node.module.startswith("reference")
                     continue
                 names = [node.module.split(".")[0]]
             else:
@@ -89,6 +88,30 @@ def test_the_command_line_sits_above_the_core_and_imports_no_third_party_package
     assert loaded.stdout == "[]\n"
 
 
+def test_the_package_reads_no_data_file():
+    package = Path(__file__).parents[1] / "src" / "dogana"
+    readers = {"csv", "duckdb", "pyarrow", "pandas", "polars", "sqlite3", "example_store"}
+    for source in package.rglob("*.py"):
+        for node in ast.walk(ast.parse(source.read_text())):
+            if isinstance(node, ast.Import):
+                names = {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module is not None and not node.level:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            assert not names & readers, source.name
+
+
+def test_the_example_store_pins_the_core_it_is_tested_with():
+    import tomllib
+
+    root = Path(__file__).parents[1]
+    core = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    example = tomllib.loads((root / "examples" / "duckdb" / "pyproject.toml").read_text())["project"]
+    assert f"dogana=={core['version']}" in example["dependencies"]
+    assert example["version"] == core["version"]
+
+
 def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_keys():
     from tests.support import FULL
 
@@ -104,7 +127,7 @@ def test_manifest_wire_types_are_checked_before_any_accounting(change):
         Manifest.from_dict(value)
 
 
-def test_the_core_runs_in_an_isolated_package_with_reference_package_removed(tmp_path):
+def test_the_core_runs_alone_from_a_copy_of_its_modules(tmp_path):
     import subprocess
     import sys
 
@@ -127,7 +150,6 @@ assert receipt.accepted
 ledger = Ledger(c).follow(receipt)
 assert ledger.claims(receipt.received_at).state is State.COMPLETE
 assert Ledger.from_json(ledger.to_json()) == ledger
-assert 'dogana.reference' not in sys.modules
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
 

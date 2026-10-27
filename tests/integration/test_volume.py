@@ -9,9 +9,10 @@ from tests.support import at, schema_hash
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore
+from example_store._sources import _FileSource
+
 from dogana import Contract, Ledger, Manifest, Shape
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
 
 FULL = Shape.full()
 SINCE = Shape.append()

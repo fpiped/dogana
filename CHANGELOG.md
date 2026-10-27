@@ -1,7 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-27)
 
+The package never parses a data file. The DuckDB store and the file drop leave it for the
+repository's `examples/duckdb`, where they are tested with every change but not published, and the
+`duckdb` extra goes: `pip install dogana` is the whole package. A receiver checks rows with its own
+loader, or publishes through a store it writes against the conformance suite or copies from the
+example.
+
+- `dogana.reference.duckdb` and `dogana.reference.files` are gone. From a checkout,
+  `uv pip install -e . -e examples/duckdb` installs the example, imported as `example_store`
+  (`DuckDBStore`, `FileDrop`, `FilePattern`, `Rows`, `ingest_together`).
+- `dogana manifest` no longer counts rows: `--rows` is required, and `--tombstones` for a tombstone
+  shape, since the export that wrote the file knows them and the receiver's store counts them again.
+  It still hashes the file. `dogana check` compares the manifest with the contract and the file's
+  SHA-256 with the manifest, and refuses a manifest without a hash.
+- `dogana claims LEDGER` prints what a ledger, as JSON, claims at an instant: each region's bounds,
+  state and two dates, then the instant the table is exact at, if any.
+- The development tools are a `dev` dependency group, not an extra, so the published package
+  declares no optional dependencies.
 - A tombstone's cursor value, when it carries one, must lie in the read interval like a live row's:
   `rows_in_interval` refused a live row stamped outside `(since, produced_at]` but let a deletion
   stamped there through. A null cursor on a tombstone stays allowed.

@@ -2,10 +2,11 @@ import pytest
 
 pytest.importorskip("duckdb")
 
+from example_store import DuckDBStore
+from example_store._sources import _FileSource
+
 from dogana import Ledger, Manifest
 from dogana.errors import LedgerAhead, StampAhead
-from dogana.reference._sources import _FileSource
-from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import COLUMNS, at, contract, fold
 
