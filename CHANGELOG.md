@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-10-27)
 
 The store publishes exactly the bytes the sender hashed and counted, every delivery it cannot read
 is a recorded rejection, and a receipt no longer grows with the table's history. This changes the
