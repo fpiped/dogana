@@ -34,6 +34,13 @@ unchanged.
 - The protocol states that `produced_at` of a sequence read is earlier than the first unread commit,
   that `start_at` excludes its own instant, what a soft-deleting source's dates speak about, and that
   the query theorem assumes both sides compare and compute alike.
+- `Rows(rows, columns)`, from `dogana.reference.duckdb`, types a batch of row mappings, so an empty
+  API poll or an all-null batch is still a delivery without writing a file.
+- A field of the wrong type names the type expected, and `Ledger.apply` refuses anything but a
+  `Manifest`, saying that rows reach a store through `dogana.deliver`.
+- The docs describe dogana in one sentence everywhere, qualify "proves" by the sender's honesty, say
+  that the DuckDB store and file drop are reference implementations, and cite the research the two
+  dates come from. The source archive carries the tests and docs it needs to run.
 - `StoreConformance` checks that a store publishes only what its own checks accepted, and, through an
   optional factory `reopen`, that a publication survives reopening and that two stores on one
   storage publish only one candidate.
