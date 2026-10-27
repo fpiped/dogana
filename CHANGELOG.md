@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Tables that depend on each other can be delivered and read together. The wire format is unchanged.
+
+- `Claims.exact_as_of` is the instant at which every region equals the source, if there is one. On
+  claims combined across tables it is their common instant: tables each exact at the same instant
+  answer every query, joins and `NOT EXISTS` included, as the source would have.
+- `Group` names tables read together; `Reference` states that each row of one table names the key
+  of a row of another. `Group.claims` combines the tables' claims, each over an optional window.
+- `deliver_together` decides one delivery per table as one: the files must share one read
+  boundary, a refused table refuses them all, references are checked on the rows the delivery would
+  publish, and every table is published in one atomic step. Receipts gain the `together` and
+  `references` checks.
+- `plan_together` names one read per table at one shared boundary.
+- `TogetherStore` is an optional store tier (`check_references`, `publish_together`), tested by
+  `TogetherConformance`. The DuckDB store implements it and adds `read_together`; the file drop adds
+  `ingest_together`.
+
 ## 0.2.0 (2026-10-27)
 
 Deletions travel in the delivered file, not in the manifest. This changes the wire format to

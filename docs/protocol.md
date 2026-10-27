@@ -293,8 +293,9 @@ remains visible even when recent patches hide old deletion knowledge.
 
 `Claims.combine` takes those minima across tables. These are lower bounds on input evidence dates,
 not completeness or deletion statements about one common snapshot or a joined result. Regions at
-different dates may form a table exact at no instant. Common-time evidence is needed to propagate
-row guarantees through monotone queries such as filters, joins and unions. Negation (`NOT EXISTS`,
+different dates may form a table exact at no instant. Common-time evidence, `exact_as_of` in
+[Tables together](#tables-together), is needed to propagate row guarantees through queries; with
+only the minima, monotone queries such as filters, joins and unions keep lower bounds. Negation (`NOT EXISTS`,
 anti-joins, difference) swaps the completeness and deletion requirements for the negated input. With
 exact items and complete-but-patched movements at the same boundary, "items with no movement" is
 valid but possibly incomplete: a retained deleted movement hides an item. Exact aggregates need
@@ -313,6 +314,82 @@ start back when needed to bridge the last complete evidence and avoid scheduling
 Timestamp `since` is the weakest covered completeness boundary minus optional keyed `lookback`.
 Append requires one common boundary; generation requests use the held cursor. The request's `until`
 becomes the manifest boundary only when extraction proves it. Push and pull use the same gate.
+
+## Tables together
+
+`Claims.exact_as_of` is the instant `p` at which every region of the claims has the dates `(p, p)`,
+or `None` when there is none. On one table's claims it states that the table equals the source at
+`p`; on claims combined across tables, that every one of them does. Freshness does not affect it;
+`state` still reports an expired region.
+
+If every region a query reads, in every table it reads, equals the source at the same instant `p`,
+the query answers as the source would have at `p`: filters, joins, unions, negation and exact
+aggregates alike, and every rule the source keeps between its tables, such as each line naming an
+order, holds between the published tables. The query cannot tell its inputs from the source at `p`.
+The premise is each table's own: each `produced_at` is a consistent read at that instant (see the
+trust model), and dogana cannot verify that two files came from one source transaction. No common
+store transaction is needed for this guarantee: two tables each read with its ledger under one
+publication identity (obligation 6), each exact at `p`, are consistent however they were published.
+
+`Group(contracts, references=())` names tables read together, each once. `Group.claims(ledgers,
+now, windows=None)` combines their claims, each clipped to an optional window; its `exact_as_of` is
+the group's common instant. `Reference(table, columns, parent)` states that every live row of
+`table` whose `columns` are all non-null names, in that order, the key of a row of `parent`; it has
+one column per key column of the parent, and both tables belong to the group.
+
+`deliver_together(store, group, deliveries, now)` takes one `(source, manifest)` per table of the
+group and decides them as one delivery:
+
+1. Each table runs the steps of a single delivery up to its own decision: replay lookup, preflight,
+   `hold` and `check`.
+2. The `together` check passes when every manifest has the same `produced_at` and every table is
+   accepted on its own.
+3. With references and a passed `together` check, the store answers one `references` check. On the
+   rows that would result from every table's plan, each row of the child inside the child
+   delivery's coverage, with its reference columns all non-null, names a row of the parent. A child
+   row outside that coverage was not read at `p` and is not checked.
+4. Both checks join every table's receipt, through `Gate.evaluate(..., joint=checks)`. If any
+   receipt is a rejection, every table is rejected and records its refusal; otherwise
+   `publish_together` publishes every table's rows, ledger and receipt in one atomic step.
+
+Each table keeps its own receipts, publication chain and reconstruction, and a group adds no wire
+kind. A group replays whole: when every manifest is already accepted, every receipt replays; when
+only some are, accepted on their own, the others are refused. A failure after the commit returns the
+committed receipts, and a commit that published only some tables raises `InconsistentPublication`.
+
+The `together` check does not require the result to be exact; the shapes decide that. A table
+reaches `(p, p)` with a complete delivery, or with changes carrying tombstones whose `since` is no
+later than its deletion date. A table without changes still delivers an empty changes file at `p`.
+Atomic publication is for availability, not for the guarantee: without it, the current tables have
+no common instant between two publications, and a refused table leaves the others ahead. With it,
+the common instant moves from one boundary to the next in one step, and a refused delivery leaves
+every table where it was.
+
+The references check refuses no honest delivery when every parent a checked child row can name lies
+in a region of the parent exact at `p`: the parent delivered over its whole domain, or both tables
+windowed by the same immutable column (lines carrying their order date) and delivered over the same
+window. Otherwise a parent outside the parent's delivered coverage can be missing, and an honest
+delivery can be refused. A reference needs child shapes that carry deletions: when the source
+deletes an order with its lines, a lines delivery without tombstones keeps them, and the group is
+refused until a delivery removes them.
+
+`plan_together(group, ledgers, at_least, windows=None)` returns no request when the group is already
+exact at an instant no earlier than `at_least`. Otherwise it returns one request per table, all with
+the same `until`, later than every table's evidence and no earlier than `at_least`, each the
+cheapest read that establishes `(until, until)` over its window. The extractor reads every table in
+one source transaction and stamps every manifest with that transaction's instant.
+
+`TogetherStore` extends `Store` with `check_references(group, candidates)` and
+`publish_together(group, entries)`, where `candidates` maps each table to its checked candidate and
+`entries` pairs one candidate per table of the group with its accepted receipt. The store must:
+
+1. answer the references check on the rows the candidates would produce, without changing published
+   rows, and only for candidates that passed their own checks;
+2. verify every receipt against its own checks, the `together` check recomputed from them, and,
+   when the group has references, the references check it answered for that group's references on
+   exactly those candidates after their last check; without that answer, refuse to publish;
+3. publish every entry, or none, in one atomic step, under the six obligations of a single
+   publication.
 
 ## Store protocol and publication
 
@@ -333,8 +410,9 @@ the store. `dogana.deliver(store, contract, source, manifest, now)` owns the sha
 `receipts(table=None)` returns persistence order. These seven methods are the required `Store` port.
 An accepted publication requires a held and checked candidate. Rejected publication also compares
 and sets the expected parent, and refuses a receipt that cannot decode before writing the log.
-`publication_stamp(table)` and `repair(contract)` form the optional stamped-ledger tier; ordinary
-read methods and `store.deliver` are conveniences, not required port methods.
+`publication_stamp(table)` and `repair(contract)` form the optional stamped-ledger tier;
+`check_references` and `publish_together` form the optional [together tier](#tables-together).
+Ordinary read methods and `store.deliver` are conveniences, not required port methods.
 
 The store must satisfy six obligations:
 
@@ -429,5 +507,5 @@ The conformance suite exercises publication obligations against store implementa
 is evidence for those scenarios, not a proof of arbitrary storage or source correctness.
 
 Open owner decisions are public vocabulary, a table namespace, finite string or multidimensional
-domains, receiver and reader commands, same-boundary supersession, one delivery for parent and child
-tables, and release and compatibility policy; none is added here.
+domains, receiver and reader commands, same-boundary supersession, and release and compatibility
+policy; none is added here.

@@ -284,12 +284,21 @@ class Claims(Wire):
         dates = [r.region.deletions_as_of for r in self.regions]
         return None if any(t is None for t in dates) else min(t for t in dates if t is not None)
 
+    @property
+    def exact_as_of(self) -> datetime | None:
+        """The one instant at which every region equals the source, if there is one."""
+        dates = {(r.region.complete_as_of, r.region.deletions_as_of) for r in self.regions}
+        if len(dates) != 1:
+            return None
+        ((complete, deletions),) = dates
+        return complete if complete is not None and complete == deletions else None
+
     def in_state(self, state: State) -> tuple[RegionClaim, ...]:
         return tuple(r for r in self.regions if r.state is state)
 
     @classmethod
     def combine(cls, *claims: Claims) -> Claims:
-        """Return the weakest input bounds, without asserting a common snapshot."""
+        """Return the weakest input bounds; only `exact_as_of` asserts a common snapshot."""
         return cls(tuple(r for claim in claims for r in claim.regions))
 
 

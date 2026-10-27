@@ -18,15 +18,18 @@ from dogana import (
     Contract,
     Coverage,
     Deletions,
+    Group,
     InconsistentPublication,
     Ledger,
     Manifest,
     Outcome,
     Receipt,
+    Reference,
     Shape,
     State,
     Store,
     StoreError,
+    deliver_together,
     next_extraction,
 )
 from dogana import (
@@ -58,7 +61,14 @@ FEED = Shape(
     deletions=Deletions.TOMBSTONE,
     checkpoint=Checkpoint.GENERATION,
 )
+CHANGES = Shape(
+    coverage=Coverage.ALL,
+    completeness=Completeness.CHANGED_ONLY,
+    deletions=Deletions.TOMBSTONE,
+    checkpoint=Checkpoint.TIMESTAMP,
+)
 COLUMNS = {"id": "int", "day": "date", "value": "str"}
+LINE_COLUMNS = {"id": "int", "order_id": "int", "day": "date", "value": "str"}
 
 
 def _schema_hash(columns: Mapping[str, str]) -> str:
@@ -122,6 +132,22 @@ def _contract(table: str = "moves", shapes: dict[str, Shape] | None = None, **kw
         deleted_column=deleted_column,
         **kwargs,
     )
+
+
+def _orders(references: bool = True) -> Group:
+    """Orders and their lines, each line naming its order."""
+    orders = _contract("orders", {"full": FULL, "changes": CHANGES})
+    lines = _contract(
+        "order_lines",
+        {"full": FULL, "daily": WINDOW, "changes": CHANGES},
+        schema_hash=_schema_hash(LINE_COLUMNS),
+    )
+    named = (Reference("order_lines", ("order_id",), "orders"),) if references else ()
+    return Group((orders, lines), named)
+
+
+def _line(key: int, order: int | None, day: int = 18) -> dict[str, Any]:
+    return {"id": key, "order_id": order, "day": _at(day).date(), "value": "current"}
 
 
 def _submit(store: Store, contract: Contract, source: object, manifest: Manifest) -> Receipt:
@@ -1086,3 +1112,241 @@ class StampedLedgerConformance(_StoreScenarios):
             _submit(store, c, object(), receipt.manifest)
         assert stamped.repair(c) == receipt.ledger
         assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
+
+
+_Deliveries = Mapping[str, tuple[str, Sequence[Mapping[str, Any]], Mapping[str, Any]]]
+
+
+class TogetherConformance(_StoreScenarios):
+    """Optional tests for stores that publish the tables of a group in one atomic step."""
+
+    def _together(
+        self,
+        factory: StoreFactory,
+        store: Store,
+        group: Group,
+        deliveries: _Deliveries,
+        day: int = 18,
+    ) -> dict[str, Receipt]:
+        """Deliver `(shape, rows, manifest fields)` per table, read at `day` unless a table says otherwise."""
+        if not all(callable(getattr(store, name, None)) for name in ("publish_together", "check_references")):
+            pytest.skip("store does not publish tables together")
+        sources: dict[str, tuple[object, Manifest]] = {}
+        for table, (shape, rows, fields) in deliveries.items():
+            contract, fields = group.contract(table), dict(fields)
+            tombstones = fields.pop("tombstones", ())
+            manifest = Manifest(
+                table=table,
+                shape=shape,
+                produced_at=_at(fields.pop("day", day)),
+                rows=fields.pop("rows", len(rows)),
+                schema_hash=contract.schema_hash,
+                tombstones=len(tombstones),
+                **fields,
+            )
+            marked, columns = _marked(
+                contract, shape, rows, tombstones, LINE_COLUMNS if table == "order_lines" else COLUMNS
+            )
+            sources[table] = (factory.write_source(marked, columns), manifest)
+        receipts = deliver_together(store, group, sources, _at(30))
+        for contract in group.contracts:
+            self._fold(store, contract)
+        return receipts
+
+    def _state(self, factory: StoreFactory, store: Store, group: Group) -> dict[str, Any]:
+        return {c.table: factory.read_publication(store, c) for c in group.contracts}
+
+    def _baseline(self, factory: StoreFactory, store: Store, group: Group) -> dict[str, Receipt]:
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("full", [_row(1), _row(2)], {}),
+                "order_lines": ("full", [_line(10, 1), _line(11, 2)], {}),
+            },
+        )
+        assert all(r.accepted for r in receipts.values()), receipts
+        return receipts
+
+    def test_a_group_publishes_every_table_at_one_instant(self, factory: StoreFactory, store: Store) -> None:
+        group = _orders()
+        first = self._baseline(factory, store, group)
+        assert {c.name: c.passed for c in first["orders"].checks if c.name in ("together", "references")} == {
+            "together": True,
+            "references": True,
+        }
+        ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
+        assert group.claims(ledgers, _at(18)).exact_as_of == _at(18)
+        second = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
+                "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
+            },
+            day=19,
+        )
+        assert all(r.accepted for r in second.values()), second
+        ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
+        assert group.claims(ledgers, _at(19)).exact_as_of == _at(19)
+        assert [r["id"] for r in self._rows(factory, store, "order_lines")] == [10, 11, 12]
+
+    def test_a_line_without_its_order_refuses_the_whole_group(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        self._baseline(factory, store, group)
+        before = self._state(factory, store, group)
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [], {"since": _at(18)}),
+                "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
+            },
+            day=19,
+        )
+        assert not any(r.accepted for r in receipts.values())
+        failed = {r.ledger.contract.table: [c for c in r.checks if not c.passed] for r in receipts.values()}
+        assert [c.name for c in failed["orders"]] == [c.name for c in failed["order_lines"]] == ["references"]
+        assert "rows without a parent row in orders: 1" in failed["orders"][0].detail
+        assert self._state(factory, store, group) == before
+
+    def test_an_order_deleted_with_its_lines_kept_refuses_the_group(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        self._baseline(factory, store, group)
+        kept: _Deliveries = {
+            "orders": ("changes", [], {"since": _at(18), "tombstones": (1,)}),
+            "order_lines": ("changes", [], {"since": _at(18)}),
+        }
+        assert not any(r.accepted for r in self._together(factory, store, group, kept, day=19).values())
+        cascaded: _Deliveries = {
+            **kept,
+            "order_lines": ("changes", [], {"since": _at(18), "tombstones": (10,)}),
+        }
+        receipts = self._together(factory, store, group, cascaded, day=19)
+        assert all(r.accepted for r in receipts.values()), receipts
+        assert [r["id"] for r in self._rows(factory, store, "order_lines")] == [11]
+
+    def test_a_null_reference_and_rows_outside_the_delivered_window_are_not_checked(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("full", [_row(1), _row(2)], {}),
+                "order_lines": ("full", [_line(10, 1, 1), _line(11, 2), _line(12, None)], {}),
+            },
+        )
+        assert all(r.accepted for r in receipts.values()), receipts
+        window = (_at(19).date(), _at(19).date())
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [], {"since": _at(18), "tombstones": (1,)}),
+                "order_lines": ("daily", [], {"window": window}),
+            },
+            day=19,
+        )
+        assert all(r.accepted for r in receipts.values()), receipts
+        ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
+        assert group.claims(ledgers, _at(19)).exact_as_of is None
+        assert group.claims(ledgers, _at(19), {"order_lines": window}).exact_as_of == _at(19)
+
+    def test_a_table_failing_its_own_checks_refuses_the_group(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        self._baseline(factory, store, group)
+        before = self._state(factory, store, group)
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
+                "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18), "rows": 2}),
+            },
+            day=19,
+        )
+        orders, lines = receipts["orders"], receipts["order_lines"]
+        assert not orders.accepted and not lines.accepted
+        assert [c.detail for c in orders.checks if not c.passed] == ["refused with order_lines"]
+        assert {c.name for c in lines.checks if not c.passed} == {"row_count", "together"}
+        assert self._state(factory, store, group) == before
+
+    def test_tables_read_at_different_instants_are_refused_together(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        self._baseline(factory, store, group)
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [_row(3, 19)], {"since": _at(18), "day": 19}),
+                "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18), "day": 20}),
+            },
+        )
+        for receipt in receipts.values():
+            assert [c.detail for c in receipt.checks if not c.passed] == [
+                "orders, order_lines carry different read boundaries"
+            ]
+
+    def test_a_failure_after_rows_publishes_no_table(self, factory: StoreFactory, store: Store) -> None:
+        group = _orders(references=False)
+        self._baseline(factory, store, group)
+        before = self._state(factory, store, group)
+        deliveries = {
+            "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
+            "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
+        }
+        with factory.fail_after_rows(store), pytest.raises(StoreError):
+            self._together(factory, store, group, deliveries, day=19)
+        assert self._state(factory, store, group) == before
+        assert all(r.accepted for r in self._together(factory, store, group, deliveries, day=19).values())
+
+    def test_a_group_replays_whole(self, factory: StoreFactory, store: Store) -> None:
+        group = _orders()
+        first = self._baseline(factory, store, group)
+        audit = store.receipts()
+        replayed = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("full", [_row(1), _row(2)], {}),
+                "order_lines": ("full", [_line(10, 1), _line(11, 2)], {}),
+            },
+        )
+        assert replayed == {t: replace(r, outcome=Outcome.REPLAYED) for t, r in first.items()}
+        assert store.receipts() == audit
+        alone = self._deliver(
+            factory, store, group.contract("orders"), [_row(3, 19)], "changes", 19, since=_at(18)
+        )
+        assert alone.accepted
+        receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
+                "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
+            },
+            day=19,
+        )
+        assert receipts["orders"] == replace(alone, outcome=Outcome.REPLAYED)
+        assert [c.detail for c in receipts["order_lines"].checks] == [
+            "a group replays whole, and orders was accepted before"
+        ]

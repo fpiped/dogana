@@ -1,7 +1,7 @@
 """Delivery evidence, publication decisions and reader claims."""
 
 from .contract import Checkpoint, Completeness, Contract, Coverage, Deletions, Manifest, Shape
-from .delivery import deliver
+from .delivery import deliver, deliver_together
 from .errors import (
     DoganaError,
     InconsistentPublication,
@@ -14,9 +14,10 @@ from .errors import (
     StoreError,
 )
 from .gate import Action, ApplyPlan, Check, CheckRequirement, Gate, Operation, Outcome, Receipt, Transition
-from .interfaces import Extractor, Store
+from .group import Group, Reference
+from .interfaces import Extractor, Store, TogetherStore
 from .ledger import Claims, Ledger, Region, RegionClaim, State
-from .planner import ExtractionRequest, Requirement, next_extraction, plan_delivery
+from .planner import ExtractionRequest, Requirement, next_extraction, plan_delivery, plan_together
 
 __all__ = [
     "Action",
@@ -33,6 +34,7 @@ __all__ = [
     "ExtractionRequest",
     "Extractor",
     "Gate",
+    "Group",
     "InconsistentPublication",
     "InvalidContract",
     "Ledger",
@@ -42,6 +44,7 @@ __all__ = [
     "Outcome",
     "PlanningError",
     "Receipt",
+    "Reference",
     "Region",
     "RegionClaim",
     "RejectedDelivery",
@@ -52,8 +55,11 @@ __all__ = [
     "StampAhead",
     "Store",
     "StoreError",
+    "TogetherStore",
     "Transition",
     "deliver",
+    "deliver_together",
     "next_extraction",
     "plan_delivery",
+    "plan_together",
 ]

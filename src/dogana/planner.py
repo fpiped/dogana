@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 
 from .contract import Checkpoint, Coverage, Deletions, Manifest, Shape, Window, bounds, identifier
 from .errors import InvalidContract, RejectedDelivery
 from .errors import PlanningError as PlanningError
+from .group import Group
 from .ledger import Claims, Ledger, Region
 from .wire import Wire, utc
 
@@ -202,3 +204,35 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
     if not candidates:
         raise PlanningError("no admitted shape can establish the required claims")
     return min(candidates, key=lambda r: (r.cost, r.shape))
+
+
+def plan_together(
+    group: Group,
+    ledgers: Mapping[str, Ledger],
+    at_least: datetime,
+    *,
+    windows: Mapping[str, Window] | None = None,
+) -> dict[str, ExtractionRequest]:
+    """Choose one read per table at one shared boundary, after which every table equals the source then."""
+    at_least, windows = utc(at_least), windows or {}
+    exact = group.claims(ledgers, at_least, windows).exact_as_of
+    if exact is not None and exact >= at_least:
+        return {}
+    # Past every table's evidence, so each read raises every region it covers to the shared boundary.
+    dates = [r.complete_as_of for ledger in ledgers.values() for r in ledger.regions if r.complete_as_of]
+    dates += [ledger.contract.start_at for ledger in ledgers.values() if ledger.contract.start_at]
+    try:
+        boundary = max([at_least, *(d + timedelta(microseconds=1) for d in dates)])
+    except OverflowError as exc:
+        raise PlanningError("the shared boundary exceeds the datetime range") from exc
+    requests: dict[str, ExtractionRequest] = {}
+    for table in group.tables:
+        requirement = Requirement(table, boundary, boundary, windows.get(table))
+        try:
+            request = plan_delivery(ledgers[table], requirement)
+        except PlanningError as exc:
+            raise PlanningError(f"{table}: {exc}") from exc
+        if request is None or request.until != boundary:
+            raise PlanningError(f"{table} cannot be read at the shared boundary")
+        requests[table] = request
+    return requests

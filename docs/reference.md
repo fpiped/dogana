@@ -66,6 +66,14 @@ to read its version. Pair that version with the receipt's ledger, recomputing cl
 has `outcome="replayed"` and preserves original identity and `received_at`; it is not another commit.
 This is a decision history, not a journal of every call or operational exception.
 
+The store implements the [together tier](protocol.md#tables-together). `check_references(group,
+candidates)` applies every candidate's plan inside a transaction it rolls back, counts the child rows
+that name no parent row, and refuses a reference whose columns are missing or whose types differ
+from the parent key's; a new check of any candidate discards that answer. `publish_together(group,
+entries)` writes every table's rows, history, receipt, stamp and ledger in one transaction. `read_together(group)` returns `(rows, ledgers)`, two mappings
+by table, read under one lock, so no publication falls between two tables; pass the ledgers to
+`group.claims(ledgers, now)` for the common instant.
+
 ## Internal tables and ledger JSON
 
 These tables are implementation details, useful for inspection and SQL consumers:
@@ -172,6 +180,11 @@ remain inside the drop root, including through symlinks. With no root, the submi
 is the boundary. These checks are not a sandbox or a resource quota: limit input size and memory
 at the caller. Compressed Parquet can expand far beyond its file size. There is no watcher or mover.
 
+`ingest_together(group, files, *, now=None)` delivers one file per table of a group through
+`deliver_together`. `files` pairs each table's `FileDrop` with its path; every drop must use the same
+store and its table's contract in the group. Each manifest comes from its sidecar or pattern as for
+`ingest`, and the files must carry the same read boundary, for example one date in every filename.
+
 ## Command line
 
 `dogana` is installed with the package and runs as `python -m dogana` too. It needs no extra for
@@ -235,7 +248,9 @@ one `_publication_point()` hook inside publication after provisional row changes
 Stores exposing both `publication_stamp` and `repair` can also inherit `StampedLedgerConformance`;
 its `StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger` for recovery scenarios.
 Stores without that tier still run every required publication scenario. Diagnosis matches
-`LedgerAhead` and `StampAhead`, never exception text.
+`LedgerAhead` and `StampAhead`, never exception text. Stores exposing `check_references` and
+`publish_together` can inherit `TogetherConformance`: one instant for a group, a refused table or
+reference refusing every table, different read boundaries, a failure after rows, and whole replay.
 
 Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale accepted
 and rejected bases, atomic failures, malformed receipt persistence and reconstruction. A refusal

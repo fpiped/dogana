@@ -208,6 +208,18 @@ class Gate:
         return (Check("manifest", True), Check("receiver_time", True), Check("transition", True))
 
     @staticmethod
+    def together(alone: tuple[Receipt, ...]) -> Check:
+        """The joint check of a group: one read boundary, and every table accepted on its own."""
+        tables = ", ".join(receipt.ledger.contract.table for receipt in alone)
+        boundaries = {receipt.manifest.produced_at for receipt in alone}
+        refused = [receipt.ledger.contract.table for receipt in alone if not receipt.accepted]
+        if len(boundaries) != 1:
+            return Check("together", False, f"{tables} carry different read boundaries")
+        if refused:
+            return Check("together", False, f"refused with {', '.join(refused)}")
+        return Check("together", True, f"{tables} as of {boundaries.pop().isoformat()}")
+
+    @staticmethod
     def reject(
         ledger: Ledger,
         manifest: Manifest,
@@ -241,10 +253,14 @@ class Gate:
         *,
         now: datetime,
         source: str | None = None,
+        joint: tuple[Check, ...] = (),
     ) -> Receipt:
+        """Decide one delivery; `joint` holds the checks of the group it travels with."""
         now = utc(now)
         if not isinstance(outcomes, (tuple, list)) or any(not isinstance(c, Check) for c in outcomes):
             raise InvalidContract("row outcomes must be Check values")
+        if any(not isinstance(c, Check) for c in joint):
+            raise InvalidContract("joint outcomes must be Check values")
         checks = cls.preflight(ledger, manifest, now=now)
         if all(c.passed for c in checks):
             expected = {r.name for r in cls.requirements(ledger.contract, manifest)}
@@ -264,6 +280,7 @@ class Gate:
                     "one outcome per required row check",
                 ),
             )
+        checks += tuple(joint)
         if not all(c.passed for c in checks):
             return cls.reject(ledger, manifest, checks, now=now, source=source)
         after = ledger.apply(manifest)

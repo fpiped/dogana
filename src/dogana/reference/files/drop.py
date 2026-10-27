@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
-from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
+from dogana import (
+    Contract,
+    Group,
+    InvalidContract,
+    Manifest,
+    Receipt,
+    SerializationError,
+    Store,
+    deliver,
+    deliver_together,
+)
 from dogana.contract import Window
 from dogana.reference._sources import (
     _column_hash,
@@ -145,7 +155,12 @@ class FileDrop:
         self.root = _resolved_path(Path(root)) if root is not None else None
 
     def ingest(self, path: str | Path, *, now: datetime | None = None) -> Receipt:
-        path = Path(path)
+        source, manifest = self._delivery(Path(path))
+        return deliver(
+            self.store, self.contract, source, manifest, now=now if now is not None else datetime.now(UTC)
+        )
+
+    def _delivery(self, path: Path) -> tuple[_FileSource, Manifest]:
         root = self.root if self.root is not None else _resolved_path(path.parent)
         resolved = _within_root(path, root)
         sidecar = path.with_suffix(path.suffix + ".json")
@@ -166,10 +181,22 @@ class FileDrop:
             manifest = replace(derived, content_hash=_file_digest(resolved))
         else:
             raise InvalidContract("delivery needs a sidecar manifest or a declared filename pattern")
-        return deliver(
-            self.store,
-            self.contract,
-            _FileSource(path, self.columns),
-            manifest,
-            now=now if now is not None else datetime.now(UTC),
-        )
+        return _FileSource(path, self.columns), manifest
+
+
+def ingest_together(
+    group: Group, files: Iterable[tuple[FileDrop, str | Path]], *, now: datetime | None = None
+) -> dict[str, Receipt]:
+    """Deliver one file per table of a group, all read at one source instant, in one publication."""
+    files = tuple(files)
+    stores = {id(drop.store) for drop, _ in files}
+    if len(stores) != 1:
+        raise InvalidContract("the files of a group go to one store")
+    if any(group.contract(drop.contract.table) != drop.contract for drop, _ in files):
+        raise InvalidContract("each drop's contract must be its table's contract in the group")
+    if len({drop.contract.table for drop, _ in files}) != len(files):
+        raise InvalidContract("a group delivery carries one file per table")
+    deliveries = {drop.contract.table: drop._delivery(Path(path)) for drop, path in files}
+    return deliver_together(
+        files[0][0].store, group, deliveries, now=now if now is not None else datetime.now(UTC)
+    )

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from dogana.conformance import StampedLedgerConformance, StoreConformance
+from dogana.conformance import StampedLedgerConformance, StoreConformance, TogetherConformance
 from tests.memory_store import CommitMemoryStore, MemoryStore, RowSource
 
 
@@ -167,7 +167,7 @@ class TestCommitMemory(StoreConformance, StampedLedgerConformance):
         return MemoryFactory(CommitMemoryStore, monkeypatch)
 
 
-class TestDuckDB(StoreConformance, StampedLedgerConformance):
+class TestDuckDB(StoreConformance, StampedLedgerConformance, TogetherConformance):
     @pytest.fixture
     def factory(self, tmp_path, monkeypatch):
         pytest.importorskip("duckdb")

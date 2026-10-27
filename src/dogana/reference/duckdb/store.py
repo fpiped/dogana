@@ -23,10 +23,12 @@ from dogana import (
     CheckRequirement,
     Contract,
     Gate,
+    Group,
     Ledger,
     Manifest,
     Operation,
     Receipt,
+    Reference,
 )
 from dogana.contract import (
     LOGICAL_TYPES,
@@ -155,11 +157,7 @@ class _Audit:
 
     @cached_property
     def window(self) -> Window | None:
-        match self.delivery:
-            case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
-                return window
-            case _:
-                return None
+        return _coverage(self.delivery)
 
     @property
     def staging(self) -> str:
@@ -168,6 +166,15 @@ class _Audit:
     @property
     def deleted(self) -> str:
         return _quote(_deleted(self.candidate))
+
+
+def _coverage(delivery: ParsedDelivery) -> Window | None:
+    """The window a delivery speaks about, or None for the whole table."""
+    match delivery:
+        case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
+            return window
+        case _:
+            return None
 
 
 def _deleted(candidate: str) -> str:
@@ -183,7 +190,8 @@ class DuckDBStore:
         self._adopt = adopt
         self._candidates: dict[str, _Candidate] = {}
         self._checked: dict[str, _Checked] = {}
-        self._transaction: str | None = None
+        self._references: dict[tuple[tuple[Reference, ...], frozenset[str]], Check] = {}
+        self._transaction: tuple[str, ...] | None = None
         with self._lock:
             try:
                 self.connection = duckdb.connect(str(path))
@@ -720,6 +728,7 @@ class DuckDBStore:
             )
         result = tuple(checks.values())
         self._checked[candidate] = _Checked(contract, result, base, stamp)
+        self._forget_references(candidate)
         return result
 
     def _check_row_count(self, audit: _Audit) -> Check:
@@ -862,32 +871,33 @@ class DuckDBStore:
                     f"DELETE FROM {target} AS t USING {_quote(_deleted(candidate))} AS d WHERE {match}"
                 )
 
-    @_synchronized
-    def _execute(self, candidate: str, plan: ApplyPlan) -> None:
-        checked = self._checked.get(candidate)
-        if (
-            checked is None
-            or not all(c.passed for c in checked.checks)
-            or plan != ApplyPlan.build(checked.contract, self._candidates[candidate].manifest)
-        ):
+    def _write_rows(self, candidate: str, plan: ApplyPlan) -> None:
+        if self._exists(plan.table):
+            self._delete_rows(candidate, plan)
+        self._align_target(candidate, plan)
+        if any(action.operation is not Operation.TOMBSTONE for action in plan.actions):
+            self.connection.execute(f"INSERT INTO {_quote(plan.table)} SELECT * FROM {_quote(candidate)}")
+
+    def _authorize(self, candidate: str, receipt: Receipt, joint: tuple[Check, ...]) -> ApplyPlan:
+        checked = self._checked[candidate]
+        manifest = self._candidates[candidate].manifest
+        if receipt.base_publication_id != checked.base.publication_id:
+            raise StoreError("receipt names a different base publication")
+        expected = Gate.evaluate(
+            checked.base,
+            manifest,
+            checked.checks,
+            now=receipt.received_at,
+            source=receipt.source,
+            joint=joint,
+        )
+        if receipt != expected:
+            raise StoreError("receipt does not authorize this candidate against the current publication")
+        assert receipt.transition is not None
+        plan = receipt.transition.plan
+        if not all(c.passed for c in checked.checks) or plan != ApplyPlan.build(checked.contract, manifest):
             raise StoreError("candidate must pass the gate's checks before its plan executes")
-        if self._transaction is not None:
-            raise StoreError("a publication transaction is already open")
-        self._lock.acquire()
-        self._transaction = candidate
-        try:
-            self.connection.execute("BEGIN TRANSACTION")
-            self._assert_base(checked)
-            self._assert_destination_schema(checked.contract, candidate)
-            db, target, source = self.connection, _quote(plan.table), _quote(candidate)
-            if self._exists(plan.table):
-                self._delete_rows(candidate, plan)
-            self._align_target(candidate, plan)
-            if any(action.operation is not Operation.TOMBSTONE for action in plan.actions):
-                db.execute(f"INSERT INTO {target} SELECT * FROM {source}")
-        except BaseException:
-            self.abort(candidate)
-            raise
+        return plan
 
     def _publication_point(self) -> None:
         """Fault boundary after provisional row changes and before commit."""
@@ -899,59 +909,158 @@ class DuckDBStore:
         if not receipt.accepted:
             self._publish_rejection(candidate, receipt)
             return
-        if candidate is None or candidate not in self._checked:
+        if candidate is None:
             raise StoreError("publication requires a checked candidate")
-        try:
-            checked = self._checked[candidate]
-            if receipt.base_publication_id != checked.base.publication_id:
-                raise StoreError("receipt names a different base publication")
-            expected = Gate.evaluate(
-                checked.base,
+        self._publish_accepted(((candidate, receipt),), ())
+
+    @_synchronized
+    def publish_together(self, group: Group, entries: tuple[tuple[str, Receipt], ...]) -> None:
+        """Publish the accepted deliveries of a group in one transaction."""
+        if not entries or any(not receipt.accepted or receipt.replayed for _, receipt in entries):
+            raise StoreError("a group publishes accepted receipts only")
+        if any(candidate not in self._checked for candidate, _ in entries):
+            raise StoreError("publication requires a checked candidate")
+        if sorted(self._checked[candidate].contract.table for candidate, _ in entries) != sorted(
+            group.tables
+        ):
+            raise StoreError("a group publishes one candidate per table of the group")
+        key = (group.references, frozenset(candidate for candidate, _ in entries))
+        if group.references and key not in self._references:
+            raise StoreError("references must be checked on these candidates before they publish")
+        alone = tuple(
+            Gate.evaluate(
+                self._checked[candidate].base,
                 self._candidates[candidate].manifest,
-                checked.checks,
+                self._checked[candidate].checks,
                 now=receipt.received_at,
                 source=receipt.source,
             )
-            if receipt != expected:
-                raise StoreError("receipt does not authorize this candidate against the current publication")
-            assert receipt.transition is not None
-            self._execute(candidate, receipt.transition.plan)
+            for candidate, receipt in entries
+        )
+        joint: tuple[Check, ...] = (Gate.together(alone),)
+        self._publish_accepted(entries, (*joint, self._references[key]) if group.references else joint)
+
+    def _publish_accepted(self, entries: tuple[tuple[str, Receipt], ...], joint: tuple[Check, ...]) -> None:
+        candidates = tuple(candidate for candidate, _ in entries)
+        if any(candidate not in self._checked for candidate in candidates):
+            raise StoreError("publication requires a checked candidate")
+        try:
+            if self._transaction is not None:
+                raise StoreError("a publication transaction is already open")
+            if len({self._checked[candidate].contract.table for candidate in candidates}) != len(candidates):
+                raise StoreError("a publication names each table once")
+            plans = [self._authorize(candidate, receipt, joint) for candidate, receipt in entries]
+            self._open(candidates)
+            for candidate, plan in zip(candidates, plans, strict=True):
+                checked = self._checked[candidate]
+                self._assert_base(checked)
+                self._assert_destination_schema(checked.contract, candidate)
+                self._write_rows(candidate, plan)
             self._publication_point()
-            sequence = (
-                int(
-                    self._one(
-                        "SELECT count(*) FROM __dogana_commits WHERE table_name=?", [checked.contract.table]
-                    )[0]
-                )
-                + 1
-            )
-            history, columns = self._record_history(candidate, receipt, sequence)
-            self._save_receipt(receipt)
-            self.connection.execute(
-                "INSERT INTO __dogana_commits VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    receipt.publication_id,
-                    checked.contract.table,
-                    receipt.manifest.identity,
-                    receipt.base_publication_id,
-                    receipt.identity,
-                    sequence,
-                    history,
-                    list(columns),
-                ],
-            )
-            self.connection.execute(
-                "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)",
-                [checked.contract.table, receipt.publication_id],
-            )
-            self._store_ledger(receipt.ledger)
+            for candidate, receipt in entries:
+                self._record_publication(candidate, receipt)
             self.connection.execute("COMMIT")
         except BaseException:
-            self.abort(candidate)
+            for candidate in candidates:
+                self.abort(candidate)
             raise
         else:
             self._end_transaction()
-            self._release(candidate)
+            for candidate in candidates:
+                self._release(candidate)
+
+    def _open(self, candidates: tuple[str, ...]) -> None:
+        """Hold the lock and a transaction until the candidates commit or abort."""
+        self._lock.acquire()
+        self._transaction = candidates
+        self.connection.execute("BEGIN TRANSACTION")
+
+    def _record_publication(self, candidate: str, receipt: Receipt) -> None:
+        table = self._checked[candidate].contract.table
+        sequence = int(self._one("SELECT count(*) FROM __dogana_commits WHERE table_name=?", [table])[0]) + 1
+        history, columns = self._record_history(candidate, receipt, sequence)
+        self._save_receipt(receipt)
+        self.connection.execute(
+            "INSERT INTO __dogana_commits VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                receipt.publication_id,
+                table,
+                receipt.manifest.identity,
+                receipt.base_publication_id,
+                receipt.identity,
+                sequence,
+                history,
+                list(columns),
+            ],
+        )
+        self.connection.execute(
+            "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)", [table, receipt.publication_id]
+        )
+        self._store_ledger(receipt.ledger)
+
+    @_synchronized
+    def check_references(self, group: Group, candidates: Mapping[str, str]) -> Check:
+        """Count the rows each reference would leave without a parent once every candidate is published."""
+        if self._transaction is not None:
+            raise StoreError("publish or abort the existing candidate first")
+        if set(candidates) != set(group.tables):
+            raise StoreError("references need one candidate per table of the group")
+        for table, candidate in candidates.items():
+            checked = self._checked.get(candidate)
+            if (
+                checked is None
+                or checked.contract != group.contract(table)
+                or not all(c.passed for c in checked.checks)
+            ):
+                raise StoreError("references need candidates that passed their checks")
+        problems: list[str] = []
+        self._open(tuple(candidates.values()))
+        try:
+            for candidate in candidates.values():
+                manifest = self._candidates[candidate].manifest
+                self._write_rows(candidate, ApplyPlan.build(self._checked[candidate].contract, manifest))
+            for reference in group.references:
+                problem = self._orphans(reference, group, candidates[reference.table])
+                if problem is not None:
+                    problems.append(f"{reference}: {problem}")
+        finally:
+            interruption = self._rollback()
+            if interruption is not None and not isinstance(interruption, Exception):
+                raise interruption
+        result = Check(
+            "references", not problems, "; ".join(problems) or "every reference names a parent row"
+        )
+        self._references[group.references, frozenset(candidates.values())] = result
+        return result
+
+    def _orphans(self, reference: Reference, group: Group, candidate: str) -> str | None:
+        """Rows in the child's delivered coverage whose reference names no parent row."""
+        child, parent = group.contract(reference.table), group.contract(reference.parent)
+        columns = dict(self._description(child.table))
+        keys = dict(self._description(parent.table))
+        missing = [name for name in reference.columns if name not in columns]
+        if missing:
+            return f"{child.table} has no column {', '.join(missing)}"
+        for name, key in zip(reference.columns, parent.key, strict=True):
+            if _logical(columns[name]) != _logical(keys[key]):
+                return f"{name} and {parent.table}.{key} have different types"
+        present = " AND ".join(f"c.{_quote(name)} IS NOT NULL" for name in reference.columns)
+        match = " AND ".join(
+            f"p.{_quote(key)}=c.{_quote(name)}"
+            for name, key in zip(reference.columns, parent.key, strict=True)
+        )
+        sql = (
+            f"SELECT count(*) FROM {_quote(child.table)} c WHERE {present} "
+            f"AND NOT EXISTS (SELECT 1 FROM {_quote(parent.table)} p WHERE {match})"
+        )
+        window = _coverage(self._candidates[candidate].manifest.check(child))
+        params: list[object] = []
+        if window is not None:
+            assert child.window_column is not None
+            sql += f" AND c.{_quote(child.window_column)} BETWEEN ? AND ?"
+            params.extend(window)
+        orphans = int(self._one(sql, params)[0])
+        return f"rows without a parent row in {parent.table}: {orphans}" if orphans else None
 
     def _publish_rejection(self, candidate: str | None, receipt: Receipt) -> None:
         self._require_committed_read()
@@ -1031,9 +1140,13 @@ class DuckDBStore:
             self._transaction = None
             self._lock.release()
 
+    def _forget_references(self, candidate: str) -> None:
+        self._references = {key: check for key, check in self._references.items() if candidate not in key[1]}
+
     def _release(self, candidate: str) -> None:
         if candidate not in self._candidates:
             return
+        self._forget_references(candidate)
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(candidate)}")
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(_deleted(candidate))}")
         self._candidates.pop(candidate, None)
@@ -1041,24 +1154,28 @@ class DuckDBStore:
 
     @_synchronized
     def abort(self, candidate: str) -> None:
-        interruption: BaseException | None = None
-        if self._transaction == candidate:
-            try:
-                self.connection.execute("ROLLBACK")
-            except BaseException as exc:
-                if not isinstance(exc, duckdb.TransactionException) or "no transaction is active" not in str(
-                    exc
-                ):
-                    interruption = exc
-                    try:
-                        self.connection.execute("ROLLBACK")
-                    except duckdb.TransactionException as retry:
-                        if "no transaction is active" not in str(retry):
-                            raise
-            self._end_transaction()
+        interruption = (
+            self._rollback() if self._transaction is not None and candidate in self._transaction else None
+        )
         self._release(candidate)
         if interruption is not None and not isinstance(interruption, Exception):
             raise interruption
+
+    def _rollback(self) -> BaseException | None:
+        """Roll back and unlock, returning any interruption; an unresolved rollback stays locked."""
+        interruption: BaseException | None = None
+        try:
+            self.connection.execute("ROLLBACK")
+        except BaseException as exc:
+            if not isinstance(exc, duckdb.TransactionException) or "no transaction is active" not in str(exc):
+                interruption = exc
+                try:
+                    self.connection.execute("ROLLBACK")
+                except duckdb.TransactionException as retry:
+                    if "no transaction is active" not in str(retry):
+                        raise
+        self._end_transaction()
+        return interruption
 
     @_synchronized
     def deliver(
@@ -1102,3 +1219,12 @@ class DuckDBStore:
         ledger = self.load_ledger(contract)
         rows = self.read(contract.table, ledger.publication_id) if self._exists(contract.table) else []
         return rows, ledger
+
+    @_synchronized
+    def read_together(self, group: Group) -> tuple[dict[str, list[dict[str, object]]], dict[str, Ledger]]:
+        """Read every table of a group with its evidence, at one moment of the store."""
+        publications = {contract.table: self.read_publication(contract) for contract in group.contracts}
+        return (
+            {table: rows for table, (rows, _) in publications.items()},
+            {table: ledger for table, (_, ledger) in publications.items()},
+        )

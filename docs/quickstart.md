@@ -194,7 +194,6 @@ receipt = deliver(store, stock, changes, feed, now=monday)
 claims = receipt.claims
 print(f"feed: {receipt.outcome.value}, stock {store.read('stock')}")
 print(f"stock: {claims.state.value}, both dates {claims.complete_as_of:%A}")
-store.close()
 ```
 
 ```text
@@ -208,3 +207,51 @@ missing. It tells its deletions in its own rows: the contract names the boolean 
 and a row whose `deleted` is true deletes its key. The manifest only counts those rows
 (`tombstones=1`), so it stays small however many keys are deleted. Item 1 is gone, item 2 is
 updated, and both dates move to Monday.
+
+## 8. Deliver related tables together
+
+```python
+from dogana import Group, Reference, deliver_together
+
+invoices = Contract("invoices", ("id",), {"full": Shape.full()}, types={"id": "int"})
+lines = Contract("invoice_lines", ("id",), {"full": Shape.full()}, types={"id": "int"})
+group = Group((invoices, lines), (Reference("invoice_lines", ("invoice_id",), "invoices"),))
+
+
+def together(day, heads, items):
+    """Both tables read in one source transaction at `day`, then delivered as one."""
+    read_at = datetime(2026, 10, day, tzinfo=UTC)
+    deliveries = {
+        "invoices": (heads, invoices.manifest("full", read_at, rows=len(heads))),
+        "invoice_lines": (items, lines.manifest("full", read_at, rows=len(items))),
+    }
+    receipt = deliver_together(store, group, deliveries, now=read_at)["invoices"]
+    rows, ledgers = store.read_together(group)
+    instant = group.claims(ledgers, read_at).exact_as_of
+    print(
+        f"{receipt.outcome.value}: lines {[r['id'] for r in rows['invoice_lines']]}, exact as of {instant:%A}"
+    )
+    return receipt
+
+
+together(26, [{"id": 1, "total": 50}], [{"id": 10, "invoice_id": 1, "amount": 50}])
+refused = together(
+    27,
+    [{"id": 1, "total": 50}],
+    [{"id": 10, "invoice_id": 1, "amount": 50}, {"id": 11, "invoice_id": 2, "amount": 30}],
+)
+print(next(check.detail for check in refused.checks if not check.passed))
+store.close()
+```
+
+```text
+accepted: lines [10], exact as of Monday
+rejected: lines [10], exact as of Monday
+invoice_lines(invoice_id) references invoices: rows without a parent row in invoices: 1
+```
+
+Invoices and their lines are read in one source transaction, so both files carry the same read
+time, and they are delivered as one. On Monday both tables are published in one step, and both are
+the source as of Monday: a join between them answers as the source would have. Tuesday's line 11
+names invoice 2, which is in neither file, so the two files cannot be one instant of the source:
+both are rejected, and the tables stay exactly as of Monday.

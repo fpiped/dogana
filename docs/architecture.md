@@ -6,8 +6,8 @@ and why.
 ## Layers
 
 ```text
-core          contract  ledger  gate  planner  wire  errors    standard library only, no I/O
-sequence      delivery.deliver, interfaces.Store               the one place that calls storage
+core          contract ledger gate group planner wire errors     standard library only, no I/O
+sequence      delivery.deliver, deliver_together, Store        the one place that calls storage
 reference     reference.duckdb, reference.files                adapters built on the core
 entry points  cli, conformance                                 the core imports neither
 ```
@@ -31,6 +31,9 @@ a test enforces it, together with a test that the command line imports no third-
   `Gate.preflight` checks the manifest and its transition without rows; `Gate.evaluate` turns the
   checks into a `Receipt` with an `ApplyPlan`, the row operations to execute. The core describes
   row operations and never reads rows.
+- **`group.py`**: `Group` and `Reference`, tables read together and the rules the source keeps
+  between them. `Group.claims` combines their claims, and `Claims.exact_as_of` is the instant at
+  which all of them equal the source, if there is one.
 - **`planner.py`**: because `Ledger.apply` has no side effects, the planner simulates each admitted
   read on the current ledger and keeps the cheapest one that establishes the required dates.
 - **`wire.py`**: every value as versioned JSON, and its identity, the SHA-256 of its RFC 8785
@@ -47,6 +50,10 @@ order wrong:
 3. `hold` the candidate rows and `check` them;
 4. `Gate.evaluate`, then `publish` rows, ledger and receipt in one atomic step, compared against
    the publication the checks were made on; `abort` releases staged work after any failure.
+
+`deliver_together` runs the first three steps for each table of a group, adds the joint checks
+(one read boundary, every table accepted on its own, references), and publishes every table in one
+`publish_together` step or refuses them all.
 
 `Store` is a `typing.Protocol` of seven methods (`hold`, `check`, `publish`, `abort`,
 `load_ledger`, `accepted_receipt`, `receipts`). Any class with those methods is a store; the

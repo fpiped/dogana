@@ -555,9 +555,10 @@ def test_a_lost_rollback_response_is_resolved_before_unlocking(tmp_path, after):
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
         receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
-        assert receipt.transition is not None
-        store._execute(held, receipt.transition.plan)
         connection = store.connection
+
+        def interrupted():
+            raise OSError("interrupted after rows")
 
         class RollbackFault:
             fired = False
@@ -571,9 +572,10 @@ def test_a_lost_rollback_response_is_resolved_before_unlocking(tmp_path, after):
                 return connection.execute(sql, *args)
 
         store.connection = RollbackFault()
+        store._publication_point = interrupted
         try:
-            with pytest.raises(StoreError, match="different base"):
-                store.publish(held, replace(receipt, base_publication_id="wrong"))
+            with pytest.raises(StoreError, match="interrupted after rows"):
+                store.publish(held, receipt)
         finally:
             store.connection = connection
         assert store._transaction is None
@@ -590,7 +592,8 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
         checks = store.check(held, c, m, Gate.requirements(c, m))
         receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
         assert receipt.transition is not None
-        store._execute(held, receipt.transition.plan)
+        store._open((held,))
+        store._write_rows(held, receipt.transition.plan)
         connection = store.connection
 
         class RollbackFault:
@@ -603,7 +606,7 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
         try:
             with pytest.raises(StoreError, match="rollback unavailable"):
                 store.abort(held)
-            assert store._transaction == held
+            assert store._transaction == (held,)
             with pytest.raises(StoreError, match="publish or abort"):
                 store.read_publication(c)
         finally:

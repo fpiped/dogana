@@ -204,6 +204,40 @@ still be in the table, so the item looks moved.
 The planner works the other way round: given the dates a reader needs, `plan_delivery` names the
 cheapest read that would establish them, and `next_extraction` names the next read of a shape.
 
+## Tables read together
+
+Order headers and their lines are two tables, and every line names its order. Each table can be
+proven on its own and the two can still disagree:
+
+| Time | Source | Delivery |
+|---|---|---|
+| 10:00 | | `orders` read |
+| 10:03 | order 42 created, with its line | |
+| 10:05 | | `order_lines` read, with order 42's line |
+
+Both deliveries are correct: `orders` is complete as of 10:00, `order_lines` as of 10:05. A report
+joining lines to orders finds a line whose order is missing. `Claims.combine` gives 10:00 for both
+dates, and that is true: neither table misses a row the source had at 10:00. But "complete as of"
+promises nothing missing, not nothing extra, and order 42's line is extra: it came from the 10:05
+read.
+
+A table whose two dates are equal promises both: nothing missing and nothing extra, so it is the
+source at that instant. Two tables each exact at the same instant are the source at that instant
+together, and any query over them, a join, a `NOT EXISTS`, a total, answers as the source would
+have. `Claims.exact_as_of` names that instant, or nothing. In the example the two tables are exact
+at 10:00 and 10:05, so there is no common instant, and a reader knows not to trust the join.
+
+To have one, read both tables in one source transaction, so every file carries the same read
+boundary, and deliver them together. A `Group` names the tables and the references between them;
+`deliver_together` decides the files as one delivery: if one file fails a check, no table changes,
+and if all pass, every table is published in one step, so a reader never sees new lines with old
+orders. A reference adds one check: every delivered line must name an order that exists once both
+files are published. A line naming a missing order proves the two files were not read at one
+instant, or that the source does not keep the rule, and the whole delivery is refused. `plan_together`
+names one read per table at one shared boundary. Tables from different systems rarely share an
+instant: no transaction spans both, and then the earliest dates and the reference check are what
+remains.
+
 ## What it is not
 
 - Not change data capture: CDC transports changes; dogana accounts for what a delivered batch
@@ -231,6 +265,8 @@ cheapest read that would establish them, and `next_extraction` names the next re
 | Claims | The regions and their states at the reader's current time. |
 | Receipt | The record of one decision: accepted, rejected or replayed, its checks, its receiver time and the resulting ledger. |
 | Store | Holds and checks candidate rows, then publishes rows, ledger and receipt together. |
+| Group | Tables read together, at one read boundary, and the references between them. |
+| Reference | A rule the source keeps between two tables: each row of one names the key of a row of the other. |
 
 The data contract (an ODCS document, a dbt model, a column list) owns the columns; the delivery
 contract carries only the types of the columns it reads and an opaque hash of the rest. Store

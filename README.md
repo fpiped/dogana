@@ -35,6 +35,8 @@ A delivery never raises a date above what it proves.
 3. A **gate** checks the file against both, and rejects the whole file if any check fails.
 4. A **ledger** moves the two dates only as far as the delivery proves, and anyone reading the
    table can ask it how far to trust the rows.
+5. Tables that depend on each other, such as orders and their lines, are delivered **together**:
+   one read instant, one decision, one publication, so a join never sees lines without their order.
 
 ## In thirty seconds
 
@@ -86,7 +88,7 @@ dogana is for everything else.
 
 The documentation is at [fpiped.github.io/dogana](https://fpiped.github.io/dogana/).
 
-- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a rejected file, a replay, a deletion.
+- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a rejected file, a replay, a deletion, two tables together.
 - [Concepts](https://fpiped.github.io/dogana/concepts/): dogana from the beginning, every idea with an example.
 - [Protocol](https://fpiped.github.io/dogana/protocol/): the specification.
 - [Integrations](https://fpiped.github.io/dogana/integrations/): dlt, dbt, Iceberg, Spark, orchestrators.
