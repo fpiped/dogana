@@ -189,3 +189,17 @@ def test_planning_together_ignores_start_at_once_a_keyless_table_has_evidence():
     proven = Ledger(events).apply(Manifest("events", "full", at(18), rows=0))
     requests = plan_together(Group((ORDERS, events)), {"orders": full(ORDERS, 18), "events": proven}, at(19))
     assert {r.until for r in requests.values()} == {at(19)}
+
+
+def test_a_group_names_each_reference_once():
+    with pytest.raises(InvalidContract, match="each reference once"):
+        Group((ORDERS, LINES), (LINE, LINE))
+
+
+def test_planning_together_keeps_the_earliest_boundary_when_a_full_read_is_cheaper_than_the_first_append():
+    shapes = {"full": Shape.full(cost=1), "append": Shape.append(cost=100)}
+    events = Contract("events", (), shapes, start_at=at(25))
+    requests = plan_together(
+        Group((ORDERS, events)), {"orders": full(ORDERS, 18), "events": Ledger(events)}, at(19)
+    )
+    assert {(r.shape, r.until) for r in requests.values()} == {("full", at(19))}

@@ -43,6 +43,8 @@ class Group:
         # Many stores resolve table names regardless of letter case, so two spellings would share one table.
         if not self.contracts or len({table.casefold() for table in self.tables}) != len(self.contracts):
             raise InvalidContract("a group names each of its tables once, whatever the letter case")
+        if len(set(self.references)) != len(self.references):
+            raise InvalidContract("a group names each reference once")
         for reference in self.references:
             if reference.table not in self.tables or reference.parent not in self.tables:
                 raise InvalidContract(f"{reference}: a table outside the group")

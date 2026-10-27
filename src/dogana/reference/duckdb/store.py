@@ -65,8 +65,20 @@ _TYPES = {
 }
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-_LOCKS: WeakValueDictionary[object, Any] = WeakValueDictionary()
-_LOCKS_GUARD = Lock()
+_FILES_GUARD = Lock()
+
+
+class _File:
+    """One open database file: the name DuckDB opened it under, and the lock its stores share."""
+
+    __slots__ = ("__weakref__", "lock", "path")
+
+    def __init__(self, path: str) -> None:
+        self.path, self.lock = path, RLock()
+
+
+# By DuckDB's name for the file and by its inode, so another name for one file is refused.
+_FILES: WeakValueDictionary[object, _File] = WeakValueDictionary()
 
 
 def _quote(value: str) -> str:
@@ -77,11 +89,20 @@ def _key_match(keys: tuple[str, ...], left: str, right: str) -> str:
     return " AND ".join(f"{left}.{_quote(k)}={right}.{_quote(k)}" for k in keys)
 
 
+def _names(child: str, key: str, child_type: str, key_type: str) -> str:
+    """SQL for a child value naming a key: a float names an int only when integral, compared as an integer."""
+    if (_logical(child_type), _logical(key_type)) == ("float", "int"):
+        return f"{key}=TRY_CAST({child} AS BIGINT) AND {child}=trunc({child})"
+    return f"{key}={child}"
+
+
 def _domain_end(value: object, *, high: bool) -> bool:
     if isinstance(value, datetime):
         return value == (datetime.max if high else datetime.min).replace(tzinfo=UTC)
     if isinstance(value, date):
         return value == (date.max if high else date.min)
+    if isinstance(value, int):
+        return value >= 2**63 - 1 if high else value <= -(2**63)
     return not high and value == ""
 
 
@@ -193,18 +214,37 @@ class DuckDBStore:
         self._transaction: tuple[str, ...] | None = None
         try:
             self.connection = duckdb.connect(str(path))
-            # The file's identity, not its spelling: case-insensitive file systems name one file many ways.
-            identity = stat(path) if str(path) != ":memory:" else None
+            self._file = self._register(str(path) == ":memory:")
         except (duckdb.Error, OSError) as exc:
             raise StoreError(str(exc)) from exc
-        key: object = (identity.st_dev, identity.st_ino) if identity is not None else uuid4().hex
-        with _LOCKS_GUARD:
-            self._lock = _LOCKS.setdefault(key, RLock())
+        self._lock = self._file.lock
         with self._lock:
             try:
                 self._initialize()
             except (duckdb.Error, OSError) as exc:
                 raise StoreError(str(exc)) from exc
+
+    def _register(self, memory: bool) -> _File:
+        """Share a lock with every store on the database DuckDB opened, refusing a second name for its file.
+
+        DuckDB keeps one database per name, so a hard link or another mount path to the same file would
+        open a second database on it, with its own lock and no compare and set between the two.
+        """
+        if memory:
+            return _File(uuid4().hex)
+        opened = str(
+            self._one("SELECT path FROM duckdb_databases() WHERE database_name = current_database()")[0]
+        )
+        identity = stat(opened)
+        inode = (identity.st_dev, identity.st_ino)
+        with _FILES_GUARD:
+            known = _FILES.get(inode)
+            if known is not None and known.path != opened:
+                self.connection.close()
+                raise StoreError(f"this database file is already open as {known.path}")
+            file = _FILES.get(opened) or _File(opened)
+            _FILES[opened] = _FILES[inode] = file
+            return file
 
     def _initialize(self) -> None:
         self.connection.execute("SET TimeZone='UTC'")
@@ -306,6 +346,7 @@ class DuckDBStore:
 
     @_synchronized
     def publication_stamp(self, table: str) -> str | None:
+        self._require_committed_read()
         self._check_table_spelling(table)
         return self._stamp(table)
 
@@ -403,6 +444,10 @@ class DuckDBStore:
 
     @_synchronized
     def receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
+        self._require_committed_read()
+        return self._receipts(table)
+
+    def _receipts(self, table: str | None = None) -> tuple[Receipt, ...]:
         sql, params = "SELECT document FROM __dogana_receipts", []
         if table is not None:
             sql += " WHERE table_name=?"
@@ -414,6 +459,7 @@ class DuckDBStore:
 
     @_synchronized
     def accepted_receipt(self, identity: str) -> Receipt | None:
+        self._require_committed_read()
         row = self.connection.execute(
             "SELECT receipt_id, document FROM __dogana_receipts WHERE manifest_id=? AND accepted", [identity]
         ).fetchone()
@@ -465,7 +511,8 @@ class DuckDBStore:
                 suffix = path.suffix.lower()
                 if suffix == ".csv":
                     header = self.connection.execute(
-                        "SELECT * FROM read_csv(?, header=false, all_varchar=true, sample_size=-1) LIMIT 1",
+                        "SELECT * FROM read_csv(?, header=false, all_varchar=true, sample_size=-1, "
+                        "allow_quoted_nulls=false) LIMIT 1",
                         [[str(path)]],
                     ).fetchone()
                     self._candidates[candidate] = _Candidate(
@@ -478,7 +525,8 @@ class DuckDBStore:
                     )
                     self.connection.execute(
                         f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
-                        "FROM read_csv(?, header=true, all_varchar=?, sample_size=-1)",
+                        "FROM read_csv(?, header=true, all_varchar=?, sample_size=-1, "
+                        "allow_quoted_nulls=false)",
                         [[str(path)], columns is not None],
                     )
                 elif suffix == ".parquet":
@@ -847,7 +895,7 @@ class DuckDBStore:
             raise StoreError("publication changed after the candidate was checked")
         current = self._stored_ledger(checked.contract, created=self._transaction is not None)
         if current.publication_id is None and checked.base.publication_id is not None:
-            current = Ledger.from_receipts(checked.contract, self.receipts(checked.contract.table))
+            current = Ledger.from_receipts(checked.contract, self._receipts(checked.contract.table))
         if current != checked.base:
             raise StoreError("ledger changed after the candidate was checked")
 
@@ -1083,8 +1131,7 @@ class DuckDBStore:
             name, key = mismatched[0]
             return False, f"{name} and {parent.table}.{key} have different types"
         match = " AND ".join(
-            f"p.{_quote(key)}=c.{_quote(name)}"
-            for name, key in zip(reference.columns, parent.key, strict=True)
+            _names(f"c.{_quote(name)}", f"p.{_quote(key)}", columns[name], keys[key]) for name, key in pairs
         )
         where = f"{scope} AND NOT EXISTS (SELECT 1 FROM {_quote(parent.table)} p WHERE {match})"
         orphans = int(self._one(f"SELECT count(*) {where}", params)[0])

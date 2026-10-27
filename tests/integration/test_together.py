@@ -174,7 +174,7 @@ def test_the_files_of_a_group_are_ingested_together(tmp_path):
             ingest_together(GROUP, [files[0], files[0]], now=at(20))
 
 
-@pytest.mark.parametrize("meanwhile", ["alone", "together"])
+@pytest.mark.parametrize("meanwhile", ["alone", "together", "torn"])
 def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypatch, meanwhile):
     with DuckDBStore(":memory:") as store:
         deliveries = {"orders": full(ORDERS, [order(1)]), "order_lines": full(LINES, [line(10, 1)])}
@@ -187,6 +187,17 @@ def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypa
                 assert deliver(store, ORDERS, *deliveries["orders"], at(21)).accepted
             else:
                 assert all(r.accepted for r in deliver_together(store, GROUP, deliveries, at(21)).values())
+            if meanwhile == "torn":
+                # The first recovery lookup of orders runs before the other commit lands.
+                lookup, missed = store.accepted_receipt, []
+
+                def torn(identity):
+                    if identity == deliveries["orders"][1].identity and not missed:
+                        missed.append(identity)
+                        return None
+                    return lookup(identity)
+
+                monkeypatch.setattr(store, "accepted_receipt", torn)
             return result
 
         monkeypatch.setattr(store, "check_references", race)
@@ -345,3 +356,115 @@ def test_a_reference_compares_values_not_type_names(values, kind):
         assert all(r.accepted for r in receipts.values()), [
             c for c in receipts["orders"].checks if not c.passed
         ]
+
+
+def test_a_second_name_for_an_open_database_file_is_refused(tmp_path):
+    import os
+
+    path, link = tmp_path / "group.duckdb", tmp_path / "linked.duckdb"
+    with DuckDBStore(path) as store:
+        os.link(path, link)
+        with pytest.raises(StoreError, match="already open as"):
+            DuckDBStore(link)
+        assert store.receipts() == ()
+
+
+def test_the_log_is_unreadable_while_a_transaction_is_unresolved():
+    with DuckDBStore(":memory:") as store:
+        rows, manifest = full(ORDERS, [order(1)])
+        held = store.hold(rows, manifest, ORDERS)
+        store.check(held, ORDERS, manifest, Gate.requirements(ORDERS, manifest))
+        store._open((held,))
+        try:
+            for read in (
+                store.receipts,
+                lambda: store.accepted_receipt(manifest.identity),
+                lambda: store.publication_stamp("orders"),
+            ):
+                with pytest.raises(StoreError, match="publish or abort"):
+                    read()
+        finally:
+            store.abort(held)
+
+
+@pytest.mark.parametrize(("value", "names"), [(9007199254740992.0, False), (1.5, False), (2.0, True)])
+def test_a_float_reference_names_an_int_key_only_with_its_exact_integer(value, names):
+    from dogana.reference._sources import _RowSource
+
+    columns = {**LINE_COLUMNS, "order_id": "float"}
+    lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
+    rows = [{**line(10, None), "order_id": value}]
+    parents = [order(1), order(2), order(2**53 + 1)]
+    with DuckDBStore(":memory:") as store:
+        deliveries = {
+            "orders": full(ORDERS, parents),
+            "order_lines": (_RowSource(rows, columns), full(lines, rows)[1]),
+        }
+        receipts = deliver_together(store, Group((ORDERS, lines), GROUP.references), deliveries, at(20))
+        assert all(r.accepted for r in receipts.values()) is names
+
+
+def test_a_quoted_empty_field_is_the_empty_string_and_an_unquoted_one_is_null(tmp_path):
+    from dogana.reference._sources import _FileSource
+
+    path = tmp_path / "values.csv"
+    path.write_text('id,day,value\n1,2026-10-18,""\n2,2026-10-18,\n')
+    moves = contract("moves", shapes={"full": FULL})
+    with DuckDBStore(":memory:") as store:
+        manifest = Manifest("moves", "full", at(18), rows=2, schema_hash=moves.schema_hash)
+        assert deliver(store, moves, _FileSource(path, COLUMNS), manifest, at(20)).accepted
+        assert [row["value"] for row in store.read("moves")] == ["", None]
+
+
+def test_an_int_window_bound_past_bigint_covers_every_stored_value():
+    from dataclasses import replace
+
+    from dogana import Contract
+
+    columns = {"id": "int", "seq": "int", "value": "str"}
+    shapes = {"full": FULL, "range": replace(WINDOW, window_size=None)}
+    moves = Contract(
+        "moves",
+        ("id",),
+        shapes,
+        window_column="seq",
+        types={"id": "int", "seq": "int"},
+        max_shrink_fraction=None,
+    )
+    with DuckDBStore(":memory:") as store:
+        assert deliver(
+            store,
+            moves,
+            [{"id": 1, "seq": 5, "value": "x"}],
+            Manifest("moves", "full", at(18), rows=1),
+            at(20),
+        ).accepted
+        window = (0, 2**127)
+        empty = Manifest("moves", "range", at(19), window=window, rows=0)
+        from dogana.reference._sources import _RowSource
+
+        assert deliver(store, moves, _RowSource([], columns), empty, at(20)).accepted
+        assert store.read("moves") == []
+
+
+def test_a_replay_whose_bytes_no_longer_read_is_refused_in_every_table(tmp_path):
+    from dogana.reference._sources import _file_digest, _FileSource
+
+    with DuckDBStore(":memory:") as store:
+        deliveries = {}
+        for c, columns, rows in ((ORDERS, COLUMNS, [order(1)]), (LINES, LINE_COLUMNS, [line(10, 1)])):
+            path = csv_file(tmp_path, f"{c.table}.csv", rows, columns)
+            manifest = Manifest(
+                c.table, "full", at(18), rows=1, schema_hash=c.schema_hash, content_hash=_file_digest(path)
+            )
+            deliveries[c.table] = (_FileSource(path, columns), manifest)
+        assert all(r.accepted for r in deliver_together(store, GROUP, deliveries, at(20)).values())
+        (tmp_path / "order_lines.csv").write_text("id,order_id,day,value\nnot a number,1,2026-10-18,x\n")
+        receipts = deliver_together(store, GROUP, deliveries, at(20))
+        assert not any(r.accepted for r in receipts.values())
+        assert {t: len([r for r in store.receipts(t) if not r.accepted]) for t in GROUP.tables} == {
+            "orders": 1,
+            "order_lines": 1,
+        }
+        single = deliver(store, LINES, *deliveries["order_lines"], at(20))
+        assert not single.accepted

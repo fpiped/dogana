@@ -377,8 +377,11 @@ these files under these references, every receipt replays, provided every declar
 still matches the bytes; otherwise, when any was accepted alone, in another delivery or under other
 references, every table is refused, and the group needs a new read. A failure after its own commit
 returns the committed receipts. A failed delivery whose tables another delivery accepted meanwhile is
-decided the same way, as a replay or a refusal, so the outcome does not depend on timing. Only a
-group publication that committed some of its tables and not others raises `InconsistentPublication`.
+decided the same way, as a replay or a refusal, so the outcome does not depend on timing; when the
+other delivery lands while refusals are being recorded, the call raises `StoreError`, and a retry
+decides it. Only a group publication that committed some of its tables and not others raises
+`InconsistentPublication`. Two deliveries identical down to their receiver time cannot tell their
+commits apart, so the one that published nothing may report `accepted`.
 
 The `together` check does not require the result to be exact; the shapes decide that, over what
 each delivery covers: a full delivery everywhere, a window delivery inside its window, so pass the

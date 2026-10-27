@@ -220,26 +220,24 @@ def plan_together(
         return {}
     # Past every table's evidence, so each read raises every region it covers to the shared boundary.
     dates = [r.complete_as_of for ledger in ledgers.values() for r in ledger.regions if r.complete_as_of]
-    # start_at bounds only the first keyless append, read on a ledger nothing has proven yet.
-    dates += [
-        ledger.contract.start_at
-        for ledger in ledgers.values()
-        if ledger.contract.start_at
-        and ledger.publication_id is None
-        and not any(r.complete_as_of for r in ledger.regions)
-    ]
     try:
         boundary = max([at_least, *(d + timedelta(microseconds=1) for d in dates)])
     except OverflowError as exc:
         raise PlanningError("the shared boundary exceeds the datetime range") from exc
-    requests: dict[str, ExtractionRequest] = {}
-    for table in group.tables:
-        requirement = Requirement(table, boundary, boundary, windows.get(table))
-        try:
-            request = plan_delivery(ledgers[table], requirement)
-        except PlanningError as exc:
-            raise PlanningError(f"{table}: {exc}") from exc
-        # Every date is before the boundary, so each request ends exactly there.
-        assert request is not None and request.until == boundary
-        requests[table] = request
-    return requests
+    # A cheapest read can end later than the boundary only as a first keyless append, just past its
+    # start_at; every table is then planned again there, where every read ends.
+    for _ in range(2):
+        requests: dict[str, ExtractionRequest] = {}
+        for table in group.tables:
+            requirement = Requirement(table, boundary, boundary, windows.get(table))
+            try:
+                request = plan_delivery(ledgers[table], requirement)
+            except PlanningError as exc:
+                raise PlanningError(f"{table}: {exc}") from exc
+            assert request is not None
+            requests[table] = request
+        later = max(request.until for request in requests.values())
+        if later == boundary:
+            return requests
+        boundary = later
+    raise PlanningError("the tables have no shared read boundary")

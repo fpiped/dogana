@@ -47,11 +47,15 @@ def _replay(
 ) -> Receipt:
     """A stored acceptance answers for a declared digest only once the store has hashed these bytes."""
     manifest, description = previous.manifest, _description(source)
-    candidate = _call(store.hold, source, manifest, contract)
+    candidate: str | None = None
     try:
+        candidate = _call(store.hold, source, manifest, contract)
         checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
+    except (InvalidContract, RejectedDelivery) as exc:
+        checks = (Check("content_hash", False, f"the delivered bytes no longer read: {exc}"),)
     finally:
-        _call(store.abort, candidate)
+        if candidate is not None:
+            _call(store.abort, candidate)
     if all(check.passed for check in checks if check.name == "content_hash"):
         return replace(previous, outcome=Outcome.REPLAYED)
     refused = Gate.reject(ledger, manifest, checks, now=now, source=description)
@@ -104,7 +108,7 @@ def _recover(
         raise error
     committed = _accepted(store, members)
     if group is not None and any(receipt is not None for receipt in committed.values()):
-        return _settle(store, group, members, committed, attempted, error, now)
+        return _settle(store, group, members, committed, attempted, error, cleanup_error, now)
     if all(receipt is not None for receipt in committed.values()):
         for contract, _, _ in members:
             _call(store.load_ledger, contract)
@@ -144,19 +148,27 @@ def _settle(
     committed: Mapping[str, Receipt | None],
     attempted: Mapping[str, Receipt] | None,
     error: Exception,
+    cleanup: Exception | None,
     now: datetime,
 ) -> dict[str, Receipt]:
     """A failed group delivery whose tables were accepted anyway is decided as a replay, whoever committed."""
     expected = Gate.delivered(tuple((c.table, m) for c, _, m in members), group.references)
     accepted = {table: receipt for table, receipt in committed.items() if receipt is not None}
     if len(accepted) < len(members) and any(expected in receipt.checks for receipt in accepted.values()):
-        raise InconsistentPublication("a group publication committed only some of its tables") from error
+        # Acceptances never disappear and a group commits whole, so a partial view may be a read torn
+        # across another delivery's commit: read again before calling the store inconsistent.
+        committed = _accepted(store, members)
+        accepted = {table: receipt for table, receipt in committed.items() if receipt is not None}
+        if len(accepted) < len(members):
+            raise InconsistentPublication("a group publication committed only some of its tables") from error
     if len(accepted) == len(members) and all(
         receipt == (attempted or {}).get(t) for t, receipt in accepted.items()
     ):
         for contract, _, _ in members:
             _call(store.load_ledger, contract)
         return accepted
+    if cleanup is not None:
+        raise StoreError("candidate cleanup failed") from cleanup
     ledgers = {contract.table: _base(store, contract, manifest) for contract, _, manifest in members}
     return _replay_together(store, group, members, committed, ledgers, now)
 
@@ -180,6 +192,11 @@ def deliver_together(
     ledgers = {contract.table: _base(store, contract, manifest) for contract, _, manifest in members}
     previous = _accepted(store, members)
     if any(receipt is not None for receipt in previous.values()):
+        if not all(receipt is not None for receipt in previous.values()):
+            # Acceptances never disappear and a group commits whole: read a partial view once more, since
+            # it may be torn across another delivery's commit, then decide on ledgers read after it.
+            previous = _accepted(store, members)
+            ledgers = {contract.table: _base(store, contract, manifest) for contract, _, manifest in members}
         return _replay_together(store, group, members, previous, ledgers, now)
 
     candidates: dict[str, str] = {}

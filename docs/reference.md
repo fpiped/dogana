@@ -39,7 +39,7 @@ deleted column, its tombstone rows move to a separate staging table holding only
 the deleted column is dropped: every later check and the published table see live rows only, and
 the plan's `tombstone` action deletes the published rows with those keys. Tombstone rows usually
 leave their other columns empty; a CSV read without `columns` infers an all-empty column as text, so
-deliver tombstones through `FileDrop(..., columns=...)` or another typed source. CSV datetime values without an offset
+deliver tombstones through `FileDrop(..., columns=...)` or another typed source. In CSV, a quoted empty field is the empty string and an unquoted empty field is null. CSV datetime values without an offset
 are interpreted as UTC by the store session; include offsets when the source uses another timezone.
 This CSV convention does not relax the requirement for aware datetimes in core values and manifests.
 
@@ -54,8 +54,12 @@ explicitly chosen. Adoption does not certify its existing rows; establish eviden
 read. The `__dogana_` prefix is reserved regardless of case. Registered table spelling must remain
 consistent because DuckDB identifiers are case-insensitive while protocol identities are not.
 
-Stores on the same resolved file share a process-local lock. Checks and publication serialize;
-reads cannot observe an unfinished transaction. Use one writer process per DuckDB file. External
+Stores on the same database file share a process-local lock, whatever path names it: the store keys
+the lock by the file DuckDB opened, and refuses a second name for an open file, such as a hard link,
+which DuckDB would open as a second database. Checks and publication serialize; reads cannot observe
+an unfinished transaction. After a rollback that could not be resolved, the store stays locked and
+refuses reads until it is closed; close it from the thread that used it, since the lock belongs to
+that thread. Use one writer process per DuckDB file. External
 SQL writers must coordinate with the store. A direct row edit that leaves the stamp unchanged is
 not detectable by stamp comparison.
 
@@ -70,8 +74,9 @@ The store implements the [together tier](protocol.md#tables-together). `check_re
 candidates)` asks `Group.unchecked` which references the delivery can test, applies every
 candidate's plan inside a transaction it rolls back, and for each tested reference counts the child
 rows in the child's coverage that name no parent row, giving up to three of the values they name. A
-reference whose columns are missing or whose types differ from the parent key's fails. A new check of
-any candidate discards the answer. The trial applies every plan a second time and scans the child,
+reference fails when its columns are missing, or when a reference column and its parent key column
+have different types, other than int and float, and some row names a parent. A float names an int
+key only with its exact integer value. A new check of any candidate discards the answer. The trial applies every plan a second time and scans the child,
 which costs about as much as the delivery itself. `publish_together(group,
 entries)` writes every table's rows, history, receipt, stamp and ledger in one transaction. `read_together(group)` returns `(rows, ledgers)`, two mappings
 by table, read under one lock, so no publication falls between two tables; pass the ledgers to
