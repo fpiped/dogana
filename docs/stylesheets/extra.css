@@ -18,6 +18,7 @@
   --md-accent-fg-color: #eaf5fd;
 }
 
+/* The whole mascot, never a crop that cuts him, a little taller than the title. */
 .md-header__button.md-logo img {
-  height: 1.8rem;
+  height: 2rem;
 }
