@@ -235,3 +235,98 @@ def test_an_empty_poll_with_typed_rows_is_a_delivery():
         assert deliver(store, contract, Rows([], COLUMNS), full, at(19)).accepted
         poll = Manifest("t", "changes", at(19), since=at(18), rows=0, schema_hash=C.schema_hash)
         assert deliver(store, contract, Rows([], COLUMNS), poll, at(19)).accepted
+
+
+def test_a_folder_swapped_for_a_link_after_the_root_check_is_refused_not_read(tmp_path, monkeypatch):
+    import os
+
+    from dogana.reference import _sources
+
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "in").mkdir(parents=True)
+    (outside / "in").mkdir(parents=True)
+    (root / "in" / "f.csv").write_text("id,v\n1,a\n")
+    (outside / "in" / "f.csv").write_text("id,v\n7,secret\n")
+    real, swapped = os.open, []
+
+    def swap_then_open(*args, **kwargs):
+        if not swapped:
+            swapped.append(True)
+            (root / "in").rename(root / "kept")
+            (root / "in").symlink_to(outside / "in")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_sources.os, "open", swap_then_open)
+    with pytest.raises(InvalidContract, match="cannot be opened"):
+        _sources._open(root / "in" / "f.csv", root)
+
+
+def test_a_fifo_is_refused_without_waiting_for_a_writer(tmp_path):
+    import os
+
+    from dogana.reference._sources import _open
+
+    fifo = tmp_path / "f.csv"
+    os.mkfifo(fifo)
+    with pytest.raises(InvalidContract, match="regular files"):
+        _open(fifo)
+
+
+def test_a_missing_file_replayed_is_a_recorded_refusal(tmp_path):
+    path = tmp_path / "f.csv"
+    path.write_text("id,v\n1,a\n")
+    manifest = declare(path, 1)
+    with DuckDBStore(":memory:") as store:
+        assert deliver(store, C, _FileSource(path, COLUMNS), manifest, at(19)).accepted
+        path.unlink()
+        assert deliver(store, C, _FileSource(path, COLUMNS), manifest, at(19)).outcome == "rejected"
+        assert [r.outcome for r in store.receipts()] == ["accepted", "rejected"]
+
+
+def test_a_corrupt_parquet_file_is_a_recorded_rejection(tmp_path):
+    good = tmp_path / "good.parquet"
+    with duckdb.connect() as connection:
+        connection.execute(f"COPY (SELECT range AS id, 'value' AS v FROM range(1000)) TO '{good}'")
+    data = bytearray(good.read_bytes())
+    data[len(data) // 2 : len(data) // 2 + 64] = bytes(64)
+    path = tmp_path / "f.parquet"
+    path.write_bytes(bytes(data))
+    manifest = declare(path, 1000)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, C, _FileSource(path, COLUMNS), manifest, at(19))
+        assert not receipt.accepted
+        assert store.receipts() == (receipt,)
+
+
+@pytest.mark.parametrize("value", ["2026-10-18", "2026-10-18 12:00", "12:00+02:00", "2026-10-18T12"])
+def test_a_csv_datetime_needs_a_date_a_time_and_an_offset(tmp_path, value):
+    columns = {"id": "int", "at": "datetime"}
+    contract = Contract("t", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
+    path = tmp_path / "f.csv"
+    path.write_text(f"id,at\n1,{value}\n")
+    manifest = Manifest("t", "full", at(18), rows=1, schema_hash=contract.schema_hash)
+    with DuckDBStore(":memory:") as store:
+        assert not deliver(store, contract, _FileSource(path, columns), manifest, at(19)).accepted
+
+
+def test_a_blank_line_is_an_empty_value_in_a_one_column_file(tmp_path):
+    columns = {"id": "str"}
+    contract = Contract("t", ("id",), {"full": FULL}, types={"id": "str"}, schema_hash=schema_hash(columns))
+    path = tmp_path / "f.csv"
+    path.write_bytes(b"id\r\nx\r\n\r\ny\r\n")
+    assert _count_rows(path) == (3, 0)
+    manifest = Manifest("t", "full", at(18), rows=3, schema_hash=contract.schema_hash)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, contract, _FileSource(path, columns), manifest, at(19))
+        assert not any(c.name == "row_count" and not c.passed for c in receipt.checks)
+
+
+@pytest.mark.parametrize("value", ["1.234", "1E+20", "NaN"])
+def test_rows_never_round_a_decimal(value):
+    from decimal import Decimal
+
+    from dogana.reference.duckdb import Rows
+
+    rows = Rows([{"id": 1, "amount": Decimal(value)}], MONEY)
+    with DuckDBStore(":memory:") as store:
+        assert not deliver(store, PRICED, rows, _priced(1), at(19)).accepted

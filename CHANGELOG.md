@@ -15,18 +15,23 @@ wire format to version 3: stores and documents written by 0.3.0 are refused, and
   `store.load_ledger(contract)` reads the current one.
 
 - A delivered file is opened once and copied into the store's private folder while it is hashed;
-  every read uses the copy. A symbolic link swapped after the drop's root check, or a file changed
-  while it was read, can no longer put other bytes behind a receipt.
+  every read uses the copy. Below a drop root each folder is opened from the one above it without
+  following a link, so a file or folder swapped for a link after the root check is refused, and a
+  FIFO is refused instead of waited on. A file changed while it was read can no longer put other
+  bytes behind a receipt. Windows, which cannot open that way, gets a weaker check.
 - CSV has one grammar, RFC 4180: comma, double quote, UTF-8, header row. DuckDB no longer guesses a
   dialect, so a `'` or a leading `#` is data, and `dogana manifest` counts exactly what the store
   reads.
-- A `datetime` value needs its UTC offset, in CSV as in Parquet; a time without one is refused
-  instead of read as UTC.
-- A file the store cannot read (not UTF-8, compressed, a value out of range) is a rejection with an
-  `execution` check, not a `StoreError` that a retrying receiver would repeat forever.
+- A `datetime` value needs a date, a time and its UTC offset, in CSV as in Parquet; anything less is
+  refused instead of read as UTC. A one-column CSV's blank line is an empty value, as DuckDB reads
+  it, so the sender's count agrees; a record with the wrong number of fields is refused.
+- The `duckdb` extra needs DuckDB 1.2 or later.
+- A file the store cannot read (missing, not UTF-8, compressed, corrupt, a value out of range) is a
+  recorded rejection, not a `StoreError` that a retrying receiver would repeat forever.
 - A payload column can be declared `decimal(p,s)`, published as DECIMAL and read back as
   `Decimal`. A DECIMAL used to be read as a float, so 1234567890123456.78 was published as
-  1234567890123456.8; it is now exact, or refused when the declared type differs.
+  1234567890123456.8; it is now exact, or refused when the declared type differs. A `Decimal` row
+  value with more digits than its column holds is refused rather than rounded.
 - A window delivery refuses a key published outside its window. Moving it used to leave the region
   it came from claiming exactness without it; only a delivery covering the whole table moves a key.
 - A replay compares the bytes with the accepted digest and nothing else, through the new `Store`

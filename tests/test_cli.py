@@ -205,7 +205,7 @@ def test_a_byte_order_mark_or_a_short_row_never_miscounts_tombstones(files, caps
     assert (written(data).rows, written(data).tombstones) == (1, 1)
     data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,2026-10-25\n")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 1
-    assert "deleted must be true or false in every row" in capsys.readouterr().err
+    assert "a record has 2 fields, the header 4" in capsys.readouterr().err
 
 
 def test_parquet_rows_and_tombstones_are_counted_through_the_duckdb_extra(tmp_path):

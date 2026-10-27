@@ -51,8 +51,8 @@ deliver tombstones through `FileDrop(..., columns=...)` or another typed source.
 comment lines and no dialect detection, so a `'` or a leading `#` is data. A quoted empty field is
 the empty string and an unquoted empty field is null. A `datetime` value needs its offset (`Z` or
 `+02:00`); without one the candidate fails `schema_hash`, as does a Parquet `TIMESTAMP` without a
-time zone. A file DuckDB cannot read (not UTF-8, compressed, a value out of range) is a rejection
-with a failed `execution` check, recorded like any other.
+time zone. A file DuckDB cannot read (not UTF-8, compressed, corrupt, a value out of range) is
+a recorded rejection, like any other failed check.
 
 Call `dogana.deliver(store, contract, source, manifest, now)` with the actual receiver time.
 The store's `deliver` convenience uses the same core sequence. Rows, ledger, stamp and receipt commit

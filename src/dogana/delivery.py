@@ -80,19 +80,19 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
 
     candidate: str | None = None
     checks: tuple[Check, ...] = ()
-    attempted: dict[str, Receipt] = {}
+    receipt: Receipt | None = None
     try:
         candidate = _call(store.hold, source, manifest, contract)
         checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
-        attempted[contract.table] = Gate.evaluate(ledger, manifest, checks, now=now, source=description)
-        _call(store.publish, candidate, attempted[contract.table])
-        return attempted[contract.table]
+        receipt = Gate.evaluate(ledger, manifest, checks, now=now, source=description)
+        _call(store.publish, candidate, receipt)
+        return receipt
     except BaseException as error:
-        held = {} if candidate is None else {contract.table: candidate}
+        table = contract.table
+        held = {} if candidate is None else {table: candidate}
+        attempted = {} if receipt is None else {table: receipt}
         members = [(contract, source, manifest)]
-        return _recover(store, members, held, {contract.table: checks}, error, now, attempted=attempted)[
-            contract.table
-        ]
+        return _recover(store, members, held, {table: checks}, error, now, attempted=attempted)[table]
 
 
 def _recover(

@@ -397,8 +397,8 @@ returns the committed receipts. A failed delivery whose tables another delivery 
 decided the same way, as a replay or a refusal, so the outcome does not depend on timing; when the
 other delivery lands while refusals are being recorded, the call raises `StoreError`, and a retry
 decides it. Only a group publication that committed some of its tables and not others raises
-`InconsistentPublication`. Two deliveries with equal manifests and receiver times produce one
-receipt, and both callers receive it as `accepted`.
+`InconsistentPublication`. Two concurrent deliveries with equal manifests and receiver times
+produce one receipt, so the one that published nothing may also be answered `accepted`.
 
 The `together` check does not require the result to be exact; the shapes decide that, over what
 each delivery covers: a full delivery everywhere, a window delivery inside its window, so pass the

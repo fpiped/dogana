@@ -72,6 +72,10 @@ _CSV = (
     "delim=',', quote='\"', escape='\"', comment='', strict_mode=true, sample_size=-1, "
     "allow_quoted_nulls=false"
 )
+# A date, a time and its UTC offset: a value without the offset names no instant.
+_INSTANT = (
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]+)?)?([zZ]|[+-][0-9]{2}(:?[0-9]{2})?)"
+)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 _FILES_GUARD = Lock()
@@ -233,8 +237,6 @@ class DuckDBStore:
         self._checked: dict[str, _Checked] = {}
         self._references: dict[tuple[tuple[Reference, ...], frozenset[str]], Check] = {}
         self._transaction: tuple[str, ...] | None = None
-        # Delivered files are read from private copies here, never from where the sender can change them.
-        self._scratch = TemporaryDirectory(prefix="dogana-")
         try:
             self.connection = duckdb.connect(str(path))
             self._file = self._register(str(path) == ":memory:")
@@ -246,6 +248,8 @@ class DuckDBStore:
                 self._initialize()
             except (duckdb.Error, OSError) as exc:
                 raise StoreError(str(exc)) from exc
+        # Delivered files are read from private copies here, never from where the sender can change them.
+        self._scratch = TemporaryDirectory(prefix="dogana-")
 
     def _register(self, memory: bool) -> _File:
         """Share a lock with every store on the database DuckDB opened, refusing a second name for its file.
@@ -300,10 +304,12 @@ class DuckDBStore:
             for candidate in tuple(self._candidates):
                 self.abort(candidate)
         finally:
-            self.connection.close()
-            self._scratch.cleanup()
-            # A closed connection discards an unresolved transaction, so nothing is left to lock for.
-            self._end_transaction()
+            try:
+                self.connection.close()
+            finally:
+                self._scratch.cleanup()
+                # A closed connection discards an unresolved transaction, so nothing is left to lock for.
+                self._end_transaction()
 
     def _one(self, sql: str, params: object = None) -> tuple[Any, ...]:
         row = self.connection.execute(sql, params).fetchone()
@@ -558,7 +564,7 @@ class DuckDBStore:
                             f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM read_parquet(?)",
                             [str(copy)],
                         )
-                except (duckdb.InvalidInputException, duckdb.ConversionException) as exc:
+                except duckdb.Error as exc:  # the store's own copy: what fails to read is the file
                     raise InvalidContract(f"the delivered file does not read: {_brief(exc)}") from exc
                 self._candidates[candidate] = _Candidate(
                     manifest,
@@ -622,7 +628,14 @@ class DuckDBStore:
                 if value is None:
                     continue
                 kind = next((k for k, t in LOGICAL_TYPES.items() if type(value) is t.python_type), None)
-                if isinstance(value, Decimal) and _decimal(inferred[name] or "") is not None:
+                if isinstance(value, Decimal) and (exact := _decimal(inferred[name] or "")) is not None:
+                    precision, scale = exact
+                    if (
+                        not value.is_finite()
+                        or value != round(value, scale)
+                        or abs(value) >= 10 ** (precision - scale)
+                    ):
+                        raise InvalidContract(f"source column {name} holds {value}, not a {inferred[name]}")
                     kind = inferred[name]
                 if kind is None or isinstance(value, datetime) and value.utcoffset() is None:
                     raise InvalidContract(f"source column {name} has an unsupported value")
@@ -666,8 +679,7 @@ class DuckDBStore:
         )
         # A time without its offset names no instant; reading it as UTC would guess.
         predicates.extend(
-            f"({_quote(name)} IS NOT NULL "
-            f"AND NOT regexp_matches(trim({_quote(name)}), '([zZ]|[+-][0-9:]+)$'))"
+            f"({_quote(name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(name)}), '{_INSTANT}'))"
             for name, kind in columns.items()
             if kind == "datetime"
         )

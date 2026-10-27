@@ -207,14 +207,14 @@ def _replace(target: Path, document: str, *, force: bool) -> None:
     """Write the whole manifest or nothing: a receiver polling the folder never reads half a file."""
     handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
-        umask = os.umask(0)
-        os.umask(umask)
-        # mkstemp creates the file for its owner only; a receiver under another account must read it.
-        os.fchmod(handle, 0o666 & ~umask)
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(document)
             stream.flush()
             os.fsync(stream.fileno())
+        umask = os.umask(0)
+        os.umask(umask)
+        # mkstemp creates the file for its owner only; a receiver under another account must read it.
+        os.chmod(temporary, 0o666 & ~umask)
         if force:
             os.replace(temporary, target)
         else:
