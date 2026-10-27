@@ -26,6 +26,7 @@ from .contract import (
     WindowCoverage,
     WindowDelivery,
     bounds,
+    coverage_window,
     identifier,
     scalar_compare,
 )
@@ -461,7 +462,7 @@ class Ledger(Wire):
     def apply(self, manifest: Manifest) -> Ledger:
         try:
             delivery = manifest.check(self.contract)
-            window = _coverage_window(delivery)
+            window = coverage_window(delivery)
             self._check_window_type(window)
         except InvalidContract as exc:
             raise _rejection(manifest, str(exc)) from exc
@@ -485,16 +486,6 @@ class Ledger(Wire):
         return Claims(
             tuple(RegionClaim(self.contract.table, r, r.state(now, limit)) for r in self.covered(window))
         )
-
-
-def _coverage_window(delivery: ParsedDelivery) -> Window | None:
-    match delivery:
-        case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
-            return window
-        case FullDelivery() | TimestampChanges() | GenerationChanges() | AppendInterval() | SequenceChanges():
-            return None
-        case _:
-            assert_never(delivery)
 
 
 def _guards(

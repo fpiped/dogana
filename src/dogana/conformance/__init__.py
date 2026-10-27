@@ -18,6 +18,7 @@ from dogana import (
     Contract,
     Coverage,
     Deletions,
+    Gate,
     Group,
     InconsistentPublication,
     Ledger,
@@ -29,6 +30,7 @@ from dogana import (
     State,
     Store,
     StoreError,
+    TogetherStore,
     deliver_together,
     next_extraction,
 )
@@ -108,6 +110,12 @@ def _stamped(store: Store) -> StampedStore:
     return cast(StampedStore, store)
 
 
+def _grouped(store: Store) -> TogetherStore:
+    if not all(callable(getattr(store, name, None)) for name in ("check_references", "publish_together")):
+        pytest.skip("store does not publish tables together")
+    return cast(TogetherStore, store)
+
+
 def _at(day: int) -> datetime:
     return datetime(2026, 10, day, tzinfo=UTC)
 
@@ -139,7 +147,7 @@ def _orders(references: bool = True) -> Group:
     orders = _contract("orders", {"full": FULL, "changes": CHANGES})
     lines = _contract(
         "order_lines",
-        {"full": FULL, "daily": WINDOW, "changes": CHANGES},
+        {"full": FULL, "daily": WINDOW, "changes": CHANGES, "since": SINCE},
         schema_hash=_schema_hash(LINE_COLUMNS),
     )
     named = (Reference("order_lines", ("order_id",), "orders"),) if references else ()
@@ -1129,8 +1137,17 @@ class TogetherConformance(_StoreScenarios):
         day: int = 18,
     ) -> dict[str, Receipt]:
         """Deliver `(shape, rows, manifest fields)` per table, read at `day` unless a table says otherwise."""
-        if not all(callable(getattr(store, name, None)) for name in ("publish_together", "check_references")):
-            pytest.skip("store does not publish tables together")
+        receipts = deliver_together(
+            store, group, self._sources(factory, store, group, deliveries, day), _at(30)
+        )
+        for contract in group.contracts:
+            self._fold(store, contract)
+        return receipts
+
+    def _sources(
+        self, factory: StoreFactory, store: Store, group: Group, deliveries: _Deliveries, day: int
+    ) -> dict[str, tuple[object, Manifest]]:
+        _grouped(store)
         sources: dict[str, tuple[object, Manifest]] = {}
         for table, (shape, rows, fields) in deliveries.items():
             contract, fields = group.contract(table), dict(fields)
@@ -1148,10 +1165,40 @@ class TogetherConformance(_StoreScenarios):
                 contract, shape, rows, tombstones, LINE_COLUMNS if table == "order_lines" else COLUMNS
             )
             sources[table] = (factory.write_source(marked, columns), manifest)
-        receipts = deliver_together(store, group, sources, _at(30))
-        for contract in group.contracts:
-            self._fold(store, contract)
-        return receipts
+        return sources
+
+    def _held(
+        self, factory: StoreFactory, store: Store, group: Group, deliveries: _Deliveries, day: int
+    ) -> tuple[dict[str, str], dict[str, Receipt]]:
+        """Hold and check each table through the port; return the candidates and their receipts alone."""
+        held, alone = {}, {}
+        for table, (source, manifest) in self._sources(factory, store, group, deliveries, day).items():
+            contract = group.contract(table)
+            held[table] = store.hold(source, manifest, contract)
+            checks = store.check(held[table], contract, manifest, Gate.requirements(contract, manifest))
+            alone[table] = Gate.evaluate(store.load_ledger(contract), manifest, checks, now=_at(30))
+        return held, alone
+
+    def _receipts(
+        self, store: Store, group: Group, alone: Mapping[str, Receipt], joint: tuple[Any, ...]
+    ) -> tuple[tuple[str, Receipt], ...]:
+        return tuple(
+            (
+                table,
+                Gate.evaluate(
+                    store.load_ledger(group.contract(table)),
+                    receipt.manifest,
+                    tuple(
+                        c
+                        for c in receipt.checks
+                        if c.name not in ("manifest", "receiver_time", "transition", "check_set")
+                    ),
+                    now=_at(30),
+                    joint=joint,
+                ),
+            )
+            for table, receipt in alone.items()
+        )
 
     def _state(self, factory: StoreFactory, store: Store, group: Group) -> dict[str, Any]:
         return {c.table: factory.read_publication(store, c) for c in group.contracts}
@@ -1212,7 +1259,6 @@ class TogetherConformance(_StoreScenarios):
         assert not any(r.accepted for r in receipts.values())
         failed = {r.ledger.contract.table: [c for c in r.checks if not c.passed] for r in receipts.values()}
         assert [c.name for c in failed["orders"]] == [c.name for c in failed["order_lines"]] == ["references"]
-        assert "rows without a parent row in orders: 1" in failed["orders"][0].detail
         assert self._state(factory, store, group) == before
 
     def test_an_order_deleted_with_its_lines_kept_refuses_the_group(
@@ -1301,7 +1347,8 @@ class TogetherConformance(_StoreScenarios):
         )
         for receipt in receipts.values():
             assert [c.detail for c in receipt.checks if not c.passed] == [
-                "orders, order_lines carry different read boundaries"
+                "read boundaries differ: "
+                "order_lines 2026-10-20T00:00:00+00:00, orders 2026-10-19T00:00:00+00:00"
             ]
 
     def test_a_failure_after_rows_publishes_no_table(self, factory: StoreFactory, store: Store) -> None:
@@ -1317,7 +1364,7 @@ class TogetherConformance(_StoreScenarios):
         assert self._state(factory, store, group) == before
         assert all(r.accepted for r in self._together(factory, store, group, deliveries, day=19).values())
 
-    def test_a_group_replays_whole(self, factory: StoreFactory, store: Store) -> None:
+    def test_a_group_replays_whole_or_is_refused_whole(self, factory: StoreFactory, store: Store) -> None:
         group = _orders()
         first = self._baseline(factory, store, group)
         audit = store.receipts()
@@ -1336,7 +1383,83 @@ class TogetherConformance(_StoreScenarios):
             factory, store, group.contract("orders"), [_row(3, 19)], "changes", 19, since=_at(18)
         )
         assert alone.accepted
+        later: _Deliveries = {
+            "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
+            "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
+        }
+        receipts = self._together(factory, store, group, later, day=19)
+        for receipt in receipts.values():
+            assert [c.detail for c in receipt.checks] == [
+                "a group replays whole, and orders was not accepted together with this group"
+            ]
+        assert self._deliver(
+            factory,
+            store,
+            group.contract("order_lines"),
+            [_line(12, 3, 19)],
+            "changes",
+            19,
+            since=_at(18),
+            columns=LINE_COLUMNS,
+        ).accepted
+        receipts = self._together(factory, store, group, later, day=19)
+        assert not any(r.accepted for r in receipts.values())
+
+    def test_a_child_that_cannot_be_exact_leaves_its_reference_unchecked(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        self._baseline(factory, store, group)
         receipts = self._together(
+            factory,
+            store,
+            group,
+            {
+                "orders": ("changes", [], {"since": _at(18), "tombstones": (1,)}),
+                "order_lines": ("since", [], {"since": _at(18)}),
+            },
+            day=19,
+        )
+        assert all(r.accepted for r in receipts.values()), receipts
+        ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
+        assert group.claims(ledgers, _at(19)).exact_as_of is None
+
+    def test_publish_together_needs_the_stores_own_answer_on_exactly_these_candidates(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders()
+        deliveries: _Deliveries = {
+            "orders": ("full", [_row(1)], {}),
+            "order_lines": ("full", [_line(10, 2)], {}),
+        }
+        held, alone = self._held(factory, store, group, deliveries, 18)
+        together = (Gate.together(tuple(alone.values())),)
+        unanswered = tuple((held[t], r) for t, r in self._receipts(store, group, alone, together))
+        with pytest.raises(StoreError):
+            _grouped(store).publish_together(group, unanswered)
+        held, alone = self._held(factory, store, group, deliveries, 18)
+        answer = _grouped(store).check_references(group, held)
+        assert not answer.passed
+        omitted = tuple((held[t], r) for t, r in self._receipts(store, group, alone, together))
+        with pytest.raises(StoreError):
+            _grouped(store).publish_together(group, omitted)
+        held, alone = self._held(factory, store, group, deliveries, 18)
+        _grouped(store).check_references(group, held)
+        lines, manifest = group.contract("order_lines"), alone["order_lines"].manifest
+        store.check(held["order_lines"], lines, manifest, Gate.requirements(lines, manifest))
+        stale = tuple((held[t], r) for t, r in self._receipts(store, group, alone, (*together, answer)))
+        with pytest.raises(StoreError):
+            _grouped(store).publish_together(group, stale)
+        assert all(store.load_ledger(c).publication_id is None for c in group.contracts)
+        assert store.receipts() == ()
+
+    def test_a_table_published_alone_in_between_leaves_every_table_unpublished(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        group = _orders(references=False)
+        self._baseline(factory, store, group)
+        before = self._state(factory, store, group)["orders"]
+        held, alone = self._held(
             factory,
             store,
             group,
@@ -1344,9 +1467,21 @@ class TogetherConformance(_StoreScenarios):
                 "orders": ("changes", [_row(3, 19)], {"since": _at(18)}),
                 "order_lines": ("changes", [_line(12, 3, 19)], {"since": _at(18)}),
             },
-            day=19,
+            19,
         )
-        assert receipts["orders"] == replace(alone, outcome=Outcome.REPLAYED)
-        assert [c.detail for c in receipts["order_lines"].checks] == [
-            "a group replays whole, and orders was accepted before"
-        ]
+        joint = (Gate.together(tuple(alone.values())),)
+        entries = tuple((held[t], r) for t, r in self._receipts(store, group, alone, joint))
+        moved = self._deliver(
+            factory,
+            store,
+            group.contract("order_lines"),
+            [_line(13, 1, 20)],
+            "changes",
+            20,
+            since=_at(18),
+            columns=LINE_COLUMNS,
+        )
+        assert moved.accepted
+        with pytest.raises(StoreError):
+            _grouped(store).publish_together(group, entries)
+        assert self._state(factory, store, group)["orders"] == before

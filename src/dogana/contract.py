@@ -8,7 +8,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, assert_never
 
 from .wire import InvalidContract, Wire, utc
 
@@ -531,6 +531,17 @@ class SequenceChanges:
 ParsedDelivery: TypeAlias = (
     FullDelivery | WindowDelivery | TimestampChanges | GenerationChanges | AppendInterval | SequenceChanges
 )
+
+
+def coverage_window(delivery: ParsedDelivery) -> Window | None:
+    """The window a delivery speaks about, or None for the whole table."""
+    match delivery:
+        case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
+            return window
+        case FullDelivery() | TimestampChanges() | GenerationChanges() | AppendInterval() | SequenceChanges():
+            return None
+        case _:
+            assert_never(delivery)
 
 
 def cursor_interval(

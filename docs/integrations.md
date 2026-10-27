@@ -81,6 +81,24 @@ thresholds, not query exactness. Mixed dates do not create a consistent snapshot
 negated input needs deletion knowledge to avoid hiding true answers. Run the checks and downstream
 reads against one pinned publication, or prevent intervening writes during the job.
 
+For tables delivered together, this test fails unless both tables have one common instant, the
+`exact_as_of` of their claims: every region holds both dates, and all of them are one instant.
+
+```sql
+select 'orders, order_lines' as tables_read_together
+from {{ source('landing', 'dogana_regions') }}
+where table_name in ('orders', 'order_lines')
+having count(distinct table_name) < 2
+    or count(complete_as_of) < count(*)
+    or count(distinct complete_as_of) <> 1
+    or count(distinct deletions_as_of) <> 1
+    or min(complete_as_of) <> min(deletions_as_of)
+```
+
+It reads every region; add the window bounds when the models read only part of a table. Like the
+reads it gates, it must see one publication: run it in the same transaction as those models, or
+against pinned publications.
+
 [dbt snapshots](https://docs.getdbt.com/docs/build/snapshots) retain row history; hard-delete detection
 needs complete source coverage. Restrict a snapshot input to a fixed scope with adequate evidence:
 

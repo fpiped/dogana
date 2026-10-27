@@ -67,9 +67,12 @@ has `outcome="replayed"` and preserves original identity and `received_at`; it i
 This is a decision history, not a journal of every call or operational exception.
 
 The store implements the [together tier](protocol.md#tables-together). `check_references(group,
-candidates)` applies every candidate's plan inside a transaction it rolls back, counts the child rows
-that name no parent row, and refuses a reference whose columns are missing or whose types differ
-from the parent key's; a new check of any candidate discards that answer. `publish_together(group,
+candidates)` asks `Group.unchecked` which references the delivery can test, applies every
+candidate's plan inside a transaction it rolls back, and for each tested reference counts the child
+rows in the child's coverage that name no parent row, giving up to three of the values they name. A
+reference whose columns are missing or whose types differ from the parent key's fails. A new check of
+any candidate discards the answer. The trial applies every plan a second time and scans the child,
+which costs about as much as the delivery itself. `publish_together(group,
 entries)` writes every table's rows, history, receipt, stamp and ledger in one transaction. `read_together(group)` returns `(rows, ledgers)`, two mappings
 by table, read under one lock, so no publication falls between two tables; pass the ledgers to
 `group.claims(ledgers, now)` for the common instant.
@@ -183,7 +186,9 @@ at the caller. Compressed Parquet can expand far beyond its file size. There is 
 `ingest_together(group, files, *, now=None)` delivers one file per table of a group through
 `deliver_together`. `files` pairs each table's `FileDrop` with its path; every drop must use the same
 store and its table's contract in the group. Each manifest comes from its sidecar or pattern as for
-`ingest`, and the files must carry the same read boundary, for example one date in every filename.
+`ingest`, and every file must carry the instant of the one consistent read that produced all of
+them: written by that one export job into every sidecar, or as a full timestamp in every filename.
+A date-only pattern gives separate export jobs the same instant and voids the guarantee.
 
 ## Command line
 
@@ -250,7 +255,9 @@ its `StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger` for
 Stores without that tier still run every required publication scenario. Diagnosis matches
 `LedgerAhead` and `StampAhead`, never exception text. Stores exposing `check_references` and
 `publish_together` can inherit `TogetherConformance`: one instant for a group, a refused table or
-reference refusing every table, different read boundaries, a failure after rows, and whole replay.
+reference refusing every table, an untested reference, different read boundaries, a failure after
+rows, a table published alone between the check and the publication, receipts without the store's
+own references answer, and whole replay.
 
 Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale accepted
 and rejected bases, atomic failures, malformed receipt persistence and reconstruction. A refusal

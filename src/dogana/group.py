@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from .contract import Contract, Window, identifier
+from .contract import Contract, Manifest, Window, coverage_window, identifier
 from .errors import InvalidContract
 from .ledger import Claims, Ledger
 
@@ -40,8 +40,9 @@ class Group:
     def __post_init__(self) -> None:
         object.__setattr__(self, "contracts", tuple(self.contracts))
         object.__setattr__(self, "references", tuple(self.references))
-        if not self.contracts or len(set(self.tables)) != len(self.contracts):
-            raise InvalidContract("a group names each of its tables once")
+        # Many stores resolve table names regardless of letter case, so two spellings would share one table.
+        if not self.contracts or len({table.casefold() for table in self.tables}) != len(self.contracts):
+            raise InvalidContract("a group names each of its tables once, whatever the letter case")
         for reference in self.references:
             if reference.table not in self.tables or reference.parent not in self.tables:
                 raise InvalidContract(f"{reference}: a table outside the group")
@@ -57,6 +58,22 @@ class Group:
             return next(contract for contract in self.contracts if contract.table == table)
         except StopIteration:
             raise InvalidContract(f"table {table} is not in the group") from None
+
+    def unchecked(self, reference: Reference, after: Mapping[str, Ledger], child: Manifest) -> str | None:
+        """Why the ledgers after a delivery cannot test a reference, or None when an orphan disproves it.
+
+        A child row in the child's delivered coverage was live at p only where that coverage ends exact
+        at p, and the row it names is present only where the parent is complete as of p.
+        """
+        at = child.produced_at
+        window = coverage_window(child.check(after[reference.table].contract))
+        if any(
+            (r.complete_as_of, r.deletions_as_of) != (at, at) for r in after[reference.table].covered(window)
+        ):
+            return f"{reference.table} is not exact as of {at.isoformat()} where it was delivered"
+        if any(r.complete_as_of != at for r in after[reference.parent].regions):
+            return f"{reference.parent} is not complete as of {at.isoformat()} over the whole table"
+        return None
 
     def claims(
         self, ledgers: Mapping[str, Ledger], now: datetime, windows: Mapping[str, Window] | None = None

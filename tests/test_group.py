@@ -43,6 +43,8 @@ def test_a_group_names_each_table_once_and_references_only_its_tables():
         Group((ORDERS, ORDERS))
     with pytest.raises(InvalidContract, match="each of its tables once"):
         Group(())
+    with pytest.raises(InvalidContract, match="each of its tables once"):
+        Group((ORDERS, contract("ORDERS")))
     with pytest.raises(InvalidContract, match="outside the group"):
         Group((LINES,), (LINE,))
     with pytest.raises(InvalidContract, match="one column per key column"):
@@ -92,10 +94,12 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
         return Gate.evaluate(Ledger(c), manifest, outcomes, now=at(30))
 
     assert Gate.together((alone(ORDERS, 18), alone(LINES, 18))) == Check(
-        "together", True, "orders, order_lines as of 2026-10-18T00:00:00+00:00"
+        "together", True, "order_lines, orders as of 2026-10-18T00:00:00+00:00"
     )
     assert Gate.together((alone(ORDERS, 18), alone(LINES, 19))) == Check(
-        "together", False, "orders, order_lines carry different read boundaries"
+        "together",
+        False,
+        "read boundaries differ: order_lines 2026-10-19T00:00:00+00:00, orders 2026-10-18T00:00:00+00:00",
     )
     assert Gate.together((alone(ORDERS, 18), alone(LINES, 18, passed=False))) == Check(
         "together", False, "refused with order_lines"
@@ -150,3 +154,24 @@ def test_planning_together_reads_a_keyless_append_after_its_start():
     group = Group((ORDERS, events))
     requests = plan_together(group, {"orders": full(ORDERS, 18), "events": Ledger(events)}, at(19))
     assert {r.until for r in requests.values()} == {at(19) + timedelta(microseconds=1)}
+
+
+def test_a_reference_is_checked_only_where_an_orphan_would_disprove_the_shared_boundary():
+    group = Group((ORDERS, LINES), (LINE,))
+    exact = {"orders": full(ORDERS, 19), "order_lines": full(LINES, 19)}
+    lines = Manifest("order_lines", "full", at(19), rows=0, schema_hash=LINES.schema_hash)
+    assert group.unchecked(LINE, exact, lines) is None
+    changes = Manifest("order_lines", "since", at(19), since=at(18), schema_hash=LINES.schema_hash)
+    patched = {**exact, "order_lines": full(LINES, 18).apply(changes)}
+    assert group.unchecked(LINE, patched, changes) == (
+        "order_lines is not exact as of 2026-10-19T00:00:00+00:00 where it was delivered"
+    )
+    window = (at(19).date(), at(19).date())
+    daily = Manifest("orders", "daily", at(19), window=window, schema_hash=ORDERS.schema_hash)
+    windowed = {**exact, "orders": full(ORDERS, 18).apply(daily)}
+    assert group.unchecked(LINE, windowed, lines) == (
+        "orders is not complete as of 2026-10-19T00:00:00+00:00 over the whole table"
+    )
+    parent_changes = Manifest("orders", "since", at(19), since=at(18), schema_hash=ORDERS.schema_hash)
+    complete = {**exact, "orders": full(ORDERS, 18).apply(parent_changes)}
+    assert group.unchecked(LINE, complete, lines) is None

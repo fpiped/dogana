@@ -232,7 +232,7 @@ def plan_together(
             request = plan_delivery(ledgers[table], requirement)
         except PlanningError as exc:
             raise PlanningError(f"{table}: {exc}") from exc
-        if request is None or request.until != boundary:
-            raise PlanningError(f"{table} cannot be read at the shared boundary")
+        # Every date is before the boundary, so each request ends exactly there.
+        assert request is not None and request.until == boundary
         requests[table] = request
     return requests

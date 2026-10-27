@@ -210,14 +210,15 @@ class Gate:
     @staticmethod
     def together(alone: tuple[Receipt, ...]) -> Check:
         """The joint check of a group: one read boundary, and every table accepted on its own."""
-        tables = ", ".join(receipt.ledger.contract.table for receipt in alone)
-        boundaries = {receipt.manifest.produced_at for receipt in alone}
-        refused = [receipt.ledger.contract.table for receipt in alone if not receipt.accepted]
-        if len(boundaries) != 1:
-            return Check("together", False, f"{tables} carry different read boundaries")
+        reads = sorted((receipt.ledger.contract.table, receipt.manifest.produced_at) for receipt in alone)
+        refused = sorted(receipt.ledger.contract.table for receipt in alone if not receipt.accepted)
+        if len({boundary for _, boundary in reads}) != 1:
+            boundaries = ", ".join(f"{table} {boundary.isoformat()}" for table, boundary in reads)
+            return Check("together", False, f"read boundaries differ: {boundaries}")
         if refused:
             return Check("together", False, f"refused with {', '.join(refused)}")
-        return Check("together", True, f"{tables} as of {boundaries.pop().isoformat()}")
+        tables = ", ".join(table for table, _ in reads)
+        return Check("together", True, f"{tables} as of {reads[0][1].isoformat()}")
 
     @staticmethod
     def reject(

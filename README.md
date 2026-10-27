@@ -35,8 +35,9 @@ A delivery never raises a date above what it proves.
 3. A **gate** checks the file against both, and rejects the whole file if any check fails.
 4. A **ledger** moves the two dates only as far as the delivery proves, and anyone reading the
    table can ask it how far to trust the rows.
-5. Tables that depend on each other, such as orders and their lines, are delivered **together**:
-   one read instant, one decision, one publication, so a join never sees lines without their order.
+5. Tables that depend on each other, such as orders and their lines, can be delivered **together**
+   from one consistent read: one decision, one publication, and a date that says when a join
+   between them answers as the source would have.
 
 *Dogana* (doh-GAH-nah) is Italian for customs: goods cross a border with a declaration, an officer
 checks them against it, and they enter stamped or are held at the border. Here the goods are rows,

@@ -9,10 +9,13 @@ Tables that depend on each other can be delivered and read together. The wire fo
   answer every query, joins and `NOT EXISTS` included, as the source would have.
 - `Group` names tables read together; `Reference` states that each row of one table names the key
   of a row of another. `Group.claims` combines the tables' claims, each over an optional window.
-- `deliver_together` decides one delivery per table as one: the files must share one read
-  boundary, a refused table refuses them all, references are checked on the rows the delivery would
-  publish, and every table is published in one atomic step. Receipts gain the `together` and
+- `deliver_together` decides one delivery per table as one: the files must come from one consistent
+  read and share its instant, a refused table refuses them all, and every table is published in one
+  atomic step. A group replays whole or is refused whole. Receipts gain the `together` and
   `references` checks.
+- A reference is checked only where an orphan proves the shared instant false: the child exact
+  where it was delivered and the parent complete over the whole table. `Group.unchecked` names the
+  references a delivery cannot test, and the receipt says why.
 - `plan_together` names one read per table at one shared boundary.
 - `TogetherStore` is an optional store tier (`check_references`, `publish_together`), tested by
   `TogetherConformance`. The DuckDB store implements it and adds `read_together`; the file drop adds

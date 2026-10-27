@@ -217,26 +217,35 @@ proven on its own and the two can still disagree:
 
 Both deliveries are correct: `orders` is complete as of 10:00, `order_lines` as of 10:05. A report
 joining lines to orders finds a line whose order is missing. `Claims.combine` gives 10:00 for both
-dates, and that is true: neither table misses a row the source had at 10:00. But "complete as of"
-promises nothing missing, not nothing extra, and order 42's line is extra: it came from the 10:05
-read.
+dates, but that is an evidence date, not a picture of the source at 10:00: the 10:05 read holds rows
+created after 10:00, like order 42's line, and misses rows deleted after 10:00.
 
-A table whose two dates are equal promises both: nothing missing and nothing extra, so it is the
-source at that instant. Two tables each exact at the same instant are the source at that instant
-together, and any query over them, a join, a `NOT EXISTS`, a total, answers as the source would
-have. `Claims.exact_as_of` names that instant, or nothing. In the example the two tables are exact
-at 10:00 and 10:05, so there is no common instant, and a reader knows not to trust the join.
+A piece whose two dates are equal is the source at that instant: nothing missing, nothing extra. A
+set of tables is the source at one instant when every piece of every table has both dates at that
+same instant. Equal table dates are not enough, because a table's dates are the earliest of its
+pieces: the window table above has both dates on Sunday while three of its days are proven on
+Tuesday. Then any query over the tables, a join, a `NOT EXISTS`, a total, answers as the source would
+have. `Claims.exact_as_of` checks every piece and names that instant, or nothing. In the example the
+two tables are exact at 10:00 and 10:05, so there is no common instant, and a reader knows not to
+trust the join.
 
-To have one, read both tables in one source transaction, so every file carries the same read
-boundary, and deliver them together. A `Group` names the tables and the references between them;
-`deliver_together` decides the files as one delivery: if one file fails a check, no table changes,
-and if all pass, every table is published in one step, so a reader never sees new lines with old
-orders. A reference adds one check: every delivered line must name an order that exists once both
-files are published. A line naming a missing order proves the two files were not read at one
-instant, or that the source does not keep the rule, and the whole delivery is refused. `plan_together`
-names one read per table at one shared boundary. Tables from different systems rarely share an
-instant: no transaction spans both, and then the earliest dates and the reference check are what
-remains.
+To have one, read every table from one consistent snapshot of the source, so every file carries
+that snapshot's instant. One transaction is not always one snapshot: at the default isolation level
+of most databases each statement sees the data as of its own start. The
+[protocol](protocol.md#tables-together) lists the settings that give one snapshot. Then deliver the
+files together. A `Group` names the tables and the references between them, and `deliver_together`
+decides the files as one delivery: if one file fails a check, no table changes, and if all pass,
+every table is published in one step, so a reader never sees new lines with old orders.
+`plan_together` names one read per table at one shared boundary.
+
+A reference adds one check, run only when a failure would prove something: when the lines file makes
+the part of the table it covers exact, with its deletions, and the orders are complete over the whole
+table. Then every line in that part must name an order present once both files are published. A line
+naming a missing order proves the two files were not one snapshot, or that the source does not keep
+the rule, and the whole delivery is refused. Otherwise the reference is not checked, and the receipt
+says why. Tables without one shared snapshot, from different systems or exported by separate jobs,
+are delivered separately with `deliver`: only the earliest dates remain, and no reference is checked.
+Stamping them with one read time would fabricate the instant.
 
 ## What it is not
 

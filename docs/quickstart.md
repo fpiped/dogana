@@ -219,7 +219,7 @@ group = Group((invoices, lines), (Reference("invoice_lines", ("invoice_id",), "i
 
 
 def together(day, heads, items):
-    """Both tables read in one source transaction at `day`, then delivered as one."""
+    """Both tables read from one consistent snapshot at `day`, then delivered as one."""
     read_at = datetime(2026, 10, day, tzinfo=UTC)
     deliveries = {
         "invoices": (heads, invoices.manifest("full", read_at, rows=len(heads))),
@@ -247,11 +247,11 @@ store.close()
 ```text
 accepted: lines [10], exact as of Monday
 rejected: lines [10], exact as of Monday
-invoice_lines(invoice_id) references invoices: rows without a parent row in invoices: 1
+invoice_lines(invoice_id) references invoices: rows without a parent row in invoices: 1, naming invoice_id 2
 ```
 
-Invoices and their lines are read in one source transaction, so both files carry the same read
-time, and they are delivered as one. On Monday both tables are published in one step, and both are
+Invoices and their lines are read from one consistent snapshot of the source, so both files carry
+the same read time, and they are delivered as one. On Monday both tables are published in one step, and both are
 the source as of Monday: a join between them answers as the source would have. Tuesday's line 11
-names invoice 2, which is in neither file, so the two files cannot be one instant of the source:
-both are rejected, and the tables stay exactly as of Monday.
+names invoice 2, which is in neither file, so the two files cannot be one instant of a source that
+keeps every line's invoice: both are rejected, and the tables stay exactly as of Monday.

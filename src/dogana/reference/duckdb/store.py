@@ -34,10 +34,8 @@ from dogana.contract import (
     LOGICAL_TYPES,
     FullDelivery,
     ParsedDelivery,
-    TimestampChanges,
     Window,
-    WindowCoverage,
-    WindowDelivery,
+    coverage_window,
     cursor_interval,
     identifier,
 )
@@ -157,7 +155,7 @@ class _Audit:
 
     @cached_property
     def window(self) -> Window | None:
-        return _coverage(self.delivery)
+        return coverage_window(self.delivery)
 
     @property
     def staging(self) -> str:
@@ -166,15 +164,6 @@ class _Audit:
     @property
     def deleted(self) -> str:
         return _quote(_deleted(self.candidate))
-
-
-def _coverage(delivery: ParsedDelivery) -> Window | None:
-    """The window a delivery speaks about, or None for the whole table."""
-    match delivery:
-        case WindowDelivery(window=window) | TimestampChanges(coverage=WindowCoverage(window)):
-            return window
-        case _:
-            return None
 
 
 def _deleted(candidate: str) -> str:
@@ -915,18 +904,22 @@ class DuckDBStore:
 
     @_synchronized
     def publish_together(self, group: Group, entries: tuple[tuple[str, Receipt], ...]) -> None:
-        """Publish the accepted deliveries of a group in one transaction."""
-        if not entries or any(not receipt.accepted or receipt.replayed for _, receipt in entries):
-            raise StoreError("a group publishes accepted receipts only")
-        if any(candidate not in self._checked for candidate, _ in entries):
-            raise StoreError("publication requires a checked candidate")
-        if sorted(self._checked[candidate].contract.table for candidate, _ in entries) != sorted(
-            group.tables
-        ):
-            raise StoreError("a group publishes one candidate per table of the group")
+        """Publish the accepted deliveries of a group in one transaction; any refusal releases them."""
         key = (group.references, frozenset(candidate for candidate, _ in entries))
-        if group.references and key not in self._references:
-            raise StoreError("references must be checked on these candidates before they publish")
+        try:
+            if not entries or any(not receipt.accepted or receipt.replayed for _, receipt in entries):
+                raise StoreError("a group publishes accepted receipts only")
+            if any(candidate not in self._checked for candidate, _ in entries):
+                raise StoreError("publication requires a checked candidate")
+            tables = sorted(self._checked[candidate].contract.table for candidate, _ in entries)
+            if tables != sorted(group.tables):
+                raise StoreError("a group publishes one candidate per table of the group")
+            if group.references and key not in self._references:
+                raise StoreError("references must be checked on these candidates before they publish")
+        except BaseException:
+            for candidate, _ in entries:
+                self.abort(candidate)
+            raise
         alone = tuple(
             Gate.evaluate(
                 self._checked[candidate].base,
@@ -947,7 +940,8 @@ class DuckDBStore:
         try:
             if self._transaction is not None:
                 raise StoreError("a publication transaction is already open")
-            if len({self._checked[candidate].contract.table for candidate in candidates}) != len(candidates):
+            tables = [self._checked[candidate].contract.table for candidate in candidates]
+            if len(set(tables)) != len(tables):
                 raise StoreError("a publication names each table once")
             plans = [self._authorize(candidate, receipt, joint) for candidate, receipt in entries]
             self._open(candidates)
@@ -1000,7 +994,7 @@ class DuckDBStore:
 
     @_synchronized
     def check_references(self, group: Group, candidates: Mapping[str, str]) -> Check:
-        """Count the rows each reference would leave without a parent once every candidate is published."""
+        """For each reference an orphan would disprove, find the child rows left without a parent row."""
         if self._transaction is not None:
             raise StoreError("publish or abort the existing candidate first")
         if set(candidates) != set(group.tables):
@@ -1013,54 +1007,74 @@ class DuckDBStore:
                 or not all(c.passed for c in checked.checks)
             ):
                 raise StoreError("references need candidates that passed their checks")
-        problems: list[str] = []
+        after = {
+            table: self._checked[candidate].base.apply(self._candidates[candidate].manifest)
+            for table, candidate in candidates.items()
+        }
+        outcomes: list[str] = []
+        orphaned = False
         self._open(tuple(candidates.values()))
         try:
             for candidate in candidates.values():
                 manifest = self._candidates[candidate].manifest
                 self._write_rows(candidate, ApplyPlan.build(self._checked[candidate].contract, manifest))
             for reference in group.references:
-                problem = self._orphans(reference, group, candidates[reference.table])
-                if problem is not None:
-                    problems.append(f"{reference}: {problem}")
+                child = self._candidates[candidates[reference.table]].manifest
+                reason = group.unchecked(reference, after, child)
+                held, outcome = (
+                    (True, f"not checked, {reason}") if reason else self._orphans(reference, group, child)
+                )
+                orphaned |= not held
+                outcomes.append(f"{reference}: {outcome}")
         finally:
             interruption = self._rollback()
             if interruption is not None and not isinstance(interruption, Exception):
                 raise interruption
-        result = Check(
-            "references", not problems, "; ".join(problems) or "every reference names a parent row"
-        )
+        result = Check("references", not orphaned, "; ".join(outcomes))
         self._references[group.references, frozenset(candidates.values())] = result
         return result
 
-    def _orphans(self, reference: Reference, group: Group, candidate: str) -> str | None:
-        """Rows in the child's delivered coverage whose reference names no parent row."""
+    def _orphans(self, reference: Reference, group: Group, manifest: Manifest) -> tuple[bool, str]:
+        """Whether every child row in the delivered coverage names a parent row, inside the trial."""
         child, parent = group.contract(reference.table), group.contract(reference.parent)
         columns = dict(self._description(child.table))
         keys = dict(self._description(parent.table))
         missing = [name for name in reference.columns if name not in columns]
         if missing:
-            return f"{child.table} has no column {', '.join(missing)}"
+            return False, f"{child.table} has no column {', '.join(missing)}"
         for name, key in zip(reference.columns, parent.key, strict=True):
             if _logical(columns[name]) != _logical(keys[key]):
-                return f"{name} and {parent.table}.{key} have different types"
+                return False, f"{name} and {parent.table}.{key} have different types"
+        named = ", ".join(f"c.{_quote(name)}" for name in reference.columns)
         present = " AND ".join(f"c.{_quote(name)} IS NOT NULL" for name in reference.columns)
         match = " AND ".join(
             f"p.{_quote(key)}=c.{_quote(name)}"
             for name, key in zip(reference.columns, parent.key, strict=True)
         )
-        sql = (
-            f"SELECT count(*) FROM {_quote(child.table)} c WHERE {present} "
+        where = (
+            f"FROM {_quote(child.table)} c WHERE {present} "
             f"AND NOT EXISTS (SELECT 1 FROM {_quote(parent.table)} p WHERE {match})"
         )
-        window = _coverage(self._candidates[candidate].manifest.check(child))
+        window = coverage_window(manifest.check(child))
         params: list[object] = []
         if window is not None:
             assert child.window_column is not None
-            sql += f" AND c.{_quote(child.window_column)} BETWEEN ? AND ?"
+            where += f" AND c.{_quote(child.window_column)} BETWEEN ? AND ?"
             params.extend(window)
-        orphans = int(self._one(sql, params)[0])
-        return f"rows without a parent row in {parent.table}: {orphans}" if orphans else None
+        orphans = int(self._one(f"SELECT count(*) {where}", params)[0])
+        if not orphans:
+            if window is None:
+                return True, "every row names a parent row"
+            return (
+                True,
+                f"every row with {child.window_column} from {window[0]} to {window[1]} names a parent row",
+            )
+        sample = self.connection.execute(
+            f"SELECT DISTINCT {named} {where} ORDER BY ALL LIMIT 3", params
+        ).fetchall()
+        values = ", ".join(str(row[0]) if len(row) == 1 else str(row) for row in sample)
+        names = ", ".join(reference.columns)
+        return False, f"rows without a parent row in {parent.table}: {orphans}, naming {names} {values}"
 
     def _publish_rejection(self, candidate: str | None, receipt: Receipt) -> None:
         self._require_committed_read()

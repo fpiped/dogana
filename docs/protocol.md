@@ -293,9 +293,10 @@ remains visible even when recent patches hide old deletion knowledge.
 
 `Claims.combine` takes those minima across tables. These are lower bounds on input evidence dates,
 not completeness or deletion statements about one common snapshot or a joined result. Regions at
-different dates may form a table exact at no instant. Common-time evidence, `exact_as_of` in
-[Tables together](#tables-together), is needed to propagate row guarantees through queries; with
-only the minima, monotone queries such as filters, joins and unions keep lower bounds. Negation (`NOT EXISTS`,
+different dates may form a table exact at no instant. Without a common instant the minima give no
+row guarantee for any query over several tables or regions, monotone ones included: a later read can
+miss a row deleted after an earlier one and carry a later version of a row. That instant is
+`exact_as_of`, in [Tables together](#tables-together). Negation (`NOT EXISTS`,
 anti-joins, difference) swaps the completeness and deletion requirements for the negated input. With
 exact items and complete-but-patched movements at the same boundary, "items with no movement" is
 valid but possibly incomplete: a retained deleted movement hides an item. Exact aggregates need
@@ -318,24 +319,35 @@ becomes the manifest boundary only when extraction proves it. Push and pull use 
 ## Tables together
 
 `Claims.exact_as_of` is the instant `p` at which every region of the claims has the dates `(p, p)`,
-or `None` when there is none. On one table's claims it states that the table equals the source at
-`p`; on claims combined across tables, that every one of them does. Freshness does not affect it;
-`state` still reports an expired region.
+or `None` when there is none. Table dates are minima, so equal table dates do not imply it: a window
+proven later than the rest of its table gives equal minima and no exact instant. On one table's
+claims `exact_as_of` states that the table equals the source at `p`; on claims combined across
+tables, that every one of them does. Freshness does not affect it; `state` still reports an expired
+region.
 
 If every region a query reads, in every table it reads, equals the source at the same instant `p`,
 the query answers as the source would have at `p`: filters, joins, unions, negation and exact
 aggregates alike, and every rule the source keeps between its tables, such as each line naming an
-order, holds between the published tables. The query cannot tell its inputs from the source at `p`.
-The premise is each table's own: each `produced_at` is a consistent read at that instant (see the
-trust model), and dogana cannot verify that two files came from one source transaction. No common
-store transaction is needed for this guarantee: two tables each read with its ledger under one
-publication identity (obligation 6), each exact at `p`, are consistent however they were published.
+order, holds between the published tables. The premise, which dogana cannot verify, is that every
+file comes from one consistent read of the source at `p`, stamped with that read's instant. One read
+means one snapshot covering every table. A transaction at READ COMMITTED, the default of Postgres,
+Oracle and SQL Server, takes a new snapshot for each statement and is not one read. Use REPEATABLE
+READ, SERIALIZABLE or one exported snapshot shared by parallel workers in Postgres, `START
+TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL, a read-only transaction or queries `AS OF` one SCN in
+Oracle, SNAPSHOT isolation in SQL Server. Separate export jobs are not one read, and stamping them
+with one `produced_at`, for example through one date in their filenames, fabricates the instant.
+No common store transaction is needed for the guarantee: two tables each read with its ledger under
+one publication identity (obligation 6), each exact at `p`, are consistent however they were
+published.
 
-`Group(contracts, references=())` names tables read together, each once. `Group.claims(ledgers,
-now, windows=None)` combines their claims, each clipped to an optional window; its `exact_as_of` is
-the group's common instant. `Reference(table, columns, parent)` states that every live row of
-`table` whose `columns` are all non-null names, in that order, the key of a row of `parent`; it has
-one column per key column of the parent, and both tables belong to the group.
+`Group(contracts, references=())` names tables read together, each once whatever the letter case,
+since many stores resolve table names regardless of case. Give each table one group: a parent with
+several children forms one group holding all of them, because a table accepted in one group does not
+replay in another. `Group.claims(ledgers, now, windows=None)` combines the tables' claims, each
+clipped to an optional window; its `exact_as_of` is the group's common instant. `Reference(table,
+columns, parent)` states that every live row of `table` whose `columns` are all non-null names, in
+that order, the key of a row of `parent`; it has one column per key column of the parent, and both
+tables belong to the group.
 
 `deliver_together(store, group, deliveries, now)` takes one `(source, manifest)` per table of the
 group and decides them as one delivery:
@@ -344,47 +356,58 @@ group and decides them as one delivery:
    `hold` and `check`.
 2. The `together` check passes when every manifest has the same `produced_at` and every table is
    accepted on its own.
-3. With references and a passed `together` check, the store answers one `references` check. On the
-   rows that would result from every table's plan, each row of the child inside the child
-   delivery's coverage, with its reference columns all non-null, names a row of the parent. A child
-   row outside that coverage was not read at `p` and is not checked.
+3. With references and a passed `together` check, the store answers one `references` check on the
+   rows that would result from every table's plan. `Group.unchecked` names the references the
+   delivery cannot test: a reference is tested only when the child's delivered coverage ends exact
+   at `p` and the parent is complete as of `p` over its whole domain. Then every child row in that
+   coverage was live at `p` and every row it can name is present, so a row whose reference columns
+   are all non-null and name no parent row proves the premise false: the files were not one read at
+   `p`, or the source does not keep the rule. An untested reference passes, and the check's detail
+   says why, so an honest delivery is never refused for a reference.
 4. Both checks join every table's receipt, through `Gate.evaluate(..., joint=checks)`. If any
    receipt is a rejection, every table is rejected and records its refusal; otherwise
    `publish_together` publishes every table's rows, ledger and receipt in one atomic step.
 
 Each table keeps its own receipts, publication chain and reconstruction, and a group adds no wire
-kind. A group replays whole: when every manifest is already accepted, every receipt replays; when
-only some are, accepted on their own, the others are refused. A failure after the commit returns the
-committed receipts, and a commit that published only some tables raises `InconsistentPublication`.
+kind. A group replays whole or is refused whole: when every manifest was accepted in one publication
+of this group, every receipt replays; when any was accepted otherwise, alone or in another group,
+every table is refused, and the group needs a new read. A failure after the commit returns the
+committed receipts. When only some tables are accepted after a failure, a commit of this delivery
+that published part of the group raises `InconsistentPublication`, and a table that another delivery
+accepted meanwhile raises `StoreError`.
 
-The `together` check does not require the result to be exact; the shapes decide that. A table
-reaches `(p, p)` with a complete delivery, or with changes carrying tombstones whose `since` is no
-later than its deletion date. A table without changes still delivers an empty changes file at `p`.
+The `together` check does not require the result to be exact; the shapes decide that, over what
+each delivery covers: a full delivery everywhere, a window delivery inside its window, so pass the
+windows to `Group.claims`. A covered region reaches `(p, p)` with a complete delivery or a keyless
+append, with timestamp tombstones whose `since` is no later than its deletion date, or with
+generation or sequence tombstones when its two dates were equal. A table without changes still
+delivers an empty changes file at `p`.
+
 Atomic publication is for availability, not for the guarantee: without it, the current tables have
 no common instant between two publications, and a refused table leaves the others ahead. With it,
 the common instant moves from one boundary to the next in one step, and a refused delivery leaves
 every table where it was.
 
-The references check refuses no honest delivery when every parent a checked child row can name lies
-in a region of the parent exact at `p`: the parent delivered over its whole domain, or both tables
-windowed by the same immutable column (lines carrying their order date) and delivered over the same
-window. Otherwise a parent outside the parent's delivered coverage can be missing, and an honest
-delivery can be refused. A reference needs child shapes that carry deletions: when the source
-deletes an order with its lines, a lines delivery without tombstones keeps them, and the group is
-refused until a delivery removes them.
+A reference therefore needs a child delivered with its deletions and a parent delivered over its
+whole domain. A child delivered without tombstones, or a parent delivered by windows, leaves the
+reference untested: the group can be accepted with orphan rows, and its `exact_as_of` tells the
+reader that it is not one instant. A tested reference covers every child row in the coverage, not
+only the delivered ones, so the store scans the child and joins it with the parent on each delivery.
 
 `plan_together(group, ledgers, at_least, windows=None)` returns no request when the group is already
 exact at an instant no earlier than `at_least`. Otherwise it returns one request per table, all with
 the same `until`, later than every table's evidence and no earlier than `at_least`, each the
-cheapest read that establishes `(until, until)` over its window. The extractor reads every table in
-one source transaction and stamps every manifest with that transaction's instant.
+cheapest read that establishes `(until, until)` over its window. `until` is the earliest admissible
+boundary: the extractor reads every table in one consistent snapshot taken at or after it, and
+stamps every manifest with that snapshot's instant.
 
 `TogetherStore` extends `Store` with `check_references(group, candidates)` and
 `publish_together(group, entries)`, where `candidates` maps each table to its checked candidate and
 `entries` pairs one candidate per table of the group with its accepted receipt. The store must:
 
 1. answer the references check on the rows the candidates would produce, without changing published
-   rows, and only for candidates that passed their own checks;
+   rows, only for candidates that passed their own checks, and only for the references
+   `Group.unchecked` leaves to test;
 2. verify every receipt against its own checks, the `together` check recomputed from them, and,
    when the group has references, the references check it answered for that group's references on
    exactly those candidates after their last check; without that answer, refuse to publish;
