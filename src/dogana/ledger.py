@@ -460,6 +460,11 @@ class Ledger(Wire):
         )
 
     def apply(self, manifest: Manifest) -> Ledger:
+        if not isinstance(manifest, Manifest):
+            raise TypeError(
+                f"Ledger.apply takes a Manifest, not {type(manifest).__name__}; "
+                "rows reach a store through dogana.deliver"
+            )
         try:
             delivery = manifest.check(self.contract)
             window = coverage_window(delivery)

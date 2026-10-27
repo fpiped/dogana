@@ -35,7 +35,10 @@ class Wire:
             value = getattr(self, field.name)
             annotation = hints[field.name]
             if not _matches(value, annotation, lists=True):
-                raise InvalidContract(f"invalid value for {type(self).__name__}.{field.name}={value!r}")
+                expected = str(annotation).replace("typing.", "").replace("dogana.", "")
+                raise InvalidContract(
+                    f"invalid value for {type(self).__name__}.{field.name}={value!r}: expected {expected}"
+                )
             object.__setattr__(self, field.name, _normalize(value, annotation))
 
     def _document(self, *, identity: bool) -> dict[str, JSONValue]:

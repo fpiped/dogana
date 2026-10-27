@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, State
+from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, Shape, State
 from tests.support import FEED, FULL, SINCE, WINDOW, at
 from tests.support import accounting_contract as contract
 
@@ -635,3 +635,9 @@ def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash()
         )
         == current
     )
+
+
+def test_apply_takes_a_manifest_and_says_where_rows_go():
+    c = Contract("t", key=("id",), types={"id": "int"}, shapes={"full": Shape.full()})
+    with pytest.raises(TypeError, match="takes a Manifest, not list; rows reach a store"):
+        Ledger(c).apply([{"id": 1}])

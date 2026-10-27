@@ -49,13 +49,13 @@ from dogana.errors import (
     StoreError,
 )
 from dogana.reference._sources import (
+    Rows,
     _column_hash,
     _columns,
     _decimal,
     _file_digest,
     _FileSource,
     _published,
-    _RowSource,
     _snapshot,
 )
 
@@ -530,7 +530,7 @@ class DuckDBStore:
         if self._transaction is not None:
             raise StoreError("publish or abort the existing candidate first")
         candidate = "__dogana_candidate_" + uuid4().hex
-        columns = source.columns if isinstance(source, (_FileSource, _RowSource)) else None
+        columns = source.columns if isinstance(source, (_FileSource, Rows)) else None
         self._candidates[candidate] = _Candidate(manifest, contract, columns=columns)
         try:
             if isinstance(source, (str, PathLike)):
@@ -577,7 +577,7 @@ class DuckDBStore:
                     )
                 finally:
                     self.connection.unregister(relation)
-            elif isinstance(source, _RowSource):
+            elif isinstance(source, Rows):
                 self._hold_rows(candidate, source.rows, source.columns)
             elif isinstance(source, Iterable) and not isinstance(source, (bytes, Mapping)):
                 self._hold_rows(candidate, source)

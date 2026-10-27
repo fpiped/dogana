@@ -31,7 +31,8 @@ symbolic link, and copied into the store's private temporary folder while it is 
 uses that copy, so a file changed or replaced afterwards is never read.
 `hold(source, manifest, contract)` stages the candidate and inspects its column names and types.
 Bare CSV paths and row dictionaries use inferred types; `Contract.types` is not a full input schema.
-Row mappings cannot infer types from an empty input or an all-null column. For typed CSV,
+Row mappings cannot infer types from an empty input or an all-null column; `Rows(rows, columns)`
+from `dogana.reference.duckdb` supplies the types, so an empty API poll is still a delivery. For typed CSV,
 use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
 including for files with only nulls or no rows. Parquet retains its physical schema for validation.
 Successful candidates normalize to

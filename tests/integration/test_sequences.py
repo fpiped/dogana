@@ -21,7 +21,7 @@ from dogana import (
     Region,
     Shape,
 )
-from dogana.reference._sources import _FileSource, _RowSource
+from dogana.reference._sources import Rows, _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file
 
@@ -101,7 +101,7 @@ def baseline(store, c):
         schema_hash=c.schema_hash,
         generation="g0",
     )
-    receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
+    receipt = store.deliver(c, Rows(rows, RECORD_COLUMNS), manifest, now=at(30))
     assert receipt.accepted
     return receipt, {row["id"]: row for row in rows}
 
@@ -161,7 +161,7 @@ def test_every_admitted_shape_publishes_its_declared_row_effect(name, live, dele
     with DuckDBStore(":memory:") as store:
         first, previous = baseline(store, c)
         rows, manifest = attempt(c, first.ledger, 1, name, live, deleted, low, high, "valid")
-        receipt = store.deliver(c, _RowSource(rows, DELIVERED), manifest, now=at(30))
+        receipt = store.deliver(c, Rows(rows, DELIVERED), manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         expected = expected_rows(previous, rows, manifest, c.shape(name))
         assert store.read(c.table) == [expected[key] for key in sorted(expected)]
@@ -188,7 +188,7 @@ def test_delivery_histories_preserve_rows_evidence_and_old_publications(attempts
                 assert store.load_ledger(c) == before
             else:
                 rows, manifest = attempt(c, before, step, name, live, deleted, low, high, issue)
-                receipt = store.deliver(c, _RowSource(rows, DELIVERED), manifest, now=at(30))
+                receipt = store.deliver(c, Rows(rows, DELIVERED), manifest, now=at(30))
                 assert receipt.accepted is (issue == "valid"), receipt.checks
                 assert store.receipts(c.table) == (*retained, receipt)
                 if issue == "valid":
@@ -235,7 +235,7 @@ def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(att
     with DuckDBStore(":memory:") as store:
         first = store.deliver(
             c,
-            _RowSource([], columns),
+            Rows([], columns),
             Manifest(
                 c.table,
                 shape="log",
@@ -260,7 +260,7 @@ def test_append_intervals_reject_gaps_and_overlaps_without_losing_duplicates(att
                 schema_hash=c.schema_hash,
             )
             rows = [{"event": value} for value in batch]
-            receipt = store.deliver(c, _RowSource(rows, columns), manifest, now=at(30))
+            receipt = store.deliver(c, Rows(rows, columns), manifest, now=at(30))
             assert receipt.accepted is (offset == 0), receipt.checks
             assert store.receipts(c.table) == (*retained, receipt)
             if offset == 0:

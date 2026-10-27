@@ -475,3 +475,8 @@ def test_only_tombstone_shapes_count_tombstones_and_an_empty_interval_has_none()
         c.manifest("since", at(19), since=at(18), tombstones=1)
     with pytest.raises(InvalidContract, match="empty interval"):
         c.manifest("since", at(19), since=at(19), tombstones=1)
+
+
+def test_a_wrong_field_type_names_the_type_expected():
+    with pytest.raises(InvalidContract, match=r"Contract\.key='id': expected tuple\[str, \.\.\.\]"):
+        Contract("t", key="id", types={"id": "int"}, shapes={"full": Shape.full()})

@@ -157,7 +157,9 @@ class _FileSource(PathLike[str]):
 
 
 @dataclass(frozen=True)
-class _RowSource:
+class Rows:
+    """Row mappings with their column types, so even an empty or all-null batch has a schema."""
+
     rows: Iterable[Mapping[str, object]]
     columns: Mapping[str, str]
 

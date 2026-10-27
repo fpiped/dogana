@@ -16,7 +16,7 @@ from tests.support import at, schema_hash
 
 pytest.importorskip("duckdb")
 
-from dogana.reference._sources import _RowSource
+from dogana.reference._sources import Rows
 from dogana.reference.duckdb import DuckDBStore
 
 COLUMNS = {"id": "int", "seq": "int", "value": "str"}
@@ -137,12 +137,12 @@ def test_the_store_refuses_rows_whose_cursor_is_outside_the_declared_interval():
     c = keyed()
     with DuckDBStore(":memory:") as store:
         rows = [{"id": 1, "seq": 90, "value": "a"}]
-        assert store.deliver(c, _RowSource(rows, COLUMNS), full(c, position=90, rows=1), now=at(30)).accepted
+        assert store.deliver(c, Rows(rows, COLUMNS), full(c, position=90, rows=1), now=at(30)).accepted
         inside = [{"id": 1, "seq": 95, "value": "b"}, {"id": 2, "seq": 100, "value": "c"}]
-        accepted = store.deliver(c, _RowSource(inside, COLUMNS), changes(c, 90, 100, rows=2), now=at(30))
+        accepted = store.deliver(c, Rows(inside, COLUMNS), changes(c, 90, 100, rows=2), now=at(30))
         assert accepted.accepted, accepted.checks
         outside = [{"id": 3, "seq": 99, "value": "d"}]
-        refused = store.deliver(c, _RowSource(outside, COLUMNS), changes(c, 100, 110, 20, rows=1), now=at(30))
+        refused = store.deliver(c, Rows(outside, COLUMNS), changes(c, 100, 110, 20, rows=1), now=at(30))
         assert not refused.accepted
         assert any(check.name == "rows_in_interval" and not check.passed for check in refused.checks)
         assert store.load_ledger(c).generation == 100

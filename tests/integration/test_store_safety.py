@@ -9,7 +9,7 @@ pytest.importorskip("duckdb")
 
 from dogana import Contract, Gate, Ledger, Manifest, deliver
 from dogana.errors import InconsistentPublication, StoreError
-from dogana.reference._sources import _FileSource, _RowSource
+from dogana.reference._sources import Rows, _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import COLUMNS, FULL, SINCE, at, contract, schema_hash
@@ -290,7 +290,7 @@ def test_one_batched_delete_applies_many_composite_tombstones(tmp_path):
             tombstones=499,
         )
         deleted = [{"a": i, "b": str(i), "deleted": True} for i in range(499)]
-        assert deliver(store, c, _RowSource(deleted, {**columns, "deleted": "bool"}), m, at(20)).accepted
+        assert deliver(store, c, Rows(deleted, {**columns, "deleted": "bool"}), m, at(20)).accepted
         deletes = [s for s in trace.statements if s.startswith('DELETE FROM "pairs"')]
         assert len(deletes) == 2
         assert "_deleted" in deletes[-1]
@@ -376,7 +376,7 @@ def test_explicit_row_columns_preserve_empty_and_all_null_candidate_types(rows):
     c = Contract("amounts", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     manifest = c.manifest("full", at(18), rows=len(rows))
     with DuckDBStore(":memory:") as store:
-        receipt = deliver(store, c, _RowSource(rows, columns), manifest, at(20))
+        receipt = deliver(store, c, Rows(rows, columns), manifest, at(20))
         assert receipt.accepted, receipt.checks
         assert store.read_publication(c) == (rows, receipt.ledger)
         assert dict(store._description(c.table)) == {"id": "BIGINT", "amount": "DOUBLE"}

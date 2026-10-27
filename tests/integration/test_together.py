@@ -74,14 +74,14 @@ def test_a_delivery_together_carries_one_source_per_table():
     ],
 )
 def test_a_reference_the_rows_cannot_answer_refuses_the_group(tmp_path, lines, columns, problem):
-    from dogana.reference._sources import _RowSource
+    from dogana.reference._sources import Rows
 
     lines_contract = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
     group = Group((ORDERS, lines_contract), GROUP.references)
     with DuckDBStore(":memory:") as store:
         deliveries = {
             "orders": full(ORDERS, [order(1)]),
-            "order_lines": (_RowSource(lines, columns), full(lines_contract, lines)[1]),
+            "order_lines": (Rows(lines, columns), full(lines_contract, lines)[1]),
         }
         receipts = deliver_together(store, group, deliveries, at(20))
         failed = [c for c in receipts["orders"].checks if not c.passed]
@@ -214,7 +214,7 @@ def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypa
 
 
 def test_a_replay_is_one_delivery_of_these_files_under_these_references():
-    from dogana.reference._sources import _RowSource
+    from dogana.reference._sources import Rows
 
     shapes = {"full": FULL, "daily": WINDOW}
     # Each window delivery empties its day, so shrink tolerance stays out of the way.
@@ -225,7 +225,7 @@ def test_a_replay_is_one_delivery_of_these_files_under_these_references():
     def daily(c, columns, day):
         window = (at(day).date(), at(day).date())
         manifest = Manifest(c.table, "daily", at(19), window=window, rows=0, schema_hash=c.schema_hash)
-        return _RowSource([], columns), manifest
+        return Rows([], columns), manifest
 
     with DuckDBStore(":memory:") as store:
         baseline = {"orders": full(orders, [order(1)]), "order_lines": full(lines, [line(10, 1)])}
@@ -342,7 +342,7 @@ def test_a_window_to_the_end_of_the_dates_covers_values_past_what_python_can_nam
     [([None, None], "str"), ([1.0, None], "float")],
 )
 def test_a_reference_compares_values_not_type_names(values, kind):
-    from dogana.reference._sources import _RowSource
+    from dogana.reference._sources import Rows
 
     columns = {**LINE_COLUMNS, "order_id": kind}
     lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
@@ -350,7 +350,7 @@ def test_a_reference_compares_values_not_type_names(values, kind):
     with DuckDBStore(":memory:") as store:
         deliveries = {
             "orders": full(ORDERS, [order(1)]),
-            "order_lines": (_RowSource(rows, columns), full(lines, rows)[1]),
+            "order_lines": (Rows(rows, columns), full(lines, rows)[1]),
         }
         receipts = deliver_together(store, Group((ORDERS, lines), GROUP.references), deliveries, at(20))
         assert all(r.accepted for r in receipts.values()), [
@@ -389,7 +389,7 @@ def test_the_log_is_unreadable_while_a_transaction_is_unresolved():
 
 @pytest.mark.parametrize(("value", "names"), [(9007199254740992.0, False), (1.5, False), (2.0, True)])
 def test_a_float_reference_names_an_int_key_only_with_its_exact_integer(value, names):
-    from dogana.reference._sources import _RowSource
+    from dogana.reference._sources import Rows
 
     columns = {**LINE_COLUMNS, "order_id": "float"}
     lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
@@ -398,7 +398,7 @@ def test_a_float_reference_names_an_int_key_only_with_its_exact_integer(value, n
     with DuckDBStore(":memory:") as store:
         deliveries = {
             "orders": full(ORDERS, parents),
-            "order_lines": (_RowSource(rows, columns), full(lines, rows)[1]),
+            "order_lines": (Rows(rows, columns), full(lines, rows)[1]),
         }
         receipts = deliver_together(store, Group((ORDERS, lines), GROUP.references), deliveries, at(20))
         assert all(r.accepted for r in receipts.values()) is names
@@ -441,9 +441,9 @@ def test_an_int_window_bound_past_bigint_covers_every_stored_value():
         ).accepted
         window = (0, 2**127)
         empty = Manifest("moves", "range", at(19), window=window, rows=0)
-        from dogana.reference._sources import _RowSource
+        from dogana.reference._sources import Rows
 
-        assert deliver(store, moves, _RowSource([], columns), empty, at(20)).accepted
+        assert deliver(store, moves, Rows([], columns), empty, at(20)).accepted
         assert store.read("moves") == []
 
 

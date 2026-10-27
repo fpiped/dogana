@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("duckdb")
 
 from dogana import Contract, Ledger, Shape, deliver, next_extraction
-from dogana.reference._sources import _RowSource
+from dogana.reference._sources import Rows
 from dogana.reference.duckdb import DuckDBStore
 from tests.support import at, schema_hash
 
@@ -80,7 +80,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         next_batch = c.manifest(
             "cdc", request.until, since=request.since, generation="log:104", rows=0, tombstones=1
         )
-        gone = _RowSource([{"id": 2, "value": None, "deleted": True}], {**columns, "deleted": "bool"})
+        gone = Rows([{"id": 2, "value": None, "deleted": True}], {**columns, "deleted": "bool"})
         final = deliver(restarted, c, gone, next_batch, now=at(20))
         assert final.accepted
         assert (final.claims.complete_as_of, final.claims.deletions_as_of) == (at(20), at(20))

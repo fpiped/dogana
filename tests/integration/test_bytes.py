@@ -217,9 +217,21 @@ def test_a_csv_decimal_is_read_exactly_or_refused(tmp_path, value, accepted):
 def test_rows_carry_decimals_into_a_declared_decimal_column():
     from decimal import Decimal
 
-    from dogana.reference._sources import _RowSource
+    from dogana.reference._sources import Rows
 
-    rows = _RowSource([{"id": 1, "amount": Decimal("0.10")}], MONEY)
+    rows = Rows([{"id": 1, "amount": Decimal("0.10")}], MONEY)
     with DuckDBStore(":memory:") as store:
         assert deliver(store, PRICED, rows, _priced(1), at(19)).accepted
         assert store.read("t") == [{"id": 1, "amount": Decimal("0.10")}]
+
+
+def test_an_empty_poll_with_typed_rows_is_a_delivery():
+    from dogana import Shape
+    from dogana.reference.duckdb import Rows
+
+    contract = replace(C, shapes={"full": FULL, "changes": Shape.changes()})
+    with DuckDBStore(":memory:") as store:
+        full = Manifest("t", "full", at(18), rows=0, schema_hash=C.schema_hash)
+        assert deliver(store, contract, Rows([], COLUMNS), full, at(19)).accepted
+        poll = Manifest("t", "changes", at(19), since=at(18), rows=0, schema_hash=C.schema_hash)
+        assert deliver(store, contract, Rows([], COLUMNS), poll, at(19)).accepted
