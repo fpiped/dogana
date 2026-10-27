@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A tombstone's cursor value, when it carries one, must lie in the read interval like a live row's:
+  `rows_in_interval` refused a live row stamped outside `(since, produced_at]` but let a deletion
+  stamped there through. A null cursor on a tombstone stays allowed.
+- The check `window_stability` is renamed `window_present`, which is what it tests: every live row
+  has a window value, so it falls in a region. Receipts written by 0.4.0 keep the old name.
+
 ## 0.4.0 (2026-10-27)
 
 The store publishes exactly the bytes the sender hashed and counted, every delivery it cannot read

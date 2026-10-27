@@ -55,6 +55,7 @@ def split_rows(contract, rows):
 
 
 def check_rows(contract, manifest, rows, previous):
+    delivered = rows
     rows, deleted, unmarked = split_rows(contract, rows)
     columns = rows.columns
     schema_ok = contract.schema_hash is None or (
@@ -103,7 +104,7 @@ def check_rows(contract, manifest, rows, previous):
         and len(set(live + deleted)) == len(live) + len(deleted),
         "rows_in_window": all(inside(r) for r in rows)
         and all(k not in published or inside(published[k]) for k in live + deleted),
-        "window_stability": col is None or all(typed(row, col) for row in rows),
+        "window_present": col is None or all(typed(row, col) for row in rows),
         "shrink_tolerance": not covered
         or shrink is None
         or (len(covered) - len(rows)) / len(covered) <= shrink,
@@ -112,8 +113,13 @@ def check_rows(contract, manifest, rows, previous):
     if any(r.name == "rows_in_interval" for r in requirements):
         interval = cursor_interval(contract, manifest.check(contract))
         assert interval is not None
+        marker = contract.deleted_column
         outcomes["rows_in_interval"] = all(
             typed(row, cursor) and interval[0] < row[cursor] <= interval[1] for row in rows
+        ) and all(
+            row.get(cursor) is None or interval[0] < row[cursor] <= interval[1]
+            for row in delivered
+            if marker is not None and row.get(marker) is True
         )
     return tuple(Check(r.name, outcomes[r.name]) for r in requirements)
 

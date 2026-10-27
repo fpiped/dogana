@@ -43,7 +43,7 @@ def _description(source: object) -> str | None:
 
 
 def _replay(store: Store, contract: Contract, source: object, previous: Receipt, now: datetime) -> Receipt:
-    """A stored acceptance answers its manifest again, once any declared digest matches these bytes."""
+    """Decide a delivery of an accepted manifest: a replay once any declared digest matches these bytes."""
     manifest = previous.manifest
     if manifest.content_hash is None:
         return replace(previous, outcome=Outcome.REPLAYED)
@@ -54,15 +54,20 @@ def _replay(store: Store, contract: Contract, source: object, previous: Receipt,
         digest, detail = None, f"the delivered bytes no longer read: {exc}"
     if digest == manifest.content_hash:
         return replace(previous, outcome=Outcome.REPLAYED)
-    refused = Gate.reject(
+    return Gate.reject(
         _base(store, contract, manifest),
         manifest,
         (Check("content_hash", False, detail),),
         now=now,
         source=_description(source),
     )
-    _call(store.publish, None, refused)
-    return refused
+
+
+def _recorded(store: Store, receipt: Receipt) -> Receipt:
+    """Persist a refusal; an acceptance or a replay is already stored."""
+    if not receipt.accepted:
+        _call(store.publish, None, receipt)
+    return receipt
 
 
 def deliver(store: Store, contract: Contract, source: object, manifest: Manifest, now: datetime) -> Receipt:
@@ -72,7 +77,7 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
     ledger = _base(store, contract, manifest)
     previous = _call(store.accepted_receipt, manifest.identity)
     if previous is not None:
-        return _replay(store, contract, source, previous, now)
+        return _recorded(store, _replay(store, contract, source, previous, now))
     if not all(check.passed for check in Gate.preflight(ledger, manifest, now=now)):
         refused = Gate.evaluate(ledger, manifest, now=now, source=description)
         _call(store.publish, None, refused)
@@ -119,7 +124,9 @@ def _recover(
             _call(store.load_ledger, contract)
             receipt = cast(Receipt, committed[contract.table])
             mine = receipt == (attempted or {}).get(contract.table)
-            answers[contract.table] = receipt if mine else _replay(store, contract, source, receipt, now)
+            answers[contract.table] = (
+                receipt if mine else _recorded(store, _replay(store, contract, source, receipt, now))
+            )
         return answers
     if cleanup_error is not None:
         raise StoreError("candidate cleanup failed") from cleanup_error
@@ -272,14 +279,13 @@ def _replay_together(
     else:
         refused = {}
     for contract, source, manifest in members:
-        if contract.table in refused:
-            continue
-        refused[contract.table] = Gate.reject(
-            ledgers[contract.table],
-            manifest,
-            (Check("together", False, detail),),
-            now=now,
-            source=_description(source),
-        )
-        _call(store.publish, None, refused[contract.table])
+        if contract.table not in refused:
+            refused[contract.table] = Gate.reject(
+                ledgers[contract.table],
+                manifest,
+                (Check("together", False, detail),),
+                now=now,
+                source=_description(source),
+            )
+        _recorded(store, refused[contract.table])
     return {contract.table: refused[contract.table] for contract, _, _ in members}

@@ -689,6 +689,34 @@ class StoreConformance(_StoreScenarios):
         assert moved.accepted
         assert self._rows(factory, store, c.table) == [_row(1, 19)]
 
+    @pytest.mark.parametrize(("deleted_at", "accepted"), [(None, True), (19, True), (10, False)])
+    def test_a_tombstone_cursor_value_must_be_in_the_read_interval(
+        self, factory: StoreFactory, store: Store, deleted_at: int | None, accepted: bool
+    ) -> None:
+        columns = {**COLUMNS, "at": "datetime"}
+        c = Contract(
+            "moves",
+            ("id",),
+            {"full": FULL, "changes": CHANGES},
+            types={"id": "int", "at": "datetime", "deleted": "bool"},
+            cursor_column="at",
+            deleted_column="deleted",
+            schema_hash=_schema_hash(columns),
+            max_shrink_fraction=None,
+        )
+        marked = {**columns, "deleted": "bool"}
+        base = [{**_row(1), "at": _at(17), "deleted": False}, {**_row(2), "at": _at(17), "deleted": False}]
+        full = Manifest(c.table, "full", _at(18), rows=2, schema_hash=c.schema_hash)
+        assert _submit(store, c, factory.write_source(base, marked), full).accepted
+        stamp = None if deleted_at is None else _at(deleted_at)
+        tombstone = [{**dict.fromkeys(columns), "id": 2, "at": stamp, "deleted": True}]
+        changes = Manifest(
+            c.table, "changes", _at(20), since=_at(18), rows=0, tombstones=1, schema_hash=c.schema_hash
+        )
+        receipt = _submit(store, c, factory.write_source(tombstone, marked), changes)
+        assert receipt.accepted is accepted
+        assert [row["id"] for row in self._rows(factory, store, c.table)] == ([1] if accepted else [1, 2])
+
     def test_a_window_tombstone_cannot_delete_a_key_outside_its_coverage(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1083,7 +1111,7 @@ class StoreConformance(_StoreScenarios):
         refused = _submit(store, c, source, manifest)
         checks = {check.name: check for check in refused.checks}
         assert not checks["schema_hash"].passed
-        for name in ("key_integrity", "window_stability"):
+        for name in ("key_integrity", "window_present"):
             assert checks[name].passed is False
             assert checks[name].detail == "not evaluated"
 

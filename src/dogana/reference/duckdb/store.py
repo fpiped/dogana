@@ -770,8 +770,11 @@ class DuckDBStore:
         else:
             column = _quote(marker)
             unmarked = int(self._one(f"SELECT count(*) FROM {staging} WHERE {column} IS NULL")[0])
+            # A tombstone keeps its cursor value, so its read interval can be checked like a live row's.
+            named = contract.cursor_column
+            cursor = f", {_quote(named)}" if named is not None and named in columns else ""
             self.connection.execute(
-                f"CREATE TEMP TABLE {deleted} AS SELECT {keys} FROM {staging} WHERE {column}"
+                f"CREATE TEMP TABLE {deleted} AS SELECT {keys}{cursor} FROM {staging} WHERE {column}"
             )
             self.connection.execute(
                 f"CREATE OR REPLACE TEMP TABLE {staging} AS "
@@ -825,7 +828,7 @@ class DuckDBStore:
             "row_count": self._check_row_count,
             "schema_hash": self._check_schema_hash,
             "rows_in_window": self._check_rows_in_window,
-            "window_stability": self._check_window_stability,
+            "window_present": self._check_window_present,
             "rows_in_interval": self._check_rows_in_interval,
             "key_integrity": self._check_key_integrity,
             "shrink_tolerance": self._check_shrink_tolerance,
@@ -918,11 +921,11 @@ class DuckDBStore:
             "delivered rows and the published copies of their keys must be inside it",
         )
 
-    def _check_window_stability(self, audit: _Audit) -> Check:
+    def _check_window_present(self, audit: _Audit) -> Check:
         assert audit.contract.window_column is not None
         column = _quote(audit.contract.window_column)
         invalid = self._one(f"SELECT count(*) FROM {audit.staging} WHERE {column} IS NULL")[0]
-        return Check("window_stability", invalid == 0, "window values must be non-null")
+        return Check("window_present", invalid == 0, "window values must be non-null")
 
     def _check_rows_in_interval(self, audit: _Audit) -> Check:
         interval = cursor_interval(audit.contract, audit.delivery)
@@ -932,8 +935,16 @@ class DuckDBStore:
             f"SELECT count(*) FROM {audit.staging} WHERE {column} IS NULL OR {column} <= ? OR {column} > ?",
             list(interval),
         )[0]
+        if audit.tombstones:
+            invalid += self._one(
+                f"SELECT count(*) FROM {audit.deleted} WHERE {column} <= ? OR {column} > ?", list(interval)
+            )[0]
         low, high = interval
-        return Check("rows_in_interval", invalid == 0, f"cursor values must be inside ({low}, {high}]")
+        return Check(
+            "rows_in_interval",
+            invalid == 0,
+            f"cursor values must be inside ({low}, {high}]; a tombstone's may be null",
+        )
 
     def _check_shrink_tolerance(self, audit: _Audit) -> Check:
         contract = audit.contract

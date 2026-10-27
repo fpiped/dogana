@@ -186,7 +186,7 @@ class Gate:
         ):
             names.append("rows_in_window")
         if contract.window_column is not None:
-            names.append("window_stability")
+            names.append("window_present")
         if cursor_interval(contract, delivery) is not None:
             names.append("rows_in_interval")
         if contract.key:

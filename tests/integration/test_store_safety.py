@@ -76,7 +76,7 @@ def test_bad_csv_cast_reports_only_evaluated_predicates(tmp_path):
         outcomes = {check.name: check for check in receipt.checks}
         assert not receipt.accepted
         assert not outcomes["schema_hash"].passed
-        for name in ("key_integrity", "window_stability", "shrink_tolerance"):
+        for name in ("key_integrity", "window_present", "shrink_tolerance"):
             assert outcomes[name].detail == "not evaluated"
             assert not outcomes[name].passed
 

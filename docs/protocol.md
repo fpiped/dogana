@@ -257,10 +257,10 @@ matching. Keyless replacement does not match keys. The core describes operations
 | row_count | The candidate's live rows equal `manifest.rows`, its tombstone rows equal `manifest.tombstones`, and no deleted column is null. |
 | schema_hash | Candidate column hash and manifest hash equal `contract.schema_hash`; omitted when the contract hash is absent. |
 | rows_in_window | Every live window value is non-null and inside the declared closed window, and so is the window value of every published row that shares a key with a delivered row, live or tombstone. |
-| window_stability | Every live window-column value is non-null. |
+| window_present | Every live window-column value is non-null, so each row falls in a region. |
 | key_integrity | Every key, live or tombstoned, is non-null and appears once: a key cannot be both live and deleted. |
 | shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
-| rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. |
+| rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. A tombstone's cursor value may be null; when present it must be in the same interval. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes the store read equals it. |
 
 A key published in another region is refused rather than moved, since that region keeps its claim.
