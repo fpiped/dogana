@@ -13,24 +13,25 @@
 
 # Know which rows you can trust
 
-Not every source has change data capture. Most data still arrives as exports: a full dump on
-Sunday, the last 30 days every night, the rows changed since yesterday. Each export proves
-something different, almost none says what was deleted, and once the rows are loaded nobody
-remembers which proved what.
+Not every source has change data capture, a log of every insert, update and delete. Most data still arrives as exports: a full dump on
+Sunday, the orders of the last 30 days by order date every night, the rows changed since yesterday.
+Each export proves something different, almost none says what was deleted, and once the rows are
+loaded nobody remembers which proved what.
 
-dogana remembers, as two dates for every part of a table:
+dogana remembers, as two dates for every part of a table (the whole table, or a range of its order
+date or another date that never changes):
 
-- **complete as of**: nothing is missing;
-- **deletions as of**: nothing deleted is still here.
+- **complete as of**: every row the source had then is here;
+- **deletions as of**: no row the source deleted before then is still here.
 
 A delivery never raises a date above what it proves.
 
 ## How it works
 
 1. The receiver writes a **contract** for each table: its key and the kinds of delivery it accepts.
-2. Every file arrives with a **manifest**: which kind it is, as of when, how many rows, the SHA-256
-   of its bytes.
-3. A **gate** checks the file against both and refuses a contradiction whole.
+2. Every file arrives with a **manifest**: which kind it is, as of when, how many rows and deletions,
+   the SHA-256 of its bytes. Deleted keys travel in the file, as rows marked deleted.
+3. A **gate** checks the file against both, and rejects the whole file if any check fails.
 4. A **ledger** moves the two dates only as far as the delivery proves, and anyone reading the
    table can ask it how far to trust the rows.
 
@@ -64,8 +65,8 @@ print(
 patched: complete as of Monday, deletions as of Sunday
 ```
 
-Monday's changes brought every new and updated row, but no deletions: a row deleted at the
-source since Sunday may still be here. That sentence, for every table, is what dogana is for.
+Monday's changes brought every new and updated row, but no deletions: a row physically deleted at
+the source since Sunday may still be here. That is what patched means. That sentence, for every table, is what dogana is for.
 
 ## Use it
 
@@ -82,8 +83,8 @@ dogana is for everything else.
 
 ## Learn more
 
-- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a refused file, a replay.
-- [Concepts](https://fpiped.github.io/dogana/concepts/): every term, and what dogana is not.
+- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a rejected file, a replay, a deletion.
+- [Concepts](https://fpiped.github.io/dogana/concepts/): dogana from the beginning, every idea with an example.
 - [Protocol](https://fpiped.github.io/dogana/protocol/): the specification.
 - [Integrations](https://fpiped.github.io/dogana/integrations/): dlt, dbt, Iceberg, Spark, orchestrators.
 

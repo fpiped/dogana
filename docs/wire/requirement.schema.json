@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Requirement",
+  "$id": "urn:dogana:wire:2:Requirement",
   "title": "Requirement",
   "type": "object",
   "properties": {
@@ -9,18 +9,18 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "table": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
     },
     "complete_as_of": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
     },
     "deletions_as_of": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
         },
         {
           "type": "null"
@@ -30,7 +30,7 @@
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/window"
+          "$ref": "urn:dogana:wire:2:types#/$defs/window"
         },
         {
           "type": "null"

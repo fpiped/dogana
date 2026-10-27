@@ -1,6 +1,7 @@
 {
   "contract":{
     "cursor_column":null,
+    "deleted_column":null,
     "freshness":{
       "$seconds":604800
     },
@@ -19,7 +20,7 @@
         "deletions":"absence",
         "kind":"Shape",
         "lookback":null,
-        "version":1,
+        "version":2,
         "window_size":null
       }
     },
@@ -28,7 +29,7 @@
     "types":{
       "id":"int"
     },
-    "version":1,
+    "version":2,
     "window_column":null
   },
   "generation":null,
@@ -47,8 +48,8 @@
       "kind":"Region",
       "low":null,
       "low_open":false,
-      "version":1
+      "version":2
     }
   ],
-  "version":1
+  "version":2
 }

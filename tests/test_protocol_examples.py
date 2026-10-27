@@ -74,7 +74,7 @@ def test_wire_schemas_refuse_missing_unknown_and_invalid_version_fields(name, va
         missing = {key: item for key, item in value.items() if key != field}
         with pytest.raises(ValidationError):
             validate_wire(missing)
-    for change in ({"unknown": None}, {"version": True}, {"version": 2}):
+    for change in ({"unknown": None}, {"version": True}, {"version": 1}):
         with pytest.raises(ValidationError):
             validate_wire(value | change)
 

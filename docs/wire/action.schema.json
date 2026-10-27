@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Action",
+  "$id": "urn:dogana:wire:2:Action",
   "title": "Action",
   "type": "object",
   "properties": {
@@ -9,7 +9,7 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "operation": {
       "enum": [
@@ -23,23 +23,19 @@
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/window"
+          "$ref": "urn:dogana:wire:2:types#/$defs/window"
         },
         {
           "type": "null"
         }
       ]
-    },
-    "keys": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/keys"
     }
   },
   "required": [
     "kind",
     "version",
     "operation",
-    "window",
-    "keys"
+    "window"
   ],
   "additionalProperties": false,
   "allOf": [
@@ -54,7 +50,7 @@
       "then": {
         "properties": {
           "window": {
-            "$ref": "urn:dogana:wire:1:types#/$defs/window"
+            "$ref": "urn:dogana:wire:2:types#/$defs/window"
           }
         }
       },
@@ -62,27 +58,6 @@
         "properties": {
           "window": {
             "type": "null"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "operation": {
-            "not": {
-              "enum": [
-                "upsert",
-                "tombstone"
-              ]
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "keys": {
-            "maxItems": 0
           }
         }
       }

@@ -53,7 +53,7 @@ SINCE = Shape(
     checkpoint=Checkpoint.TIMESTAMP,
 )
 FEED = Shape(
-    coverage=Coverage.KEYS,
+    coverage=Coverage.ALL,
     completeness=Completeness.CHANGED_ONLY,
     deletions=Deletions.TOMBSTONE,
     checkpoint=Checkpoint.GENERATION,
@@ -105,11 +105,22 @@ def _at(day: int) -> datetime:
 def _contract(table: str = "moves", shapes: dict[str, Shape] | None = None, **kwargs: Any) -> Contract:
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "feed": FEED}
     window_column = "day" if any(s.coverage == "window" for s in shapes.values()) else None
+    deleted_column = "deleted" if any(s.deletions == "tombstone" for s in shapes.values()) else None
     kwargs.setdefault("max_shrink_fraction", None)
     kwargs.setdefault("schema_hash", _schema_hash(COLUMNS))
-    types = {"id": "int", **({"day": "date"} if window_column else {})}
+    types = {
+        "id": "int",
+        **({"day": "date"} if window_column else {}),
+        **({"deleted": "bool"} if deleted_column else {}),
+    }
     return Contract(
-        table=table, key=("id",), shapes=shapes, window_column=window_column, types=types, **kwargs
+        table=table,
+        key=("id",),
+        shapes=shapes,
+        window_column=window_column,
+        types=types,
+        deleted_column=deleted_column,
+        **kwargs,
     )
 
 
@@ -119,6 +130,22 @@ def _submit(store: Store, contract: Contract, source: object, manifest: Manifest
 
 def _row(key: int, day: int = 18, value: str = "current") -> dict[str, Any]:
     return {"id": key, "day": _at(day).date(), "value": value}
+
+
+def _marked(
+    contract: Contract,
+    shape: str,
+    rows: Sequence[Mapping[str, Any]],
+    tombstones: Sequence[int],
+    columns: Mapping[str, str],
+) -> tuple[list[dict[str, Any]], Mapping[str, str]]:
+    """Rows as a tombstone shape's file holds them: live rows unmarked, then a marked row per deleted key."""
+    marker = contract.deleted_column
+    if marker is None or contract.shape(shape).deletions is not Deletions.TOMBSTONE:
+        assert not tombstones
+        return [dict(row) for row in rows], columns
+    deleted = [{**dict.fromkeys(columns), "id": key, marker: True} for key in tombstones]
+    return [*({**row, marker: False} for row in rows), *deleted], {**columns, marker: "bool"}
 
 
 class _StoreScenarios:
@@ -142,16 +169,20 @@ class _StoreScenarios:
         day: int = 18,
         *,
         columns: Mapping[str, str] = COLUMNS,
+        tombstones: Sequence[int] = (),
         **kwargs: Any,
     ) -> Receipt:
+        """Deliver rows; a contract with a deleted column receives it, with a marked row per tombstone."""
         manifest = Manifest(
             table=contract.table,
             shape=shape,
             produced_at=_at(day),
             rows=len(rows),
             schema_hash=contract.schema_hash,
+            tombstones=len(tombstones),
             **kwargs,
         )
+        rows, columns = _marked(contract, shape, rows, tombstones, columns)
         receipt = _submit(store, contract, factory.write_source(rows, columns), manifest)
         self._fold(store, contract)
         return receipt
@@ -239,11 +270,7 @@ class StoreConformance(_StoreScenarios):
                     shape = "since" if c.table == "invoices" else "feed"
                     kwargs["since"] = _at(day - 1) if shape == "since" else f"g{day - 1}"
                     if shape == "feed":
-                        kwargs.update(
-                            generation=f"g{day}",
-                            keys=tuple((r["id"],) for r in incoming),
-                            tombstones=((1,),) if day == 19 else (),
-                        )
+                        kwargs.update(generation=f"g{day}", tombstones=(1,) if day == 19 else ())
                         expected[c.table].pop(1, None)
                 expected[c.table].update({r["id"]: r for r in incoming})
                 receipt = self._deliver(factory, store, c, incoming, shape, day, **kwargs)
@@ -355,14 +382,14 @@ class StoreConformance(_StoreScenarios):
             "full": {},
             "daily": {"window": (_at(18).date(), _at(19).date())},
             "since": {"since": _at(18)},
-            "feed": {"since": "g1", "generation": "g2", "keys": ((2,),), "tombstones": ((1,),)},
+            "feed": {"since": "g1", "generation": "g2", "tombstones": 1},
         }
         kwargs = choices[shape]
         rows = [_row(2, value="new")]
         manifest = Manifest(
             table=c.table, shape=shape, produced_at=_at(19), rows=1, schema_hash=c.schema_hash, **kwargs
         )
-        source = factory.write_source(rows, COLUMNS)
+        source = factory.write_source(*_marked(c, shape, rows, (1,) if shape == "feed" else (), COLUMNS))
         with factory.fail_after_rows(store):
             with pytest.raises(StoreError):
                 _submit(store, c, source, manifest)
@@ -441,8 +468,8 @@ class StoreConformance(_StoreScenarios):
         assert snapshot.accepted
         previous = snapshot
         for day, rows, tombstones, offset in (
-            (19, [_row(2, value="updated"), _row(3)], ((1,),), "log:103"),
-            (20, [], ((2,),), "log:104"),
+            (19, [_row(2, value="updated"), _row(3)], (1,), "log:103"),
+            (20, [], (2,), "log:104"),
         ):
             receipt = self._deliver(
                 factory,
@@ -453,7 +480,6 @@ class StoreConformance(_StoreScenarios):
                 day,
                 since=previous.ledger.generation,
                 generation=offset,
-                keys=tuple((r["id"],) for r in rows),
                 tombstones=tombstones,
             )
             assert receipt.accepted, receipt.checks
@@ -484,7 +510,6 @@ class StoreConformance(_StoreScenarios):
                 day,
                 since="restored:200",
                 generation="restored:201",
-                keys=((2,),),
             )
             assert not refused.accepted
             failures = [check for check in refused.checks if not check.passed]
@@ -504,8 +529,7 @@ class StoreConformance(_StoreScenarios):
             22,
             since="restored:201",
             generation="restored:202",
-            keys=((3,),),
-            tombstones=((2,),),
+            tombstones=(2,),
         ).accepted
         assert self._rows(factory, store, c.table) == [_row(3)]
 
@@ -614,35 +638,61 @@ class StoreConformance(_StoreScenarios):
             20,
             since=_at(18),
             window=(_at(19).date(), _at(19).date()),
-            tombstones=((1,),),
+            tombstones=(1,),
         )
         assert not refused.accepted
         assert store.load_ledger(c) == first.ledger
         assert self._rows(factory, store, c.table) == [_row(1), _row(2, 19)]
 
-    @pytest.mark.parametrize("keys,tombstones", [(((3,),), ()), ((), ((2,),))])
-    def test_live_key_enumeration_cannot_hide_or_delete_an_incoming_row(
-        self,
-        factory: StoreFactory,
-        store: Store,
-        keys: tuple[tuple[int, ...], ...],
-        tombstones: tuple[tuple[int, ...], ...],
+    def test_a_key_cannot_be_both_live_and_deleted_in_one_delivery(
+        self, factory: StoreFactory, store: Store
     ) -> None:
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)], generation="g1")
         refused = self._deliver(
-            factory,
-            store,
-            c,
-            [_row(2)],
-            "feed",
-            19,
-            since="g1",
-            generation="g2",
-            keys=keys,
-            tombstones=tombstones,
+            factory, store, c, [_row(2)], "feed", 19, since="g1", generation="g2", tombstones=(2,)
         )
         assert not refused.accepted
+        assert [check.name for check in refused.checks if not check.passed] == ["key_integrity"]
+        assert store.load_ledger(c) == first.ledger
+
+    @pytest.mark.parametrize("declared,delivered", [(0, (1,)), (1, ())])
+    def test_the_declared_tombstones_must_be_the_marked_rows(
+        self, factory: StoreFactory, store: Store, declared: int, delivered: tuple[int, ...]
+    ) -> None:
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)], generation="g1")
+        manifest = c.manifest("feed", _at(19), since="g1", generation="g2", rows=1, tombstones=declared)
+        rows, columns = _marked(c, "feed", [_row(2)], delivered, COLUMNS)
+        refused = _submit(store, c, factory.write_source(rows, columns), manifest)
+        assert [check.name for check in refused.checks if not check.passed] == ["row_count"]
+        assert store.load_ledger(c) == first.ledger
+        assert self._rows(factory, store, c.table) == [_row(1)]
+
+    @pytest.mark.parametrize("deleted,accepted", [(False, True), (True, False)])
+    def test_a_complete_delivery_may_carry_the_deleted_column_but_no_tombstone(
+        self, factory: StoreFactory, store: Store, deleted: bool, accepted: bool
+    ) -> None:
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)])
+        rows = [{**_row(1), "deleted": False}, {**_row(2), "deleted": deleted}]
+        manifest = c.manifest("full", _at(19), rows=2)
+        receipt = _submit(store, c, factory.write_source(rows, {**COLUMNS, "deleted": "bool"}), manifest)
+        assert receipt.accepted is accepted
+        assert [check.name for check in receipt.checks if not check.passed] == (
+            [] if accepted else ["row_count"]
+        )
+        assert self._rows(factory, store, c.table) == ([_row(1), _row(2)] if accepted else [_row(1)])
+        assert store.load_ledger(c) == (receipt.ledger if accepted else first.ledger)
+        self._fold(store, c)
+
+    def test_an_unmarked_row_is_neither_live_nor_deleted(self, factory: StoreFactory, store: Store) -> None:
+        c = _contract()
+        first = self._deliver(factory, store, c, [_row(1)], generation="g1")
+        manifest = c.manifest("feed", _at(19), since="g1", generation="g2", rows=1)
+        rows = [{**_row(2), "deleted": False}, {**_row(3), "deleted": None}]
+        refused = _submit(store, c, factory.write_source(rows, {**COLUMNS, "deleted": "bool"}), manifest)
+        assert [check.name for check in refused.checks if not check.passed] == ["row_count"]
         assert store.load_ledger(c) == first.ledger
 
     def test_an_empty_partition_decommissions_it_without_erasing_unknown_history(
@@ -951,8 +1001,8 @@ class StoreConformance(_StoreScenarios):
     ) -> None:
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
-        manifest = replace(first.manifest, produced_at=_at(19), keys=((1,),))
-        object.__setattr__(manifest, "tombstones", ((1,),))
+        manifest = replace(first.manifest, produced_at=_at(19))
+        object.__setattr__(manifest, "window", (_at(19).date(), _at(18).date()))
         with pytest.raises(SerializationError):
             _submit(store, c, object(), manifest)
         assert store.receipts(c.table) == (first,)

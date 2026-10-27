@@ -23,3 +23,12 @@ def sidecar(path, c, shape, day, rows, **kwargs):
 
 def row(key, day=18, value="current"):
     return {"id": key, "day": at(day).date(), "value": value}
+
+
+MARKED = {**COLUMNS, "deleted": "bool"}
+
+
+def marked(rows, tombstones=()):
+    """A tombstone shape's rows: live rows unmarked, then one marked row per deleted key."""
+    deleted = [{**dict.fromkeys(COLUMNS), "id": key, "deleted": True} for key in tombstones]
+    return [{**r, "deleted": False} for r in rows] + deleted

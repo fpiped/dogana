@@ -36,7 +36,26 @@ class RowSource(list):
         return columns
 
 
+def split_rows(contract, rows):
+    """Live rows without the deleted column, the keys of rows marked deleted, and unmarked rows."""
+    marker = contract.deleted_column
+    if marker is None or marker not in rows.columns:
+        return rows, [], 0
+    columns = {name: kind for name, kind in rows.columns.items() if name != marker}
+    live = RowSource(
+        (
+            {name: value for name, value in row.items() if name != marker}
+            for row in rows
+            if row.get(marker) is False
+        ),
+        columns,
+    )
+    deleted = [tuple(row.get(k) for k in contract.key) for row in rows if row.get(marker) is True]
+    return live, deleted, sum(1 for row in rows if type(row.get(marker)) is not bool)
+
+
 def check_rows(contract, manifest, rows, previous):
+    rows, deleted, unmarked = split_rows(contract, rows)
     columns = rows.columns
     schema_ok = contract.schema_hash is None or (
         schema_hash(columns) == contract.schema_hash
@@ -67,7 +86,6 @@ def check_rows(contract, manifest, rows, previous):
         return name in row and type(row[name]) is LOGICAL_TYPES[contract.types[name]].python_type
 
     live = [key(r) for r in rows]
-    shape = contract.shape(manifest.shape)
     window, col = manifest.window, contract.window_column
 
     def inside(row):
@@ -78,17 +96,14 @@ def check_rows(contract, manifest, rows, previous):
     shrink = contract.max_shrink_fraction
     cursor = contract.cursor_column
     outcomes = {
-        "row_count": manifest.rows == len(rows),
+        "row_count": manifest.rows == len(rows) and manifest.tombstones == len(deleted) and not unmarked,
         "schema_hash": schema_ok,
         "key_integrity": all(typed(row, name) for row in rows for name in contract.key)
-        and len(set(live)) == len(live),
-        "rows_in_window": all(inside(r) for r in rows),
+        and all(None not in k for k in deleted)
+        and len(set(live + deleted)) == len(live) + len(deleted),
+        "rows_in_window": all(inside(r) for r in rows)
+        and all(k not in published or inside(published[k]) for k in deleted),
         "window_stability": col is None or all(typed(row, col) for row in rows),
-        "named_keys": (
-            (shape.coverage != "keys" and not manifest.keys or set(live) == set(manifest.keys))
-            and not set(live).intersection(manifest.tombstones)
-            and all(k not in published or inside(published[k]) for k in manifest.tombstones)
-        ),
         "shrink_tolerance": not covered
         or shrink is None
         or (len(covered) - len(rows)) / len(covered) <= shrink,
@@ -103,7 +118,7 @@ def check_rows(contract, manifest, rows, previous):
     return tuple(Check(r.name, outcomes[r.name]) for r in requirements)
 
 
-def apply_rows(previous, incoming, plan):
+def apply_rows(previous, incoming, plan, deleted=()):
     rows = list(previous)
 
     def key(row):
@@ -118,7 +133,7 @@ def apply_rows(previous, incoming, plan):
             live = {key(r) for r in incoming}
             rows = [r for r in rows if key(r) not in live]
         if action.operation is Operation.TOMBSTONE:
-            rows = [r for r in rows if key(r) not in action.keys]
+            rows = [r for r in rows if key(r) not in set(deleted)]
         else:
             rows.extend(dict(r) for r in incoming)
     return rows
@@ -217,7 +232,8 @@ class MemoryStore:
 
         if not all(c.passed for c in checks) or plan != ApplyPlan.build(contract, manifest):
             raise InvalidContract("candidate requires passing checks and the prescribed plan")
-        return apply_rows(self.state[0].get(contract.table, ([], None))[0], incoming, plan)
+        live, deleted, _ = split_rows(contract, incoming)
+        return apply_rows(self.state[0].get(contract.table, ([], None))[0], live, plan, deleted)
 
     def _execute(self, candidate, plan):
         with self.lock:

@@ -77,7 +77,7 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
         ("since", {"since": at(17)}, [Operation.UPSERT]),
         (
             "feed",
-            {"since": "g1", "generation": "g2", "tombstones": ((1,),)},
+            {"since": "g1", "generation": "g2", "tombstones": 1},
             [Operation.UPSERT, Operation.TOMBSTONE],
         ),
     ],
@@ -205,7 +205,7 @@ def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
         lambda: Check(1, True),
         lambda: Check("row_count", 1),
         lambda: CheckRequirement(1),
-        lambda: Action("upsert", keys=("ab",)),
+        lambda: Action("upsert", window=(1, 2)),
         lambda: Transition("regions", (), None),
         lambda: Region(low_open=1),
     ],

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Receipt",
+  "$id": "urn:dogana:wire:2:Receipt",
   "title": "Receipt",
   "type": "object",
   "properties": {
@@ -9,15 +9,15 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "manifest": {
-      "$ref": "urn:dogana:wire:1:Manifest"
+      "$ref": "urn:dogana:wire:2:Manifest"
     },
     "checks": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:1:Check"
+        "$ref": "urn:dogana:wire:2:Check"
       }
     },
     "outcome": {
@@ -30,7 +30,7 @@
     "transition": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:Transition"
+          "$ref": "urn:dogana:wire:2:Transition"
         },
         {
           "type": "null"
@@ -38,15 +38,15 @@
       ]
     },
     "ledger": {
-      "$ref": "urn:dogana:wire:1:Ledger"
+      "$ref": "urn:dogana:wire:2:Ledger"
     },
     "claims": {
-      "$ref": "urn:dogana:wire:1:Claims"
+      "$ref": "urn:dogana:wire:2:Claims"
     },
     "publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
         },
         {
           "type": "null"
@@ -54,12 +54,12 @@
       ]
     },
     "received_at": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
     },
     "source": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+          "$ref": "urn:dogana:wire:2:types#/$defs/text"
         },
         {
           "type": "null"
@@ -69,7 +69,7 @@
     "base_publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+          "$ref": "urn:dogana:wire:2:types#/$defs/text"
         },
         {
           "type": "null"
@@ -111,7 +111,7 @@
       "else": {
         "properties": {
           "transition": {
-            "$ref": "urn:dogana:wire:1:Transition"
+            "$ref": "urn:dogana:wire:2:Transition"
           },
           "checks": {
             "items": {

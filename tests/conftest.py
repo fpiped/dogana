@@ -46,7 +46,7 @@ def wire_validators():
         names = {field.name for field in fields(cls._wire_schema())} | {"kind", "version"}
         assert set(schema["properties"]) == set(schema["required"]) == names, kind
         assert schema["additionalProperties"] is False, kind
-        assert schema["properties"]["version"] == {"type": "integer", "const": 1}, kind
+        assert schema["properties"]["version"] == {"type": "integer", "const": Wire.version}, kind
     return validators
 
 

@@ -22,7 +22,6 @@ from dogana import (
     Check,
     CheckRequirement,
     Contract,
-    Coverage,
     Gate,
     Ledger,
     Manifest,
@@ -33,7 +32,6 @@ from dogana.contract import (
     LOGICAL_TYPES,
     FullDelivery,
     ParsedDelivery,
-    Scalar,
     TimestampChanges,
     Window,
     WindowCoverage,
@@ -48,7 +46,14 @@ from dogana.errors import (
     SerializationError,
     StoreError,
 )
-from dogana.reference._sources import _column_hash, _columns, _file_digest, _FileSource, _RowSource
+from dogana.reference._sources import (
+    _column_hash,
+    _columns,
+    _file_digest,
+    _FileSource,
+    _published,
+    _RowSource,
+)
 
 _TYPES = {
     "int": "BIGINT",
@@ -121,6 +126,7 @@ class _Candidate:
     columns: Mapping[str, str] | None = None
     header: tuple[str, ...] | None = None
     digest: str | None = None
+    prepared: tuple[Mapping[str, str], str | None, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,8 @@ class _Audit:
     columns: Mapping[str, str]
     schema_error: str | None
     digest: str | None
+    tombstones: int
+    unmarked: int
 
     @property
     def manifest(self) -> Manifest:
@@ -156,6 +164,15 @@ class _Audit:
     @property
     def staging(self) -> str:
         return _quote(self.candidate)
+
+    @property
+    def deleted(self) -> str:
+        return _quote(_deleted(self.candidate))
+
+
+def _deleted(candidate: str) -> str:
+    """The staged keys of a candidate's tombstones, beside its live rows."""
+    return candidate + "_deleted"
 
 
 class DuckDBStore:
@@ -556,15 +573,6 @@ class DuckDBStore:
         )
         self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {staging} AS SELECT {casts} FROM {staging}")
 
-    def _key_relation(
-        self, keys: tuple[tuple[Scalar, ...], ...], columns: tuple[str, ...]
-    ) -> tuple[str, list[object]]:
-        names = ", ".join(_quote(k) for k in columns)
-        values = ", ".join("unnest(?)" for _ in columns)
-        return f"(SELECT {values}) AS deleted({names})", [
-            [key[i] for key in keys] for i in range(len(columns))
-        ]
-
     def _assert_destination_schema(self, contract: Contract, candidate: str) -> None:
         row = self.connection.execute(
             "SELECT publication_id, history_table, columns FROM __dogana_commits "
@@ -614,10 +622,36 @@ class DuckDBStore:
             validated = _columns(columns)
         except InvalidContract as exc:
             return columns, str(exc)
-        if any(columns.get(name) != kind for name, kind in contract.types.items()):
+        if any(
+            columns.get(name) != kind
+            for name, kind in contract.types.items()
+            if name != contract.deleted_column or name in columns
+        ):
             return columns, "source columns differ from the contract's bound column types"
         self._recast(candidate, validated)
         return validated, None
+
+    def _split(self, candidate: str, contract: Contract, columns: Mapping[str, str]) -> tuple[int, int]:
+        """Move rows marked deleted out of the live rows, keeping their keys; count unmarked rows."""
+        marker = contract.deleted_column
+        keys = ", ".join(_quote(k) for k in contract.key)
+        staging, deleted = _quote(candidate), _quote(_deleted(candidate))
+        if marker is None or columns.get(marker) != "bool":
+            self.connection.execute(
+                f"CREATE TEMP TABLE {deleted} AS SELECT {keys} FROM {staging} WHERE false"
+            )
+            return 0, 0
+        else:
+            column = _quote(marker)
+            unmarked = int(self._one(f"SELECT count(*) FROM {staging} WHERE {column} IS NULL")[0])
+            self.connection.execute(
+                f"CREATE TEMP TABLE {deleted} AS SELECT {keys} FROM {staging} WHERE {column}"
+            )
+            self.connection.execute(
+                f"CREATE OR REPLACE TEMP TABLE {staging} AS "
+                f"SELECT * EXCLUDE ({column}) FROM {staging} WHERE NOT {column}"
+            )
+            return int(self._one(f"SELECT count(*) FROM {deleted}")[0]), unmarked
 
     @_synchronized
     def check(
@@ -635,18 +669,29 @@ class DuckDBStore:
         if requirements != Gate.requirements(contract, manifest):
             raise StoreError("row checks must come from the gate")
         base, stamp = self._base(contract, manifest), self._stamp(contract.table)
-        columns, schema_error = self._prepare_schema(candidate, contract)
-        self._assert_destination_schema(contract, candidate)
+        prepared = self._candidates[candidate].prepared
+        if prepared is None:
+            # Preparing a candidate rewrites its staging table, so a second check reuses the first result.
+            columns, schema_error = self._prepare_schema(candidate, contract)
+            tombstones, unmarked = (
+                self._split(candidate, contract, columns) if contract.key and schema_error is None else (0, 0)
+            )
+            prepared = (columns, schema_error, tombstones, unmarked)
+            self._candidates[candidate] = replace(self._candidates[candidate], prepared=prepared)
+        columns, schema_error, tombstones, unmarked = prepared
         if schema_error is not None and contract.schema_hash is None:
             raise InvalidContract(schema_error)
+        self._assert_destination_schema(contract, candidate)
         audit = _Audit(
             candidate,
             contract,
             manifest.check(contract),
             int(self._one(f"SELECT count(*) FROM {_quote(candidate)}")[0]),
-            columns,
+            _published(columns, contract),
             schema_error,
             self._candidates[candidate].digest,
+            tombstones,
+            unmarked,
         )
         handlers = {
             "row_count": self._check_row_count,
@@ -655,7 +700,6 @@ class DuckDBStore:
             "window_stability": self._check_window_stability,
             "rows_in_interval": self._check_rows_in_interval,
             "key_integrity": self._check_key_integrity,
-            "named_keys": self._check_named_keys,
             "shrink_tolerance": self._check_shrink_tolerance,
             "content_hash": self._check_content_hash,
         }
@@ -667,8 +711,6 @@ class DuckDBStore:
                 if contract.schema_hash is not None and name not in ("row_count", "schema_hash")
                 else ()
             )
-            if name == "named_keys":
-                dependencies += ("key_integrity",)
             if name == "shrink_tolerance":
                 dependencies += ("row_count",)
             checks[name] = (
@@ -681,10 +723,13 @@ class DuckDBStore:
         return result
 
     def _check_row_count(self, audit: _Audit) -> Check:
+        manifest = audit.manifest
         return Check(
             "row_count",
-            audit.manifest.rows == audit.count,
-            f"declared={audit.manifest.rows}, actual={audit.count}",
+            manifest.rows == audit.count and manifest.tombstones == audit.tombstones and not audit.unmarked,
+            f"declared rows={manifest.rows} tombstones={manifest.tombstones}, "
+            f"actual rows={audit.count} tombstones={audit.tombstones}"
+            + (f", {audit.unmarked} rows neither live nor deleted" if audit.unmarked else ""),
         )
 
     def _check_schema_hash(self, audit: _Audit) -> Check:
@@ -711,12 +756,14 @@ class DuckDBStore:
         keys = audit.contract.key
         columns = ", ".join(_quote(key) for key in keys)
         nulls = " OR ".join(f"{_quote(key)} IS NULL" for key in keys)
-        invalid = self._one(f"SELECT count(*) FROM {audit.staging} WHERE {nulls}")[0]
+        rows = f"(SELECT {columns} FROM {audit.staging} UNION ALL SELECT {columns} FROM {audit.deleted})"
+        invalid = self._one(f"SELECT count(*) FROM {rows} WHERE {nulls}")[0]
         duplicates = self._one(
-            f"SELECT count(*) FROM (SELECT {columns} FROM {audit.staging} "
-            f"GROUP BY {columns} HAVING count(*) > 1)"
+            f"SELECT count(*) FROM (SELECT {columns} FROM {rows} GROUP BY {columns} HAVING count(*) > 1)"
         )[0]
-        return Check("key_integrity", invalid == duplicates == 0, "keys must be non-null and unique")
+        return Check(
+            "key_integrity", invalid == duplicates == 0, "keys must be non-null and unique, live or deleted"
+        )
 
     def _check_rows_in_window(self, audit: _Audit) -> Check:
         assert audit.contract.window_column is not None and audit.window is not None
@@ -725,7 +772,18 @@ class DuckDBStore:
             f"SELECT count(*) FROM {audit.staging} WHERE {_outside_window(column)}",
             list(audit.window),
         )[0]
-        return Check("rows_in_window", invalid == 0, "all rows must be inside the closed window")
+        if audit.tombstones and self._exists(audit.contract.table):
+            match = _key_match(audit.contract.key, "p", "d")
+            invalid += self._one(
+                f"SELECT count(*) FROM {_quote(audit.contract.table)} p JOIN {audit.deleted} d ON {match} "
+                f"WHERE {_outside_window('p.' + column)}",
+                list(audit.window),
+            )[0]
+        return Check(
+            "rows_in_window",
+            invalid == 0,
+            "live rows and the published rows of deleted keys must be inside it",
+        )
 
     def _check_window_stability(self, audit: _Audit) -> Check:
         assert audit.contract.window_column is not None
@@ -743,28 +801,6 @@ class DuckDBStore:
         )[0]
         low, high = interval
         return Check("rows_in_interval", invalid == 0, f"cursor values must be inside ({low}, {high}]")
-
-    def _check_named_keys(self, audit: _Audit) -> Check:
-        contract, manifest = audit.contract, audit.manifest
-        columns = ", ".join(_quote(key) for key in contract.key)
-        live = set(self.connection.execute(f"SELECT {columns} FROM {audit.staging}").fetchall())
-        enumerated = audit.delivery.shape.coverage is Coverage.KEYS or bool(manifest.keys)
-        matches = (not enumerated or live == set(manifest.keys)) and not live.intersection(
-            manifest.tombstones
-        )
-        window = audit.window
-        if window is not None and manifest.tombstones and self._exists(contract.table):
-            relation, params = self._key_relation(manifest.tombstones, contract.key)
-            match = _key_match(contract.key, "p", "deleted")
-            assert contract.window_column is not None
-            column = "p." + _quote(contract.window_column)
-            outside = self._one(
-                f"SELECT count(*) FROM {_quote(contract.table)} p JOIN {relation} ON {match} "
-                f"WHERE {_outside_window(column)}",
-                [*params, *window],
-            )[0]
-            matches = matches and outside == 0
-        return Check("named_keys", bool(matches), "live and deleted keys must agree with the manifest")
 
     def _check_shrink_tolerance(self, audit: _Audit) -> Check:
         contract = audit.contract
@@ -821,9 +857,10 @@ class DuckDBStore:
                 match = _key_match(plan.key, "t", "c")
                 db.execute(f"DELETE FROM {target} AS t USING {source} AS c WHERE {match}")
             if action.operation is Operation.TOMBSTONE:
-                relation, params = self._key_relation(action.keys, plan.key)
-                match = _key_match(plan.key, "t", "deleted")
-                db.execute(f"DELETE FROM {target} AS t USING {relation} WHERE {match}", params)
+                match = _key_match(plan.key, "t", "d")
+                db.execute(
+                    f"DELETE FROM {target} AS t USING {_quote(_deleted(candidate))} AS d WHERE {match}"
+                )
 
     @_synchronized
     def _execute(self, candidate: str, plan: ApplyPlan) -> None:
@@ -998,6 +1035,7 @@ class DuckDBStore:
         if candidate not in self._candidates:
             return
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(candidate)}")
+        self.connection.execute(f"DROP TABLE IF EXISTS {_quote(_deleted(candidate))}")
         self._candidates.pop(candidate, None)
         self._checked.pop(candidate, None)
 

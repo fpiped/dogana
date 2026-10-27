@@ -10,7 +10,7 @@
       "name": "shape-defaults",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -26,7 +26,7 @@
       "name": "shape-numbers-and-durations",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "window",
         "completeness": "changed_only",
         "deletions": "tombstone",
@@ -46,7 +46,7 @@
       "name": "minimal-manifest",
       "wire": {
         "kind": "Manifest",
-        "version": 1,
+        "version": 2,
         "table": "stock",
         "shape": "full",
         "produced_at": {
@@ -57,18 +57,17 @@
         "generation": null,
         "rows": null,
         "schema_hash": null,
-        "keys": [],
-        "tombstones": [],
+        "tombstones": 0,
         "content_hash": null
       },
       "canonical": "{\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
       "sha256": "31b5b0420d68fd744536c43bc48c79c11be628a8a5dea862cbc907a50e230b96"
     },
     {
-      "name": "unicode-key-order-and-utc",
+      "name": "unicode-shape-and-utc",
       "wire": {
         "kind": "Manifest",
-        "version": 1,
+        "version": 2,
         "table": "stock",
         "shape": "r\u00e9cent",
         "produced_at": {
@@ -79,36 +78,17 @@
         "generation": null,
         "rows": 2,
         "schema_hash": null,
-        "keys": [
-          [
-            2,
-            "\u00e9"
-          ],
-          [
-            10,
-            "e\u0301"
-          ]
-        ],
-        "tombstones": [
-          [
-            3,
-            "c"
-          ],
-          [
-            1,
-            "a"
-          ]
-        ],
+        "tombstones": 2,
         "content_hash": "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
       },
-      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"keys\":[[10,\"e\u0301\"],[2,\"\u00e9\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":[[1,\"a\"],[3,\"c\"]]}",
-      "sha256": "5e86d9555170b7e30b4fc12944b09708b702cc72eb8527afab0c1c9b35aee24d"
+      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":2}",
+      "sha256": "4ad6c477daccfcab252c50399eb8c9ab436d638d25657be00b5ba9930e11f6b6"
     },
     {
       "name": "explicit-disabled-shrink",
       "wire": {
         "kind": "Contract",
-        "version": 1,
+        "version": 2,
         "table": "stock",
         "key": [
           "id"
@@ -116,7 +96,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -136,7 +116,8 @@
         "types": {
           "id": "int"
         },
-        "schema_hash": null
+        "schema_hash": null,
+        "deleted_column": null
       },
       "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
       "sha256": "3a57d7447db0eb789ff794eb4081094de819f0f214509d0bad3039d3179a3423"
@@ -145,7 +126,7 @@
       "name": "shape-small-cost",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -161,7 +142,7 @@
       "name": "shape-fixed-cost",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -177,7 +158,7 @@
       "name": "shape-exponent-cost",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -193,7 +174,7 @@
       "name": "shape-negative-zero",
       "wire": {
         "kind": "Shape",
-        "version": 1,
+        "version": 2,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -209,7 +190,7 @@
       "name": "utf16-shape-name-order",
       "wire": {
         "kind": "Contract",
-        "version": 1,
+        "version": 2,
         "table": "stock",
         "key": [
           "id"
@@ -217,7 +198,7 @@
         "shapes": {
           "\ufffd": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -228,7 +209,7 @@
           },
           "\ud83d\ude00": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -248,45 +229,17 @@
         "types": {
           "id": "int"
         },
-        "schema_hash": null
+        "schema_hash": null,
+        "deleted_column": null
       },
       "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"\ud83d\ude00\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"\ufffd\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
       "sha256": "4972f813d5842e8b6a9a8ac7ac872b6b83d5a65723d53581c87b78f1ed124e8c"
     },
     {
-      "name": "utf16-key-set-order",
-      "wire": {
-        "kind": "Manifest",
-        "version": 1,
-        "table": "stock",
-        "shape": "full",
-        "produced_at": {
-          "$datetime": "2026-10-18T00:00:00+00:00"
-        },
-        "window": null,
-        "since": null,
-        "generation": null,
-        "rows": null,
-        "schema_hash": null,
-        "keys": [
-          [
-            "\ufffd"
-          ],
-          [
-            "\ud83d\ude00"
-          ]
-        ],
-        "tombstones": [],
-        "content_hash": null
-      },
-      "canonical": "{\"keys\":[[\"\ud83d\ude00\"],[\"\ufffd\"]],\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
-      "sha256": "4325c0ae311a45f3695a113ced129a874bb19f63a1e48f85f85785f523b0c762"
-    },
-    {
       "name": "contract-types-and-external-hash",
       "wire": {
         "kind": "Contract",
-        "version": 1,
+        "version": 2,
         "table": "events",
         "key": [
           "id"
@@ -294,7 +247,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -305,7 +258,7 @@
           },
           "daily": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "window",
             "completeness": "complete",
             "deletions": "absence",
@@ -327,7 +280,8 @@
           "$seconds": 604800
         },
         "start_at": null,
-        "cursor_column": "updated_at"
+        "cursor_column": "updated_at",
+        "deleted_column": null
       },
       "canonical": "{\"cursor_column\":\"updated_at\",\"key\":[\"id\"],\"kind\":\"Contract\",\"schema_hash\":\"opaque:orders-columns-v1\",\"shapes\":{\"daily\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"window\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"events\",\"types\":{\"day\":\"date\",\"id\":\"int\",\"updated_at\":\"datetime\"},\"window_column\":\"day\"}",
       "sha256": "ccdc9c297a11a5f3f30b0ba7390a7316da66ae6922858567a1aed49647395fc3"
@@ -336,13 +290,13 @@
       "name": "unbound-contract-defaults",
       "wire": {
         "kind": "Contract",
-        "version": 1,
+        "version": 2,
         "table": "events",
         "key": [],
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 1,
+            "version": 2,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -360,7 +314,8 @@
           "$seconds": 604800
         },
         "start_at": null,
-        "cursor_column": null
+        "cursor_column": null,
+        "deleted_column": null
       },
       "canonical": "{\"key\":[],\"kind\":\"Contract\",\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"events\"}",
       "sha256": "6bcbd6cc77b5dafb6ead5eef0739d2c183e763ab9e78cf93d414587a18aed19d"

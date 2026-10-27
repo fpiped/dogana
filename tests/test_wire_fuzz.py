@@ -13,7 +13,7 @@ EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
 def objects(value, path=()):
     if isinstance(value, dict):
-        if value.get("version") == 1 and "kind" in value:
+        if value.get("version") == 2 and "kind" in value:
             yield path
         for key, item in value.items():
             yield from objects(item, (*path, key))
@@ -47,7 +47,7 @@ def test_mutations_of_nested_wire_values_raise_public_contract_errors(name, cls,
     elif mutation == "kind":
         node["kind"] = "unknown"
     else:
-        node["version"] = data.draw(st.sampled_from((0, 2, True, "1")), label="version")
+        node["version"] = data.draw(st.sampled_from((0, 1, 3, True, "2")), label="version")
     with pytest.raises(InvalidContract):
         cls.from_json(json.dumps(value))
 
@@ -85,13 +85,13 @@ def test_surrogates_in_values_and_property_names_are_refused(codepoint):
 
 
 @given(st.integers(min_value=2**53 + 1, max_value=2**64 - 1).filter(lambda n: float(n) != n))
-def test_lossy_integer_keys_and_row_counts_are_refused(value):
+def test_lossy_integer_counts_and_bounds_are_refused(value):
     from dogana.wire import canonical_json
     from tests.support import at
 
     with pytest.raises(InvalidContract, match="binary64"):
         canonical_json(value)
-    for change in ({"rows": value}, {"keys": ((value,),)}, {"window": (0, value)}):
+    for change in ({"rows": value}, {"tombstones": value}, {"window": (0, value)}):
         with pytest.raises(InvalidContract, match="binary64"):
             Manifest("stock", "full", at(18), **change)
         raw = Manifest("stock", "full", at(18)).to_dict()

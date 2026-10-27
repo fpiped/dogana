@@ -23,7 +23,8 @@ A stateful resource beside the ledger can lose data: it advances its own cursor 
 the gate rejects the load, then the next extraction skips rows the ledger still needs. Keep one
 progress owner and retain the normalized candidate for retries. When a schema hash is supplied,
 its exact column check requires projecting loader metadata columns away or declaring them
-consistently in the data contract.
+consistently in the data contract. A boolean column that dlt's `hard_delete` hint marks can be the
+contract's deleted column: the same rows that dlt deletes are the delivery's tombstones.
 
 A transaction may stamp `updated_at=09:00:00` and commit at `09:00:07`, after a read ending at
 `09:00:05`. The absent row is invisible to the gate. Keyed `Shape.lookback` subtracts a duration from
@@ -107,7 +108,7 @@ A table-format store can map a plan onto its row operations and publish through 
 `publish(candidate, receipt)` executes the accepted plan and has the evidence
 needed for the commit. Its metadata must carry the full receipt or reference an already durable
 copy, the expected parent and the resulting publication identity. A receipt hash alone is not a
-recovery record. Large key lists usually favor a durable referenced receipt.
+recovery record.
 
 The commit must reject a stale `base_publication_id`; automatic rebase must not reuse old checks.
 The ledger can be reconstructed from accepted receipts in committed order. Retain those records
@@ -121,7 +122,9 @@ change establishes and through which source boundary.
 dogana accounts for bounded deliveries; a micro-batch committed from a stream is one of them. A
 change feed consumed in offset ranges after a snapshot is `Shape.feed()`: `since` is the committed
 offset and `generation` the next one, both encoded as one opaque string per table, and the batch is
-collapsed to one live row or tombstone per key. Immutable events without identity are
+collapsed to one live row or tombstone row per key. Debezium's new-record-state transform can
+rewrite a delete as a row with a `__deleted` field; delivered as a boolean, that field is the
+contract's deleted column. Immutable events without identity are
 `Shape.append()` over contiguous arrival-order intervals. Keyed upserts without a delete signal are
 `Shape.changes(checkpoint="timestamp", deletions="none")` with a `lookback` for bounded lag.
 
@@ -167,7 +170,7 @@ supply independent evidence that a manifest omitted something.
 
 The data contract owns the columns; the delivery contract references their hash. Project its table
 and key into `Contract`, add the delivery shapes and source guarantees, and put exactly the key,
-window and cursor columns in `Contract.types`, with no extras. Obtain the optional `schema_hash`
+window, cursor and deleted columns in `Contract.types`, with no extras. Obtain the optional `schema_hash`
 from the ODCS document, dbt model or hand-written column list. It is opaque to the core, which
 never carries or computes the full schema. The gate compares the manifest and candidate hashes
 with it only when it is present.

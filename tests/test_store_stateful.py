@@ -24,6 +24,12 @@ def rows_for(values: dict[int, int]) -> list[dict[str, int]]:
     )
 
 
+def feed_rows(values: dict[int, int], deleted: set[int]) -> list[dict[str, int | bool | None]]:
+    live = [{**row, "deleted": False} for row in rows_for(values)]
+    gone = [{"id": key, "bucket": None, "value": None, "deleted": True} for key in sorted(deleted)]
+    return RowSource([*live, *gone], {**COLUMNS, "deleted": "bool"})
+
+
 class PublicationSequences(RuleBasedStateMachine):
     store_type = MemoryStore
 
@@ -40,9 +46,10 @@ class PublicationSequences(RuleBasedStateMachine):
                 "feed": Shape.feed(),
             },
             window_column="bucket",
-            types={"id": "int", "bucket": "int"},
+            types={"id": "int", "bucket": "int", "deleted": "bool"},
             schema_hash=schema_hash(COLUMNS),
             max_shrink_fraction=None,
+            deleted_column="deleted",
         )
         self.tick = 0
         self.values: dict[int, int] = {}
@@ -148,10 +155,9 @@ class PublicationSequences(RuleBasedStateMachine):
             generation=f"g{self.tick}",
             rows=len(values),
             schema_hash=self.contract.schema_hash,
-            keys=tuple((key,) for key in sorted(values)),
-            tombstones=tuple((key,) for key in sorted(deleted)),
+            tombstones=len(deleted),
         )
-        receipt = deliver(self.store, self.contract, rows_for(values), manifest, NOW)
+        receipt = deliver(self.store, self.contract, feed_rows(values, deleted), manifest, NOW)
         assert receipt.accepted, receipt.checks
         self.values.update(values)
         for key in deleted:

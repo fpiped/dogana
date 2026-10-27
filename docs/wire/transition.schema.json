@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Transition",
+  "$id": "urn:dogana:wire:2:Transition",
   "title": "Transition",
   "type": "object",
   "properties": {
@@ -9,24 +9,24 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "before": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:1:Region"
+        "$ref": "urn:dogana:wire:2:Region"
       },
       "minItems": 1
     },
     "after": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:1:Region"
+        "$ref": "urn:dogana:wire:2:Region"
       },
       "minItems": 1
     },
     "plan": {
-      "$ref": "urn:dogana:wire:1:ApplyPlan"
+      "$ref": "urn:dogana:wire:2:ApplyPlan"
     }
   },
   "required": [

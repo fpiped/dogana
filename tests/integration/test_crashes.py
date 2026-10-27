@@ -8,7 +8,7 @@ from dogana import Contract, Ledger, Manifest, Shape
 from dogana.errors import StoreError
 from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
-from tests.integration.support import csv_file, row, sidecar
+from tests.integration.support import MARKED, csv_file, marked, row, sidecar
 from tests.support import contract
 
 
@@ -32,6 +32,10 @@ class StatementFault:
             raise self.error_type(f"interrupted after statement {index}")
         return result
 
+    def executemany(self, sql, parameters):
+        self.statements.append(sql)
+        return self.connection.executemany(sql, parameters)
+
     def close(self):
         self.connection.close()
 
@@ -40,16 +44,14 @@ class StatementFault:
 def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tmp_path, error_type):
     c = contract()
     base = csv_file(tmp_path, "base.csv", [row(1), row(2)])
-    incoming = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
+    incoming = csv_file(tmp_path, "feed.csv", marked([row(2, value="changed")], (1,)), MARKED)
     first_manifest = sidecar(base, c, "full", 18, 2, generation="g1")
-    manifest = sidecar(
-        incoming, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),), tombstones=((1,),)
-    )
+    manifest = sidecar(incoming, c, "feed", 19, 1, since="g1", generation="g2", tombstones=1)
     with DuckDBStore(":memory:") as store:
         assert store.deliver(c, _FileSource(base, COLUMNS), first_manifest, now=at(30)).accepted
         trace = StatementFault(store.connection)
         store.connection = trace
-        assert store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30)).accepted
+        assert store.deliver(c, _FileSource(incoming, MARKED), manifest, now=at(30)).accepted
         statements = trace.statements
     assert any(sql == "COMMIT" for sql in statements)
     assert any("__dogana_publications VALUES" in sql for sql in statements)
@@ -61,7 +63,7 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 fault = StatementFault(connection, index, after, error_type)
                 store.connection = fault
                 try:
-                    result = store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30))
+                    result = store.deliver(c, _FileSource(incoming, MARKED), manifest, now=at(30))
                 except (StoreError, KeyboardInterrupt):
                     result = None
                 finally:
@@ -74,7 +76,7 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 assert store.read(c.table) == ([row(2, value="changed")] if committed else [row(1), row(2)])
                 if result is not None and committed:
                     assert result == committed, (index, sql)
-                retry = store.deliver(c, _FileSource(incoming, COLUMNS), manifest, now=at(30))
+                retry = store.deliver(c, _FileSource(incoming, MARKED), manifest, now=at(30))
                 assert retry.accepted, (index, sql, retry.checks)
                 assert store.read(c.table) == [row(2, value="changed")]
                 assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)

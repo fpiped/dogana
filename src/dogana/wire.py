@@ -20,7 +20,7 @@ JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dic
 
 
 class Wire:
-    version: ClassVar[int] = 1
+    version: ClassVar[int] = 2
 
     @classmethod
     def _wire_schema(cls) -> type[Wire]:
@@ -57,8 +57,6 @@ class Wire:
                 if default is not MISSING and value == default:
                     continue
             encoded = _encode(value, identity=identity)
-            if identity and field.name in ("keys", "tombstones") and isinstance(encoded, list):
-                encoded = sorted(encoded, key=lambda item: canonical_json(item).encode("utf-16-be"))
             result[field.name] = encoded
         return result
 
@@ -226,7 +224,7 @@ def decode(value: object) -> object:
     if set(value) == {"$seconds"} and type(value["$seconds"]) in (int, float):
         return timedelta(seconds=value["$seconds"])
     if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, bool):
-        if type(value.get("version")) is not int or value["version"] != 1:
+        if type(value.get("version")) is not int or value["version"] != Wire.version:
             raise SerializationError("unsupported wire version")
         kind = value.get("kind")
         cls = _registry().get(kind) if isinstance(kind, str) else None

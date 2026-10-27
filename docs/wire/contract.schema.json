@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Contract",
+  "$id": "urn:dogana:wire:2:Contract",
   "title": "Contract",
   "type": "object",
   "properties": {
@@ -9,15 +9,15 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "table": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
     },
     "key": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+        "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
       },
       "uniqueItems": true
     },
@@ -25,16 +25,16 @@
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
-        "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+        "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
       },
       "additionalProperties": {
-        "$ref": "urn:dogana:wire:1:Shape"
+        "$ref": "urn:dogana:wire:2:Shape"
       }
     },
     "window_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -54,12 +54,12 @@
       ]
     },
     "freshness": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/nonnegativeDuration"
+      "$ref": "urn:dogana:wire:2:types#/$defs/nonnegativeDuration"
     },
     "start_at": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
         },
         {
           "type": "null"
@@ -69,7 +69,7 @@
     "cursor_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -79,7 +79,7 @@
     "types": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+        "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
       },
       "additionalProperties": {
         "enum": [
@@ -95,7 +95,17 @@
     "schema_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+          "$ref": "urn:dogana:wire:2:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deleted_column": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -114,6 +124,7 @@
     "freshness",
     "start_at",
     "cursor_column",
+    "deleted_column",
     "types",
     "schema_hash"
   ],

@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from dogana import Contract, Coverage, DoganaError, InvalidContract, Manifest
-from dogana.contract import Scalar, Window
+from dogana import Contract, Coverage, Deletions, DoganaError, InvalidContract, Manifest
+from dogana.contract import Window
 from dogana.reference._sources import _count_rows, _file_digest
 from dogana.reference._text import _checkpoint, _instant, _position, _scalar
 
@@ -27,14 +26,15 @@ examples:
       --produced-at 2026-10-26T06:00:00Z --since 2026-10-25T06:00:00Z
 
 The manifest is written to FILE.json, the sidecar a receiver's file drop reads, unless -o names
-another path or - for standard output. Rows and the SHA-256 of FILE are computed, never typed."""
+another path or - for standard output. Rows, tombstones (rows whose deleted column is true) and the
+SHA-256 of FILE are computed, never typed."""
 
 CHECK_EXAMPLES = """\
 example:
   dogana check orders.csv --contract orders.contract.json
 
 Reads FILE.json unless --manifest names it, then checks the manifest against the contract and
-FILE against the manifest: the row count and the SHA-256 of the bytes."""
+FILE against the manifest: the counts of rows and tombstones, and the SHA-256 of the bytes."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -76,8 +76,10 @@ def _parser() -> argparse.ArgumentParser:
     write.add_argument("--window", nargs=2, metavar=("LOW", "HIGH"), help="closed window of a window shape")
     write.add_argument("--since", metavar="VALUE", help="checkpoint of a changed-only shape")
     write.add_argument("--generation", metavar="VALUE", help="table position this read issues")
-    write.add_argument("--tombstones", type=Path, metavar="KEYS", help="CSV or Parquet of deleted keys")
-    write.add_argument("--rows", type=int, metavar="N", help="row count, for files dogana cannot count")
+    write.add_argument("--rows", type=int, metavar="N", help="live rows, for files dogana cannot count")
+    write.add_argument(
+        "--tombstones", type=int, metavar="N", help="deleted rows, for files dogana cannot count"
+    )
     write.add_argument("-o", "--output", metavar="PATH", help="where to write, or - for standard output")
     write.add_argument("--force", action="store_true", help="replace an existing manifest")
     write.set_defaults(run=_write_manifest, command="manifest")
@@ -106,15 +108,17 @@ def _write_manifest(args: argparse.Namespace) -> int:
     contract = Contract.from_json(args.contract.read_text(encoding="utf-8"))
     shape = contract.shape(args.shape)
     produced_at = _instant(args.produced_at)
+    marked = shape.deletions is Deletions.TOMBSTONE
+    counting = args.rows is None or (args.tombstones is None and marked)
+    live, deleted = _counted(args.file, contract, marked) if counting else (0, 0)
     manifest = contract.manifest(
         args.shape,
         produced_at,
         window=_window(contract, args.shape, produced_at, args.window),
         since=_checkpoint(args.since, shape) if args.since is not None else None,
         generation=_position(args.generation, contract) if args.generation is not None else None,
-        rows=args.rows if args.rows is not None else _counted(args.file),
-        keys=tuple(_keys(args.file, contract)) if shape.coverage is Coverage.KEYS else (),
-        tombstones=tuple(_keys(args.tombstones, contract)) if args.tombstones is not None else (),
+        rows=args.rows if args.rows is not None else live,
+        tombstones=args.tombstones if args.tombstones is not None else deleted,
         content_hash=_file_digest(args.file),
     )
     document = manifest.to_json() + "\n"
@@ -133,17 +137,19 @@ def _check(args: argparse.Namespace) -> int:
     manifest = Manifest.from_json(path.read_text(encoding="utf-8"))
     manifest.check(contract)
     problems = []
-    if manifest.rows is not None:
-        try:
-            counted = _counted(args.file)
-        except _UsageError:
-            print(
-                f"dogana check: note: {args.file}: rows not compared, dogana counts CSV and Parquet",
-                file=sys.stderr,
-            )
-            counted = manifest.rows
-        if counted != manifest.rows:
-            problems.append(f"rows: the manifest declares {manifest.rows}, {args.file} has {counted}")
+    live: int | None
+    try:
+        live, deleted = _counted(args.file, contract)
+    except _UsageError:
+        print(
+            f"dogana check: note: {args.file}: counts not compared, dogana counts CSV and Parquet",
+            file=sys.stderr,
+        )
+        live, deleted = manifest.rows, manifest.tombstones
+    if manifest.rows is not None and live != manifest.rows:
+        problems.append(f"rows: the manifest declares {manifest.rows}, {args.file} has {live}")
+    if deleted != manifest.tombstones:
+        problems.append(f"tombstones: the manifest declares {manifest.tombstones}, {args.file} has {deleted}")
     if manifest.content_hash is not None and (digest := _file_digest(args.file)) != manifest.content_hash:
         problems.append(
             f"content_hash: the manifest declares {manifest.content_hash}, {args.file} hashes to {digest}"
@@ -174,42 +180,18 @@ def _window(
     return shape.window_ending_at(produced_at, kind)
 
 
-def _counted(path: Path) -> int:
+def _counted(path: Path, contract: Contract, marked: bool = False) -> tuple[int, int]:
+    declare = "--rows" + (" and --tombstones" if marked else "")
     try:
-        return _count_rows(path)
+        return _count_rows(path, contract.deleted_column)
     except ModuleNotFoundError as exc:
-        raise _UsageError("counting Parquet rows needs the duckdb extra; install it or pass --rows") from exc
+        raise _UsageError(
+            f"counting Parquet rows needs the duckdb extra; install it or pass {declare}"
+        ) from exc
     except InvalidContract as exc:
-        raise _UsageError(f"{exc}; pass --rows") from exc
-
-
-def _keys(path: Path, contract: Contract) -> Iterator[tuple[Scalar, ...]]:
-    for row in _records(path, contract.key):
-        yield tuple(_scalar(row[name], contract.types[name]) for name in contract.key)
-
-
-def _records(path: Path, columns: tuple[str, ...]) -> Iterator[dict[str, str]]:
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        with path.open(newline="", encoding="utf-8") as stream:
-            reader = csv.DictReader(stream)
-            missing = [name for name in columns if name not in (reader.fieldnames or ())]
-            if missing:
-                raise InvalidContract(f"{path} has no key column {', '.join(missing)}")
-            yield from reader
-    elif suffix == ".parquet":
-        try:
-            import duckdb
-        except ModuleNotFoundError as exc:
-            raise _UsageError("reading Parquet keys needs the duckdb extra") from exc
-        selected = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
-        with duckdb.connect() as connection:
-            for values in connection.execute(
-                f"SELECT {selected} FROM read_parquet(?)", [str(path)]
-            ).fetchall():
-                yield {name: str(value) for name, value in zip(columns, values, strict=True)}
-    else:
-        raise _UsageError(f"{path}: keys can be read from CSV or Parquet files")
+        if path.suffix.lower() in (".csv", ".parquet"):
+            raise
+        raise _UsageError(f"{exc}; pass {declare}") from exc
 
 
 def _sidecar(path: Path) -> Path:

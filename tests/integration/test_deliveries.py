@@ -9,7 +9,7 @@ from dogana import Claims, Contract, Ledger, Manifest, Receipt, State, next_extr
 from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
-from tests.integration.support import csv_file, row, sidecar
+from tests.integration.support import MARKED, csv_file, marked, row, sidecar
 from tests.support import COLUMNS, FEED, FULL, SINCE, WINDOW, at, contract, schema_hash
 
 
@@ -62,16 +62,16 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                     shape = "since" if c.table == "invoices" else "feed"
                     kwargs["since"] = at(day - 1) if shape == "since" else f"g{day - 1}"
                     if shape == "feed":
-                        kwargs.update(
-                            generation=f"g{day}",
-                            keys=tuple((r["id"],) for r in incoming),
-                            tombstones=((1,),) if day == 19 else (),
-                        )
+                        deleted = (1,) if day == 19 else ()
+                        kwargs.update(generation=f"g{day}", tombstones=len(deleted))
                         expected[c.table].pop(1, None)
                     expected[c.table].update({r["id"]: r for r in incoming})
-                path = csv_file(tmp_path, f"{c.table}_{day}.csv", incoming)
+                columns, delivered = COLUMNS, incoming
+                if shape == "feed":
+                    columns, delivered = MARKED, marked(incoming, deleted)
+                path = csv_file(tmp_path, f"{c.table}_{day}.csv", delivered, columns)
                 manifest = sidecar(path, c, shape, day, len(incoming), **kwargs)
-                receipt = FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30))
+                receipt = FileDrop(store, c, columns=columns).ingest(path, now=at(30))
                 assert receipt.accepted, receipt.checks
                 receipt_count += 1
                 publication_ids[c.table, day] = receipt.publication_id
@@ -183,27 +183,17 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
         path = csv_file(tmp_path, "base.csv", [row(1), row(2)])
         sidecar(path, c, "full", 18, 2, generation="g41")
         assert FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30)).accepted
-        path = csv_file(tmp_path, "restored.csv", [row(3)])
-        sidecar(
-            path,
-            c,
-            "feed",
-            19,
-            1,
-            since="backup-g3",
-            generation="backup-g4",
-            keys=((3,),),
-            tombstones=((1,),),
-        )
-        rejected = FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30))
+        path = csv_file(tmp_path, "restored.csv", marked([row(3)], (1,)), MARKED)
+        sidecar(path, c, "feed", 19, 1, since="backup-g3", generation="backup-g4", tombstones=1)
+        rejected = FileDrop(store, c, columns=MARKED).ingest(path, now=at(30))
         assert not rejected.accepted
         assert store.read(c.table) == [row(1), row(2)]
         path = csv_file(tmp_path, "rebase.csv", [row(2), row(3)])
         sidecar(path, c, "full", 20, 2, generation="new-g1")
         assert FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30)).accepted
-        path = csv_file(tmp_path, "feed.csv", [row(4)])
-        sidecar(path, c, "feed", 21, 1, since="new-g1", generation="new-g2", keys=((4,),), tombstones=((2,),))
-        accepted = FileDrop(store, c, columns=COLUMNS).ingest(path, now=at(30))
+        path = csv_file(tmp_path, "feed.csv", marked([row(4)], (2,)), MARKED)
+        sidecar(path, c, "feed", 21, 1, since="new-g1", generation="new-g2", tombstones=1)
+        accepted = FileDrop(store, c, columns=MARKED).ingest(path, now=at(30))
         assert accepted.accepted
         assert store.read(c.table) == [row(3), row(4)]
         assert accepted.claims.deletions_as_of == at(21)
@@ -400,20 +390,13 @@ def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path
         path = csv_file(tmp_path, "base.csv", [row(1, 18), row(2, 19)])
         m = sidecar(path, c, "full", 19, 2, generation="g1")
         first = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        path = csv_file(tmp_path, "delete.csv", [])
+        path = csv_file(tmp_path, "delete.csv", marked([], (1,)), MARKED)
         m = sidecar(
-            path,
-            c,
-            "feed_window",
-            20,
-            0,
-            window=(at(19).date(), at(19).date()),
-            since=at(19),
-            tombstones=((1,),),
+            path, c, "feed_window", 20, 0, window=(at(19).date(), at(19).date()), since=at(19), tombstones=1
         )
-        receipt = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
+        receipt = store.deliver(c, _FileSource(path, MARKED), m, now=at(30))
         assert not receipt.accepted
-        assert any(x.name == "named_keys" and not x.passed for x in receipt.checks)
+        assert [x.name for x in receipt.checks if not x.passed] == ["rows_in_window"]
         assert store.read(c.table) == [row(1, 18), row(2, 19)]
         assert store.load_ledger(c) == first.ledger
 
@@ -433,16 +416,21 @@ def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
         assert store.load_ledger(c) == first.ledger
 
 
-def test_a_changed_key_enumeration_must_match_the_file_and_never_hide_live_tombstones(tmp_path):
+def test_marked_rows_must_match_the_declared_counts_and_never_name_a_live_key(tmp_path):
     c = contract(shapes={"full": FULL, "feed": FEED})
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
         m = sidecar(path, c, "full", 18, 1, generation="g1")
         assert store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
-        path = csv_file(tmp_path, "feed.csv", [row(2)])
-        for keys, tombstones in [(((3,),), ()), ((), ((2,),))]:
-            m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", keys=keys, tombstones=tombstones)
-            assert not store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
+        for name, deleted, declared, failed in [
+            ("undeclared.csv", (1,), 0, "row_count"),
+            ("overdeclared.csv", (), 1, "row_count"),
+            ("both.csv", (2,), 1, "key_integrity"),
+        ]:
+            path = csv_file(tmp_path, name, marked([row(2)], deleted), MARKED)
+            m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", tombstones=declared)
+            receipt = store.deliver(c, _FileSource(path, MARKED), m, now=at(30))
+            assert [x.name for x in receipt.checks if not x.passed] == [failed], name
         assert store.read(c.table) == [row(1)]
 
 

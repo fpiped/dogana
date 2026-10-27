@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from dogana import Contract, Ledger, Manifest, Region, Shape
+from dogana import Ledger, Manifest, Region
 from tests.support import WINDOW, at
 from tests.support import accounting_contract as contract
 
@@ -47,24 +47,6 @@ def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings
         assert ledger.claims(at(26), window=(point, point)).deletions_as_of == at(26)
     outside = low.astimezone(UTC) - timedelta(microseconds=1)
     assert ledger.claims(at(26), window=(outside, outside)).deletions_as_of is None
-
-
-def test_distinct_fall_back_datetime_keys_are_not_mistaken_for_duplicates():
-    rome = ZoneInfo("Europe/Rome")
-    keys = tuple((datetime(2026, 10, 25, 2, 30, tzinfo=rome, fold=fold),) for fold in (0, 1))
-    c = Contract(
-        "events",
-        ("time",),
-        {
-            "feed": Shape(
-                coverage="keys", completeness="changed_only", deletions="none", checkpoint="timestamp"
-            )
-        },
-        types={"time": "datetime"},
-    )
-    manifest = Manifest(c.table, "feed", at(26), since=at(25), keys=keys)
-    manifest.check(c)
-    assert manifest.keys[0] != manifest.keys[1]
 
 
 def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_gap():

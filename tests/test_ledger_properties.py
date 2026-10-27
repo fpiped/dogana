@@ -34,8 +34,9 @@ CONTRACT = Contract(
         "global_deletes": replace(SINCE, deletions=Deletions.TOMBSTONE),
     },
     window_column="bucket",
-    types={"id": "int", "bucket": "int"},
+    types={"id": "int", "bucket": "int", "deleted": "bool"},
     max_shrink_fraction=None,
+    deleted_column="deleted",
 )
 LAWS = settings(max_examples=80, deadline=None, database=None)
 Evidence = tuple[datetime, datetime] | None

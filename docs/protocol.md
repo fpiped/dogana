@@ -1,6 +1,18 @@
 # The dogana protocol
 
-Version 1. This page defines the wire values, transitions and publication obligations.
+Version 2. This page defines the wire values, transitions and publication obligations.
+[Concepts](concepts.md) explains the same ideas from the beginning, with examples.
+
+## Reading this page
+
+- A row is **live** at an instant if the source holds it then. A **deleted** row was live once and
+  is not any more. A **tombstone** is a delivered row that says "this key is deleted".
+- `t` is a delivery's read boundary, `produced_at`. A region's two dates are written `(c, d)`:
+  `c` is `complete_as_of`, `d` is `deletions_as_of`.
+- `[a, b]` is the interval from `a` to `b` with both ends included; `(a, b]` leaves out `a`.
+  Code writes a missing end of an interval as `None`, meaning "no limit on that side".
+- A delivery's **coverage** is the part of the table it speaks about: the whole table, or a closed
+  window of the window column.
 
 ## Trust model
 
@@ -24,10 +36,11 @@ no lookback proves that extraction was complete.
 ## Contract and shapes
 
 `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, optional `cursor_column`,
-`types`, optional `schema_hash`, `max_shrink_fraction`, `freshness` and `start_at`. `types` maps
-column names to logical types `int`, `float`, `str`, `bool`, `date`, `datetime`. It covers exactly
-the union of key, window and cursor columns, with no other columns; it is empty only when none
-are bound. Keys and window bounds use ordered scalar types; a cursor uses `datetime`.
+optional `deleted_column`, `types`, optional `schema_hash`, `max_shrink_fraction`, `freshness` and
+`start_at`. `types` maps column names to logical types `int`, `float`, `str`, `bool`, `date`,
+`datetime`. It covers exactly the union of key, window, cursor and deleted columns, with no other
+columns; it is empty only when none are bound. Keys and window bounds use ordered scalar types; a
+cursor uses `datetime` or `int`; the deleted column uses `bool`.
 
 The data contract defines the columns. The delivery contract references it by an opaque
 `schema_hash`, keeping column ownership in one place. The receiver obtains this string from its
@@ -47,7 +60,11 @@ and file drop use this recipe; another store must agree with its receiver on the
 to 0.5, lies between zero and one, and is disabled only by explicit `None`.
 
 A window column exists exactly when a window shape exists. Regions divide this one column's ordered
-domain, not the key space. Its value must be immutable for a key; a full delivery can reset it.
+domain, not the key space. Its value must never change for a row: a creation, order, document or
+event date, never an update timestamp. A row whose window value moves from one region to another
+can be missing from both, when the two were proven at different instants; a full delivery resets
+the table. "Rows updated in the last 30 days" is therefore not a window: it is a changes delivery
+whose `since` is 30 days back.
 Keys are unique and non-null. Key and window values are strings, integers, dates or UTC datetimes;
 `types` and manifest bounds must agree on type. Normalize aware datetimes to UTC before key
 equality or interval arithmetic, including DST folds. Strings use code-point order, without Unicode
@@ -59,27 +76,45 @@ An empty `key` means rows have no identity. Complete shapes replace their covera
 Keyless rows form a multiset: equal events retain separate occurrences.
 Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
 `start_at` bounding retained history. This declares that the source only appends and never deletes
-or revises retained events. Named-key coverage, tombstones and generation checkpoints require keys.
+or revises retained events. Tombstones, generations and sequences require keys.
 An optional `cursor_column` names a column declared as `datetime` or `int` in `types`. A `datetime`
 cursor checks timestamp reads against `(since, produced_at]`; an `int` cursor checks sequence reads
 against `(since, generation]`; a cursor column must check one of the contract's changed-only shapes. Without it,
 the gate cannot check individual rows against the declared extraction interval.
 
+An optional `deleted_column` names a column declared as `bool` in `types`. It exists exactly when a
+tombstone shape exists, and it is a column of its own, not a key, window or cursor column. In a
+delivered file, a row whose deleted column is true is a tombstone: it names a deleted key, and its
+other values are not published. They may be null; where present they must still have their
+column's type. A row whose deleted column is false is live; a null is neither, and the
+row count refuses it. A file may omit the column, and then every row is live. The column belongs to
+the delivery, not to the table: it is never published and the column hash leaves it out. Only a
+tombstone shape may deliver a true value. Because keys travel in the file, only `content_hash` lets a
+manifest identify which keys a file deletes: without it, a second file with the same manifest is a
+replay of the first and is never read. Declare it for tombstone shapes; `dogana manifest` and the
+file drop always do. A source that soft-deletes (it keeps the row and sets a
+flag) can deliver that flag here, as long as the soft delete also moves the row's update time and
+the source never removes rows physically; otherwise the honest shape has deletions `none`.
+
 A `Shape` has four semantic properties:
 
 | Property | Values | Meaning |
 |---|---|---|
-| coverage | `all`, `window`, `keys` | Whole domain, closed window, or a table-wide stream naming changed keys. |
+| coverage | `all`, `window` | The whole table, or a closed window of the window column. |
 | completeness | `complete`, `changed_only` | All current rows in coverage, or all changes since a checkpoint. |
-| deletions | `absence`, `tombstone`, `none` | Missing rows delete, named keys delete, or no deletion signal. |
+| deletions | `absence`, `tombstone`, `none` | A missing row is deleted, a tombstone row names a deleted key, or nothing is said about deletions. |
 | checkpoint | `generation`, `sequence`, `timestamp`, `none` | Opaque cursor, ordered integer position, source time, or no checkpoint. |
 
 Complete shapes require `absence` and checkpoint `none`. Changed-only shapes require `timestamp`,
-`generation` or `sequence` and deletions `none` or `tombstone`. Key coverage is changed-only.
-Generations and sequences are table-wide positions, so window feeds of either are forbidden, and a
-table holds one kind of position. These rules admit sixteen semantic shapes.
+`generation` or `sequence` and deletions `none` or `tombstone`. Generations and sequences are
+table-wide positions, so window feeds of either are forbidden, and a table holds one kind of
+position. These rules admit ten semantic shapes: complete over the whole table or a window, and
+changed-only over the whole table (three checkpoints) or a window (timestamp only), each with or
+without tombstones.
 
-Shapes also carry nonnegative relative `cost` (default one), optional positive `window_size` and
+Shapes also carry a nonnegative `cost` (default one): how expensive it is to ask the source for
+that kind of file, relative to the other shapes. Only the planner reads it, to choose the cheapest
+shape that proves a requirement. Shapes also carry an optional positive `window_size` and
 optional `lookback` durations. `window_size` is a planning hint, not a push-window width constraint.
 Rolling durations require date or datetime windows. DATE widths are whole days including both ends:
 thirty days ending October 19 start September 20. Datetime windows include both ends of the elapsed UTC duration.
@@ -96,7 +131,8 @@ from the weakest covered completeness boundary. Keyless appends cannot overlap.
 | Exhaustive rolling window | `Shape.window(size=...)` | Mutable window membership or more than one window column. |
 | One complete partition per file | Complete singleton window | A finite registered domain; space outside delivered partitions remains unknown. |
 | Every changed row since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="none")` | Deletions or repair of a missed full export without another full export. |
-| Every changed row and deleted key since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
+| Rows updated in the last N days, by update time | `Shape.changes()` with `since` N days back | Deletions; it is not a window. |
+| Every changed row and deleted key since a timestamp, including a soft delete that moves the update time | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
 | Continuous opaque-cursor feed with deleted keys | `Shape.feed()` | Window-local cursors, missing generations or repair of an unknown base. |
 | Every change after a commit-ordered position (log sequence number, CDC or Kafka offset) | `Shape.changes(checkpoint="sequence")` or `Shape.feed(checkpoint="sequence")` | Positions assigned before commit, such as auto-increment ids under concurrent writers; updates that do not advance the position; positions beyond 2^53. |
 | Immutable events retained from a declared start | `Shape.append()` | Updates, deletion or overlapping keyless intervals. |
@@ -109,7 +145,7 @@ the contract's optional schema hash. `Shape.window_ending_at` centralizes inclus
 
 ## Manifest
 
-`Manifest(table, shape, produced_at, *, window, since, generation, rows, schema_hash, keys, tombstones,
+`Manifest(table, shape, produced_at, *, window, since, generation, rows, schema_hash, tombstones,
 content_hash)` describes one read. `window` is required exactly for window coverage; `since` exactly
 for changed-only shapes. Timestamp checkpoints are aware datetimes; generation checkpoints and
 issued generations are nonempty strings. A generation feed must issue its next generation.
@@ -125,11 +161,11 @@ positions need a key; keyless tables append by timestamp. A delivery that issues
 the table's kind: an integer when the contract has sequence shapes, else a string.
 A complete whole-domain delivery may issue a generation; a complete window carries none.
 
-Changed-only delivery collapses changes to one final live row or terminal tombstone per key at its
-boundary. `rows` counts live rows, excluding tombstones. `keys` and `tombstones` are tuples of
-composite key tuples of the contract's width and types. Key coverage enumerates every live key;
-other keyed shapes may omit the enumeration. Live and tombstoned keys cannot intersect. Tombstones
-require a tombstone shape. A zero-length timestamp interval contains no rows.
+Changed-only delivery collapses changes to one final row per key at its boundary: the live row, or a
+tombstone row when the key ends deleted. `rows` counts the live rows and `tombstones` the tombstone
+rows; together they are every row of the file. Keys travel in the rows, never in the manifest, so a
+manifest stays the same size whatever the volume. Tombstones require a tombstone shape. A
+zero-length interval contains no rows and no tombstones.
 
 Timestamp deliveries with `cursor_column` use `(since, produced_at]`, including for keyed feeds.
 Without that column, keyed extraction may include `since`; overlapping keyed reads are admissible.
@@ -152,13 +188,16 @@ recover rows. Supersession at the same boundary remains an open decision.
 flags, `complete_as_of` and `deletions_as_of`. `None` endpoints are unbounded. Evidence dates are absent
 together, or `deletions_as_of <= complete_as_of`. No accepted-identity history is embedded in the ledger.
 
-For a region with dates `(c, v)`, every source row live there at `c` is present. Every retained row
-was live at some source instant in `[v, c]`; deletions after `v` may remain. Equal dates mean the
-region equals the source at that instant. Unknown is different from a known empty region.
+For a region with dates `(c, d)`, every row the source held at instant `c`, with a window value in
+the region, is present: nothing is missing. Every row retained there was still live at the source at
+some instant in `[d, c]`: nothing deleted before `d` is still here, while a row deleted after `d`
+may be. Equal dates mean the region equals the source at that instant. Unknown is different from a
+known empty region: unknown means no delivery has proven anything there.
 
-Internally a step function stores sorted cuts with Unknown or Known evidence to their right.
-`Region` remains the wire and claims view, including endpoint flags. Adjacent equal evidence has
-one run; untouched space remains unknown. `Ledger.apply` performs accounting only, without row
+Internally the ledger stores only the points where the evidence changes (cuts), each with the
+evidence that holds from it to the next one. `Region` is the view of the pieces between cuts, used
+on the wire and in claims, including endpoint flags. Neighbouring pieces with equal evidence merge;
+space no delivery touched stays unknown. `Ledger.apply` performs accounting only, without row
 certification or replay lookup. Store delivery owns replay idempotency.
 
 ## Transitions
@@ -169,12 +208,12 @@ certification or replay lookup. Store delivery owns replay idempotency.
 | Complete window, any evidence | `(t, t)` | Unchanged. |
 | First keyless append, unknown | `(t, t)` | Issued generation if present, otherwise unchanged. |
 | Later keyless append, known | `(t, t)` | Issued generation if present, otherwise unchanged. |
-| Keyed timestamp changes without deletions, `(c, v)` | `(t, v)` | Issued generation if present, otherwise unchanged. |
-| Keyed timestamp tombstones, `(c, v)`, `since <= v` | `(t, t)` | Issued generation if present, otherwise unchanged. |
-| Keyed timestamp tombstones, `(c, v)`, `since > v` | `(t, v)` | Issued generation if present, otherwise unchanged. |
-| Generation changes without deletions, `(c, v)` | `(t, v)` | Issued generation. |
-| Generation tombstones, `(c, v)`, `c = v` | `(t, t)` | Issued generation. |
-| Generation tombstones, `(c, v)`, `c > v` | `(t, v)` | Issued generation. |
+| Keyed timestamp changes without deletions, `(c, d)` | `(t, d)` | Issued generation if present, otherwise unchanged. |
+| Keyed timestamp tombstones, `(c, d)`, `since <= d` | `(t, t)` | Issued generation if present, otherwise unchanged. |
+| Keyed timestamp tombstones, `(c, d)`, `since > d` | `(t, d)` | Issued generation if present, otherwise unchanged. |
+| Generation changes without deletions, `(c, d)` | `(t, d)` | Issued generation. |
+| Generation tombstones, `(c, d)`, `c = d` | `(t, t)` | Issued generation. |
+| Generation tombstones, `(c, d)`, `c > d` | `(t, d)` | Issued generation. |
 | Keyed sequence changes, as generation changes | as generation changes | `generation`, the read's last position. |
 
 - Manifest fields must match its admitted shape and contract, including bounds and key types.
@@ -194,7 +233,8 @@ certification or replay lookup. Store delivery owns replay idempotency.
 
 `ApplyPlan` contains ordered `Action` values. `replace_all` replaces the table. `replace_window`
 removes rows in its closed window, removes earlier copies of candidate keys and inserts the candidate.
-`upsert` matches the contract key; `tombstone` deletes exactly its keys; `append` inserts without
+`upsert` replaces the published rows that share a key with a live candidate row; `tombstone` deletes
+the published rows whose keys the candidate's tombstone rows name; `append` inserts without
 matching. Keyless replacement does not match keys. The core describes operations but never reads rows.
 
 `Gate.requirements(contract, manifest)` names required row checks. The store returns exactly one
@@ -202,14 +242,13 @@ matching. Keyless replacement does not match keys. The core describes operations
 
 | Check | Predicate |
 |---|---|
-| row_count | Candidate live row count equals `manifest.rows`. |
+| row_count | The candidate's live rows equal `manifest.rows`, its tombstone rows equal `manifest.tombstones`, and no deleted column is null. |
 | schema_hash | Candidate column hash and manifest hash equal `contract.schema_hash`; omitted when the contract hash is absent. |
-| rows_in_window | Every candidate window value is non-null and inside the declared closed window. |
-| window_stability | Every candidate window-column value is non-null. |
-| key_integrity | Every candidate key is non-null and unique. |
-| named_keys | Required live-key enumeration equals candidate keys; window tombstones cannot delete published keys outside coverage. |
+| rows_in_window | Every live window value is non-null and inside the declared closed window, and so is the window value of every published row a tombstone deletes. |
+| window_stability | Every live window-column value is non-null. |
+| key_integrity | Every key, live or tombstoned, is non-null and appears once: a key cannot be both live and deleted. |
 | shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
-| rows_in_interval | With a `datetime` cursor and a timestamp read, every cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. |
+| rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes the store read equals it. |
 
 Moving a key into a window is safe: replacement removes its old copy. Moving out can leave a hole
@@ -226,8 +265,8 @@ The `Receipt` contains manifest, checks, `outcome` (`accepted`, `rejected` or `r
 Acceptance and replay have a transition; rejection retains the previous ledger and publication.
 `accepted` and `replayed` are derived compatibility properties. Receipts
 are indexed by the receiver contract's table even if the rejected manifest names another table.
-Their identity also covers check outcomes. Ledger evidence in each receipt grows with region count,
-not delivery count; manifest key lists and other payload metadata still contribute to receipt size.
+Their identity also covers check outcomes. A receipt grows with the ledger's region count, never
+with the number of delivered rows or deleted keys.
 
 `DoganaError` is the error root; `InvalidContract`, `RejectedDelivery`, `PlanningError`,
 `SerializationError` and `StoreError` distinguish configuration, delivery, planning, wire and storage
@@ -351,7 +390,8 @@ Reconstruction uses each accepted receipt's historical contract, then the reques
 
 ## Versioned JSON
 
-Structured wire values have `version: 1` and `kind` equal to the public class name. Field names match
+Structured wire values have `version: 2` and `kind` equal to the public class name. Version 1
+documents, written by dogana 0.1, are refused: their manifests listed keys. Field names match
 constructor arguments; every field, including defaults, is present. Tuples encode as arrays, enums
 as strings, mappings as objects. Missing or unknown fields, unsupported versions/kinds, invalid
 wire types, overflowing tags and naive datetimes raise `SerializationError` before normalization.
@@ -360,8 +400,7 @@ Dates use `{"$date":"2026-10-18"}`, UTC datetimes
 `{"$datetime":"2026-10-18T00:00:00+00:00"}`, durations `{"$seconds":604800}`. Canonical wire JSON
 uses sorted keys, compact separators and ASCII escapes. Identity is SHA-256 of [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785)
 (JSON Canonicalization Scheme) applied to the identity dictionary: recursively omit `version` and
-fields equal to defaults; sort keys/tombstones lexically by each tuple's canonical JSON in UTF-16 code-unit order; normalize datetimes
-to UTC `+00:00`. A replay's `outcome` is normalized to `accepted` for identity, retaining its
+fields equal to defaults; normalize datetimes to UTC `+00:00`. A replay's `outcome` is normalized to `accepted` for identity, retaining its
 original receipt identity. `identity_dict()` and `identity_json()` expose this form.
 JCS emits UTF-8, sorts object keys by UTF-16 code units and formats finite binary64 numbers using
 the ECMAScript shortest round-trip rule, including `-0` as `0`. Integer inputs must be exactly
@@ -390,4 +429,5 @@ The conformance suite exercises publication obligations against store implementa
 is evidence for those scenarios, not a proof of arbitrary storage or source correctness.
 
 Open owner decisions are public vocabulary, a table namespace, finite string or multidimensional
-domains, a CLI, same-boundary supersession, and release and compatibility policy; none is added here.
+domains, receiver and reader commands, same-boundary supersession, one delivery for parent and child
+tables, and release and compatibility policy; none is added here.

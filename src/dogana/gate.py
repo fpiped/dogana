@@ -9,10 +9,8 @@ from enum import StrEnum
 from .contract import (
     AppendInterval,
     Contract,
-    Coverage,
     FullDelivery,
     Manifest,
-    Scalar,
     TimestampChanges,
     Window,
     WindowCoverage,
@@ -36,19 +34,16 @@ class Operation(StrEnum):
 
 @dataclass(frozen=True)
 class Action(Wire):
+    """One row operation; upsert and tombstone take their keys from the candidate's live and deleted rows."""
+
     operation: Operation
     window: Window | None = None
-    keys: tuple[tuple[Scalar, ...], ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
         object.__setattr__(self, "window", bounds(self.window))
         if (self.operation is Operation.REPLACE_WINDOW) != (self.window is not None):
             raise InvalidContract("only replace_window actions supply a window")
-        if self.keys and self.operation not in (Operation.UPSERT, Operation.TOMBSTONE):
-            raise InvalidContract("only key actions supply keys")
-        if any(not key for key in self.keys) or len(set(self.keys)) != len(self.keys):
-            raise InvalidContract("action keys must be nonempty and distinct")
 
 
 @dataclass(frozen=True)
@@ -72,8 +67,6 @@ class ApplyPlan(Wire):
                 raise InvalidContract("window actions need a window column")
             if action.operation in (Operation.UPSERT, Operation.TOMBSTONE) and not self.key:
                 raise InvalidContract("key actions need a key")
-            if any(len(key) != len(self.key) for key in action.keys):
-                raise InvalidContract("action keys must have the plan key width")
 
     @classmethod
     def build(cls, contract: Contract, manifest: Manifest) -> ApplyPlan:
@@ -87,9 +80,9 @@ class ApplyPlan(Wire):
             case WindowDelivery(window=window):
                 actions = (Action(Operation.REPLACE_WINDOW, window),)
             case _:
-                actions = (Action(Operation.UPSERT, keys=manifest.keys),)
+                actions = (Action(Operation.UPSERT),)
                 if manifest.tombstones:
-                    actions += (Action(Operation.TOMBSTONE, keys=manifest.tombstones),)
+                    actions += (Action(Operation.TOMBSTONE),)
         return cls(contract.table, contract.key, contract.window_column, actions)
 
 
@@ -190,8 +183,6 @@ class Gate:
             names.append("rows_in_interval")
         if contract.key:
             names.append("key_integrity")
-        if shape.coverage is Coverage.KEYS or manifest.keys or manifest.tombstones:
-            names.append("named_keys")
         if shape.complete and contract.max_shrink_fraction is not None:
             names.append("shrink_tolerance")
         if manifest.content_hash is not None:

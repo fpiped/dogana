@@ -289,12 +289,14 @@ def test_a_date_only_source_boundary_requires_an_explicit_timezone() -> None:
 
 def test_a_declared_timezone_does_not_override_an_explicit_offset_or_parse_generation_strings() -> None:
     shape = Shape(
-        coverage=Coverage.KEYS,
+        coverage=Coverage.ALL,
         completeness=Completeness.CHANGED_ONLY,
         deletions=Deletions.TOMBSTONE,
         checkpoint=Checkpoint.GENERATION,
     )
-    c = Contract("files", ("id",), {"feed": shape}, types={"id": "int"})
+    c = Contract(
+        "files", ("id",), {"feed": shape}, types={"id": "int", "deleted": "bool"}, deleted_column="deleted"
+    )
     pattern = FilePattern(
         r"(?P<produced_at>[^_]+)__(?P<since>[^_]+)__(?P<generation>[^_]+)__(?P<rows>0)\.csv",
         shape="feed",

@@ -17,7 +17,7 @@ from dogana import (
 from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
-def test_the_sixteen_semantic_shapes_and_no_other_are_admitted():
+def test_the_ten_semantic_shapes_and_no_other_are_admitted():
     valid = []
     for properties in product(Coverage, Completeness, Deletions, Checkpoint):
         try:
@@ -30,7 +30,7 @@ def test_the_sixteen_semantic_shapes_and_no_other_are_admitted():
             )
         except InvalidContract:
             pass
-    assert len(valid) == 16
+    assert len(valid) == 10
     assert not any(
         s.coverage is Coverage.WINDOW and s.checkpoint in (Checkpoint.GENERATION, Checkpoint.SEQUENCE)
         for s in valid
@@ -143,7 +143,7 @@ def test_append_only_history_has_an_explicit_start_and_a_keyless_full_export_nee
     with pytest.raises(InvalidContract, match="start_at"):
         Contract("receipts", (), {"full": FULL}, start_at=at(1))
     with pytest.raises(InvalidContract, match="append-only"):
-        Contract("receipts", (), {"feed": FEED})
+        Contract("receipts", (), {"feed": FEED}, types={"deleted": "bool"}, deleted_column="deleted")
 
 
 def test_unrecognized_shape_properties_use_the_public_contract_error():
@@ -161,7 +161,7 @@ def test_date_windows_cannot_request_fractional_calendar_days():
 @pytest.mark.parametrize("column_type", ["int", "str"])
 def test_a_duration_cannot_define_a_rolling_window_over_integer_or_string_partitions(column_type):
     with pytest.raises(InvalidContract, match="date or datetime"):
-        contract(types={"id": "int", "day": column_type})
+        contract(types={"id": "int", "day": column_type, "deleted": "bool"})
 
 
 def test_shrink_protection_is_enabled_by_default_and_only_none_disables_it():
@@ -215,7 +215,9 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         replace(original, table="other"),
         replace(original, key=("day", "id")),
         replace(original, types={**original.types, "id": "str"}),
-        replace(original, window_column=None, shapes={"full": FULL}, types={"id": "int"}),
+        replace(
+            original, window_column=None, shapes={"full": FULL}, types={"id": "int"}, deleted_column=None
+        ),
     ):
         assert not original.compatible_with(incompatible)
 
@@ -251,13 +253,11 @@ def test_contract_constructor_rejects_invalid_types_before_normalization(field, 
         ("shape", ""),
         ("rows", "2"),
         ("rows", True),
-        ("keys", "ab"),
-        ("keys", ("ab",)),
-        ("keys", ((True,),)),
-        ("keys", ((1.0,),)),
-        ("keys", ((None,),)),
-        ("keys", ((),)),
-        ("keys", ((1,), (1,))),
+        ("tombstones", -1),
+        ("tombstones", True),
+        ("tombstones", 1.0),
+        ("tombstones", None),
+        ("tombstones", ((1,),)),
         ("tombstones", {1}),
         ("window", "ab"),
         ("window", {1: 2, 3: 4}),
@@ -282,16 +282,16 @@ def test_list_inputs_are_copied_into_immutable_typed_values():
     key = ["id"]
     types = {"id": "int"}
     c = Contract("stock", key, {"full": FULL}, types=types)
-    live_keys = [[1], [2]]
-    m = Manifest("stock", "full", at(18), keys=live_keys)
+    window = [1, 2]
+    m = Manifest("stock", "daily", at(18), window=window)
     key.clear()
     types.clear()
-    live_keys[0].append(3)
+    window.append(3)
     assert c.key == ("id",)
     assert c.types == {"id": "int"}
     with pytest.raises(TypeError):
         c.types["id"] = "str"
-    assert m.keys == ((1,), (2,))
+    assert m.window == (1, 2)
     assert hash(c) == hash(Contract.from_json(c.to_json()))
     assert hash(m) == hash(Manifest.from_json(m.to_json()))
 
@@ -344,7 +344,6 @@ def test_lone_surrogates_cannot_enter_window_or_key_domains(value):
     from dogana.contract import bounds
 
     for build in (
-        lambda: Manifest("stock", "full", at(18), keys=((value,),)),
         lambda: Manifest("stock", "daily", at(18), window=(value, value)),
         lambda: Region(value, None),
         lambda: bounds((value, value)),
@@ -450,14 +449,29 @@ def test_type_mapping_order_changes_neither_contract_identity_nor_hash():
     assert c == reordered and c.identity == reordered.identity and hash(c) == hash(reordered)
 
 
-@pytest.mark.parametrize(
-    "logical_type,value", [("int", 1), ("str", "one"), ("date", at(18).date()), ("datetime", at(18))]
-)
-def test_named_keys_and_tombstones_use_the_declared_types_without_a_schema_hash(logical_type, value):
-    c = Contract("events", ("id",), {"feed": FEED}, types={"id": logical_type})
-    for field in ("keys", "tombstones"):
-        valid = Manifest(c.table, "feed", at(19), since="g0", generation="g1", **{field: ((value,),)})
-        valid.check(c)
-        wrong = "wrong" if logical_type != "str" else 1
-        with pytest.raises(InvalidContract, match="named key types"):
-            replace(valid, **{field: ((wrong,),)}).check(c)
+def test_a_deleted_column_exists_exactly_for_tombstone_shapes_and_has_its_own_boolean_type():
+    feed = Contract(
+        "stock", ("id",), {"feed": FEED}, types={"id": "int", "gone": "bool"}, deleted_column="gone"
+    )
+    assert feed.deleted_column == "gone" and feed.compatible_with(
+        replace(feed, deleted_column="__deleted", types={"id": "int", "__deleted": "bool"})
+    )
+    with pytest.raises(InvalidContract, match="exactly one deleted column"):
+        Contract("stock", ("id",), {"feed": FEED}, types={"id": "int"})
+    with pytest.raises(InvalidContract, match="exactly one deleted column"):
+        Contract("stock", ("id",), {"full": FULL}, types={"id": "int", "gone": "bool"}, deleted_column="gone")
+    with pytest.raises(InvalidContract, match="type bool"):
+        Contract("stock", ("id",), {"feed": FEED}, types={"id": "int", "gone": "str"}, deleted_column="gone")
+    with pytest.raises(InvalidContract, match="column of its own"):
+        Contract("stock", ("id",), {"feed": FEED}, types={"id": "int"}, deleted_column="id")
+    with pytest.raises(InvalidContract, match="types must cover"):
+        Contract("stock", ("id",), {"feed": FEED}, types={"id": "int"}, deleted_column="gone")
+
+
+def test_only_tombstone_shapes_count_tombstones_and_an_empty_interval_has_none():
+    c = contract()
+    assert c.manifest("feed", at(19), since="g0", generation="g1", rows=1, tombstones=2).tombstones == 2
+    with pytest.raises(InvalidContract, match="only tombstone shapes"):
+        c.manifest("since", at(19), since=at(18), tombstones=1)
+    with pytest.raises(InvalidContract, match="empty interval"):
+        c.manifest("since", at(19), since=at(19), tombstones=1)

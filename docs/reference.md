@@ -5,9 +5,11 @@ file-drop implementations and how to supply your own storage.
 
 ## Column types and hashes
 
-The data contract owns the columns. `Contract.types` maps exactly the union of key, window and
-cursor column names to logical types, with no extras; it is empty only when none are bound.
-Key and window columns use `int`, `str`, `date` or `datetime`; a cursor uses `datetime`.
+The data contract owns the columns. `Contract.types` maps exactly the union of key, window, cursor
+and deleted column names to logical types, with no extras; it is empty only when none are bound.
+Key and window columns use `int`, `str`, `date` or `datetime`; a cursor uses `datetime` or `int`;
+the deleted column uses `bool`. The deleted column marks tombstones in a delivered file and is never
+published, so the column hash leaves it out.
 `Contract.schema_hash` is an optional opaque string supplied by the data contract. The core
 neither holds a full column schema nor computes its hash. When the hash is present, the gate
 requires both the manifest and the store's candidate hash to match it. Without a contract hash,
@@ -32,7 +34,12 @@ Row mappings cannot infer types from an empty input or an all-null column. For t
 use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
 including for files with only nulls or no rows. Parquet retains its physical schema for validation.
 Successful candidates normalize to
-BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. CSV datetime values without an offset
+BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. When the candidate has the contract's
+deleted column, its tombstone rows move to a separate staging table holding only their keys, and
+the deleted column is dropped: every later check and the published table see live rows only, and
+the plan's `tombstone` action deletes the published rows with those keys. Tombstone rows usually
+leave their other columns empty; a CSV read without `columns` infers an all-empty column as text, so
+deliver tombstones through `FileDrop(..., columns=...)` or another typed source. CSV datetime values without an offset
 are interpreted as UTC by the store session; include offsets when the source uses another timezone.
 This CSV convention does not relax the requirement for aware datetimes in core values and manifests.
 
@@ -129,12 +136,13 @@ continuing from its old numeric value. Opaque generation tokens must distinguish
 or Parquet files. Required keyword-only `columns` is an ordered mapping of every data column name
 to its logical type, for example `{"id": "int", "day": "date", "amount": "int"}`. It supplies typed
 CSV parsing and the reference column hash without adding columns to the delivery contract.
-The mapping must agree with `Contract.types` and, when present, `Contract.schema_hash`.
+The mapping must agree with `Contract.types` and, when present, `Contract.schema_hash`. It may
+include the contract's deleted column as `bool`; files of a mapping without it deliver no tombstones.
 The gate checks the candidate hash only when that hash is present.
 The sidecar is `<file>.json`, for example `orders.csv.json`. Without it, `FilePattern` derives a
 manifest using a full-match filename expression. It requires `produced_at` and either a named
-`shape` group or a fixed `shape` argument. Optional groups include `rows`, `low`, `high`, `since`,
-`generation` and `schema_hash`. The file drop supplies receiver time at ingestion unless `now` is explicitly supplied.
+`shape` group or a fixed `shape` argument. Optional groups include `rows`, `tombstones`, `low`,
+`high`, `since`, `generation` and `schema_hash`. The file drop supplies receiver time at ingestion unless `now` is explicitly supplied.
 
 For filenames such as `orders_2026-10-19.csv`, declare the timezone instead of assuming one:
 
@@ -152,8 +160,10 @@ column's entry in `Contract.types`.
 Thirty DATE days ending October 19 start September 20. A window lacking both bounds and duration
 is refused. The duration is not a restriction on explicitly declared push windows.
 
-Without a `rows` group, CSV records are counted, including quoted newlines; Parquet counting needs
-the DuckDB extra. Path-based receipts identify the source. A derived manifest carries the file's SHA-256, so a changed
+Without a `rows` group, the file is counted: its live rows and its tombstones, the rows whose
+deleted column is true. CSV records are counted including quoted newlines; Parquet counting needs
+the DuckDB extra. With a `rows` group the filename declares the counts, `rows` and `tombstones`
+(zero when the group is absent), and the file is not read for them. Path-based receipts identify the source. A derived manifest carries the file's SHA-256, so a changed
 file under the same name is a new delivery, not a replay. The DuckDB store hashes every path whose
 manifest declares a digest, before and after reading it, and refuses a file that changed in between.
 Count and hash describe the received file, not whether it contains all source rows.
@@ -165,7 +175,7 @@ at the caller. Compressed Parquet can expand far beyond its file size. There is 
 ## Command line
 
 `dogana` is installed with the package and runs as `python -m dogana` too. It needs no extra for
-CSV; Parquet rows and keys are read through the `duckdb` extra.
+CSV; Parquet files are counted through the `duckdb` extra.
 
 ```text
 dogana manifest FILE --contract PATH --shape NAME --produced-at TIME [options]
@@ -173,18 +183,20 @@ dogana check FILE --contract PATH [--manifest PATH]
 ```
 
 `manifest` writes the sidecar a file drop reads, `FILE.json`, validated against the contract. It
-counts CSV records (quoted newlines included) and Parquet rows, hashes the bytes with SHA-256 and
-takes the schema hash from the contract; `--rows` declares the count of any other format. Values
+counts the live rows and the tombstones of FILE, CSV records (quoted newlines included) or Parquet
+rows, hashes the bytes with SHA-256 and takes the schema hash from the contract. A tombstone is a row
+whose deleted column is true; in CSV that column holds `true` or `false` (also `t`, `f`, `yes`,
+`no`, `y`, `n`, `1` or `0`, in any case) in every row. `--rows` and `--tombstones` declare the
+counts of any other format. Values
 are typed by the contract: `--window LOW HIGH` by the window column, omitted for a rolling shape
 whose window ends at `--produced-at`; `--since` as a time, an integer position or a generation
-token by the shape's checkpoint; `--generation` by the table's kind of position. A key-coverage
-shape enumerates its keys from FILE, and `--tombstones` reads deleted keys from another file.
+token by the shape's checkpoint; `--generation` by the table's kind of position.
 Times need a UTC offset. `--produced-at` is the source read boundary, never the time the command
 runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
 never reads half a manifest; `-o -` writes to standard output instead.
 
-`check` validates FILE's manifest against the contract and FILE against the manifest: the row count
-and the SHA-256 of the bytes. A sender runs it before handing a file over; a hand-written manifest
+`check` validates FILE's manifest against the contract and FILE against the manifest: the counts of
+rows and tombstones, and the SHA-256 of the bytes. A sender runs it before handing a file over; a hand-written manifest
 gets the same checks the gate applies.
 
 Exit status is 0 on success, 1 when dogana refuses (an invalid contract or manifest, a mismatch, an

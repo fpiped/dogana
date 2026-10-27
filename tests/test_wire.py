@@ -17,13 +17,13 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
         for value in (c, m, ledger):
             assert type(value).from_dict(value.to_dict()) == value
             assert type(value).from_json(value.to_json()) == value
-            assert json.loads(value.to_json())["version"] == 1
+            assert json.loads(value.to_json())["version"] == 2
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        {"version": 2},
+        {"version": 1},
         {"version": True},
         {"kind": "Unknown"},
         {"unknown": 1},
@@ -230,7 +230,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
     assert type(ProtocolShape.from_json(FULL.to_json())) is ProtocolShape
     for kind in ("PrivateValue", "Wire"):
         with pytest.raises(SerializationError, match="unknown wire kind"):
-            Wire.from_dict({"version": 1, "kind": kind})
+            Wire.from_dict({"version": 2, "kind": kind})
     with pytest.raises(SerializationError, match="unknown wire kind"):
         Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
@@ -267,20 +267,14 @@ def test_identity_excludes_versions_recursively(monkeypatch):
     assert value.identity == identity
 
 
-def test_key_set_order_and_timestamp_offsets_do_not_change_manifest_identity():
+def test_timestamp_offsets_do_not_change_manifest_identity():
     from dataclasses import replace
     from datetime import timedelta, timezone
 
-    m = Manifest("stock", "feed", at(18), keys=((2,), (10,)), tombstones=((3,), (1,)))
-    other = replace(
-        m,
-        keys=tuple(reversed(m.keys)),
-        tombstones=tuple(reversed(m.tombstones)),
-        produced_at=at(18).astimezone(timezone(timedelta(hours=2))),
-    )
+    m = Manifest("stock", "feed", at(18), tombstones=3)
+    other = replace(m, produced_at=at(18).astimezone(timezone(timedelta(hours=2))))
     assert other.identity == m.identity
-    assert m.identity_dict()["keys"] == [[10], [2]]
-    assert m.identity_dict()["tombstones"] == [[1], [3]]
+    assert m.identity_dict()["tombstones"] == 3
     assert m.identity_dict()["produced_at"] == {"$datetime": "2026-10-18T00:00:00+00:00"}
 
 
@@ -358,11 +352,11 @@ def test_integer_identity_rejects_lossy_or_overflowing_binary64_values(value):
 
 
 def test_wire_json_preserves_integer_values_while_identity_uses_ecmascript_numbers():
-    value = Manifest("stock", "full", at(18), keys=((2**68,),))
-    assert value.to_dict()["keys"] == [[2**68]]
+    value = Manifest("stock", "daily", at(18), window=(0, 2**68))
+    assert value.to_dict()["window"] == [0, 2**68]
     assert Manifest.from_json(value.to_json()) == value
-    assert value.identity_dict()["keys"] == [[2**68]]
-    assert '"keys":[[295147905179352830000]]' in value.identity_json()
+    assert value.identity_dict()["window"] == [0, 2**68]
+    assert '"window":[0,295147905179352830000]' in value.identity_json()
 
 
 @pytest.mark.parametrize("name", ["kind", "version"])
@@ -381,4 +375,4 @@ def test_removed_schema_and_column_wire_kind_are_refused():
     with pytest.raises(SerializationError, match="unknown fields"):
         Contract.from_dict(contract().to_dict() | {"schema": []})
     with pytest.raises(SerializationError, match="unknown wire kind"):
-        Wire.from_dict({"kind": "Column", "version": 1, "name": "id", "type": "int"})
+        Wire.from_dict({"kind": "Column", "version": 2, "name": "id", "type": "int"})

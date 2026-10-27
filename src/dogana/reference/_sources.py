@@ -9,7 +9,7 @@ from os import PathLike, fspath
 from pathlib import Path
 from types import MappingProxyType
 
-from dogana.contract import LOGICAL_TYPES, identifier
+from dogana.contract import LOGICAL_TYPES, Contract, identifier
 from dogana.errors import InvalidContract
 
 
@@ -26,6 +26,11 @@ def _columns(columns: Mapping[str, str]) -> Mapping[str, str]:
     return MappingProxyType(result)
 
 
+def _published(columns: Mapping[str, str], contract: Contract) -> dict[str, str]:
+    """The columns rows are published with: every delivered column but the deleted marker."""
+    return {name: kind for name, kind in columns.items() if name != contract.deleted_column}
+
+
 def _column_hash(columns: Mapping[str, str]) -> str:
     return sha256(
         dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
@@ -37,18 +42,47 @@ def _file_digest(path: str | PathLike[str]) -> str:
         return file_digest(stream, "sha256").hexdigest()
 
 
-def _count_rows(path: Path) -> int:
+# The spellings DuckDB casts to BOOLEAN, so a sender's count and the store's agree.
+_BOOLEANS = {"true": True, "t": True, "yes": True, "y": True, "1": True}
+_BOOLEANS |= {"false": False, "f": False, "no": False, "n": False, "0": False}
+
+
+def _count_rows(path: Path, deleted_column: str | None = None) -> tuple[int, int]:
+    """Live rows and tombstones: a row is a tombstone when its deleted column is true."""
     if path.suffix.lower() == ".csv":
-        with path.open(newline="") as stream:
-            return sum(1 for _ in csv.DictReader(stream))
+        live = tombstones = 0
+        with path.open(newline="", encoding="utf-8-sig") as stream:
+            reader = csv.DictReader(stream)
+            marked = deleted_column is not None and deleted_column in (reader.fieldnames or ())
+            for row in reader:
+                deleted = _BOOLEANS.get((row[deleted_column] or "").lower()) if marked else False
+                if deleted is None:
+                    raise InvalidContract(f"{deleted_column} must be true or false in every row")
+                live, tombstones = live + (not deleted), tombstones + deleted
+        return live, tombstones
     if path.suffix.lower() == ".parquet":
         import duckdb
 
         with duckdb.connect() as connection:
-            row = connection.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
-            if row is None or not isinstance(row[0], int):
+            described = connection.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+            kinds = {name: kind for name, kind, *_ in described}
+            if deleted_column in kinds and kinds[deleted_column] != "BOOLEAN":
+                raise InvalidContract(f"{deleted_column} must be a BOOLEAN column")
+            marker = (
+                '"' + deleted_column.replace('"', '""') + '"'
+                if deleted_column is not None and deleted_column in kinds
+                else "false"
+            )
+            counts = connection.execute(
+                f"SELECT count(*) FILTER (NOT {marker}), count(*) FILTER ({marker}), "
+                f"count(*) FILTER ({marker} IS NULL) FROM read_parquet(?)",
+                [str(path)],
+            ).fetchone()
+            if counts is None:
                 raise InvalidContract("Parquet row count is unavailable")
-            return row[0]
+            if counts[2]:
+                raise InvalidContract(f"{deleted_column} must be true or false in every row")
+            return int(counts[0]), int(counts[1])
     raise InvalidContract("row counting supports CSV and Parquet files")
 
 

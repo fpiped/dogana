@@ -111,6 +111,41 @@ def test_a_held_csv_can_be_checked_twice_and_published_once(tmp_path):
         assert not store._candidates and store._transaction is None
 
 
+@pytest.mark.parametrize("typed", [True, False])
+def test_a_held_file_with_tombstones_can_be_checked_twice_and_published_once(tmp_path, typed):
+    from tests.integration.support import MARKED, marked
+
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        base = csv_file(tmp_path, "base.csv", [row(1), row(2)])
+        first = store.deliver(
+            c, _FileSource(base, COLUMNS), sidecar(base, c, "full", 18, 2, generation="g1"), now=at(30)
+        )
+        path = csv_file(tmp_path, "feed.csv", marked([row(2, value="new")], (1,)), MARKED)
+        manifest = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", tombstones=1)
+        candidate = store.hold(_FileSource(path, MARKED) if typed else path, manifest, c)
+        requirements = Gate.requirements(c, manifest)
+        checks = store.check(candidate, c, manifest, requirements)
+        assert store.check(candidate, c, manifest, requirements) == checks
+        assert all(check.passed for check in checks), checks
+        receipt = Gate.evaluate(first.ledger, manifest, checks, now=at(20))
+        store.publish(candidate, receipt)
+        assert store.read(c.table) == [row(2, value="new")]
+
+
+def test_a_file_without_its_key_column_is_rejected_with_a_receipt(tmp_path):
+    c = contract()
+    path = csv_file(
+        tmp_path, "keyless.csv", [{"day": at(18).date(), "value": "x"}], {"day": "date", "value": "str"}
+    )
+    manifest = sidecar(path, c, "full", 18, 1)
+    with DuckDBStore(":memory:") as store:
+        receipt = store.deliver(c, path, manifest, now=at(30))
+        assert not receipt.accepted
+        assert any(check.name == "schema_hash" and not check.passed for check in receipt.checks)
+        assert store.receipts(c.table) == (receipt,)
+
+
 def test_arrow_tables_publish_through_the_same_checks():
     pa = pytest.importorskip("pyarrow")
     c, rows = contract(), [row(1), row(2)]
@@ -237,8 +272,9 @@ def test_one_batched_delete_applies_many_composite_tombstones(tmp_path):
         "pairs",
         ("a", "b"),
         {"full": FULL, "feed": FEED},
-        types={"a": "int", "b": "str"},
+        types={"a": "int", "b": "str", "deleted": "bool"},
         schema_hash=schema_hash(columns),
+        deleted_column="deleted",
     )
     rows = [{"a": i, "b": str(i)} for i in range(500)]
     with DuckDBStore(":memory:") as store:
@@ -253,12 +289,13 @@ def test_one_batched_delete_applies_many_composite_tombstones(tmp_path):
             generation="g2",
             rows=0,
             schema_hash=c.schema_hash,
-            tombstones=tuple((i, str(i)) for i in range(499)),
+            tombstones=499,
         )
-        assert deliver(store, c, _RowSource([], columns), m, at(20)).accepted
+        deleted = [{"a": i, "b": str(i), "deleted": True} for i in range(499)]
+        assert deliver(store, c, _RowSource(deleted, {**columns, "deleted": "bool"}), m, at(20)).accepted
         deletes = [s for s in trace.statements if s.startswith('DELETE FROM "pairs"')]
         assert len(deletes) == 2
-        assert "unnest" in deletes[-1]
+        assert "_deleted" in deletes[-1]
         assert store.read(c.table) == [{"a": 499, "b": "499"}]
 
 

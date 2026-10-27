@@ -21,8 +21,9 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         "stock",
         ("id",),
         {"snapshot": Shape.full(), "cdc": Shape.feed()},
-        types={"id": "int"},
+        types={"id": "int", "deleted": "bool"},
         schema_hash=schema_hash(columns),
+        deleted_column="deleted",
     )
     path = tmp_path / "stream.duckdb"
     snapshot = c.manifest("snapshot", at(18), rows=2, generation="log:100")
@@ -32,10 +33,10 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         since="log:100",
         generation="log:103",
         rows=2,
-        keys=((2,), (3,)),
-        tombstones=((1,),),
+        tombstones=1,
     )
     rows = [{"id": 2, "value": "updated"}, {"id": 3, "value": "new"}]
+    delivered = [*({**row, "deleted": False} for row in rows), {"id": 1, "value": None, "deleted": True}]
     original = [{"id": 1, "value": "old"}, {"id": 2, "value": "old"}]
     with DuckDBStore(path) as store:
         first = deliver(store, c, original, snapshot, now=at(18))
@@ -56,7 +57,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         with monkeypatch.context() as patch:
             patch.setattr(store, "connection", CommitFault())
             with pytest.raises(KeyboardInterrupt, match="consumer stopped at commit"):
-                deliver(store, c, rows, batch, now=at(19))
+                deliver(store, c, delivered, batch, now=at(19))
 
     with DuckDBStore(path) as restarted:
         held = restarted.load_ledger(c)
@@ -65,7 +66,7 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         assert (stored is not None) is after_commit
         assert restarted.read(c.table) == (rows if after_commit else original)
         assert len(restarted.receipts(c.table)) == (2 if after_commit else 1)
-        retried = deliver(restarted, c, rows, batch, now=at(20))
+        retried = deliver(restarted, c, delivered, batch, now=at(20))
         assert retried.accepted
         assert retried.replayed is after_commit
         if stored is not None:
@@ -77,9 +78,10 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         request = next_extraction(restarted.load_ledger(c), "cdc", at(20))
         assert request.since == "log:103"
         next_batch = c.manifest(
-            "cdc", request.until, since=request.since, generation="log:104", rows=0, tombstones=((2,),)
+            "cdc", request.until, since=request.since, generation="log:104", rows=0, tombstones=1
         )
-        final = deliver(restarted, c, _RowSource([], columns), next_batch, now=at(20))
+        gone = _RowSource([{"id": 2, "value": None, "deleted": True}], {**columns, "deleted": "bool"})
+        final = deliver(restarted, c, gone, next_batch, now=at(20))
         assert final.accepted
         assert (final.claims.complete_as_of, final.claims.deletions_as_of) == (at(20), at(20))
         assert restarted.read(c.table) == [{"id": 3, "value": "new"}]

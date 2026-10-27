@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:1:Manifest",
+  "$id": "urn:dogana:wire:2:Manifest",
   "title": "Manifest",
   "type": "object",
   "properties": {
@@ -9,21 +9,21 @@
     },
     "version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "table": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
     },
     "shape": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
     },
     "produced_at": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
     },
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/window"
+          "$ref": "urn:dogana:wire:2:types#/$defs/window"
         },
         {
           "type": "null"
@@ -31,12 +31,12 @@
       ]
     },
     "since": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/checkpoint"
+      "$ref": "urn:dogana:wire:2:types#/$defs/checkpoint"
     },
     "generation": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
         },
         {
           "type": "integer"
@@ -60,23 +60,21 @@
     "schema_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/text"
+          "$ref": "urn:dogana:wire:2:types#/$defs/text"
         },
         {
           "type": "null"
         }
       ]
     },
-    "keys": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/keys"
-    },
     "tombstones": {
-      "$ref": "urn:dogana:wire:1:types#/$defs/keys"
+      "type": "integer",
+      "minimum": 0
     },
     "content_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:1:types#/$defs/sha256"
+          "$ref": "urn:dogana:wire:2:types#/$defs/sha256"
         },
         {
           "type": "null"
@@ -95,7 +93,6 @@
     "generation",
     "rows",
     "schema_hash",
-    "keys",
     "tombstones",
     "content_hash"
   ],

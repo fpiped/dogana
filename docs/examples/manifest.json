@@ -1,7 +1,6 @@
 {
   "content_hash":null,
   "generation":null,
-  "keys":[],
   "kind":"Manifest",
   "produced_at":{
     "$datetime":"2026-10-18T00:00:00+00:00"
@@ -11,7 +10,7 @@
   "shape":"full",
   "since":null,
   "table":"stock",
-  "tombstones":[],
-  "version":1,
+  "tombstones":0,
+  "version":2,
   "window":null
 }

@@ -24,8 +24,9 @@ def contract(**kwargs):
             "feed": Shape.feed(),
         },
         window_column="day",
-        types={"id": "int", "day": "date"},
+        types={"id": "int", "day": "date", "deleted": "bool"},
         schema_hash=schema_hash(COLUMNS),
+        deleted_column="deleted",
     )
     return Contract("orders", ("id",), **{**defaults, **kwargs})
 
@@ -119,19 +120,17 @@ def test_arguments_are_refused_with_a_reason_and_a_status(files, capsys, argumen
     assert message in capsys.readouterr().err
 
 
-def test_a_feed_enumerates_its_keys_from_the_file_and_its_tombstones_from_another(files):
+def test_a_feed_counts_live_rows_and_the_rows_its_deleted_column_marks(files, capsys):
     tmp_path, data = files
-    deleted = tmp_path / "deleted.csv"
-    deleted.write_text("id\n7\n")
-    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2", "--tombstones", str(deleted))
+    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,,,TRUE\n3,,,t\n")
+    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
     manifest = written(data)
-    assert (manifest.keys, manifest.tombstones, manifest.since, manifest.generation) == (
-        ((1,), (2,)),
-        ((7,),),
-        "g1",
-        "g2",
-    )
+    assert (manifest.rows, manifest.tombstones, manifest.since, manifest.generation) == (1, 2, "g1", "g2")
+    assert run(tmp_path, "check", str(data)) == 0
+    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,,,\n")
+    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments, "--force") == 1
+    assert "deleted must be true or false in every row" in capsys.readouterr().err
 
 
 def test_sequence_positions_are_integers(tmp_path):
@@ -195,17 +194,28 @@ def test_the_module_and_the_console_script_run_the_same_command():
         )
 
 
-def test_parquet_rows_and_keys_are_read_through_the_duckdb_extra(tmp_path):
+def test_a_byte_order_mark_or_a_short_row_never_miscounts_tombstones(files, capsys):
+    tmp_path, data = files
+    arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2", "--force")
+    data.write_bytes("\ufeffdeleted,id,day,value\nfalse,1,2026-10-25,a\ntrue,2,,\n".encode())
+    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
+    assert (written(data).rows, written(data).tombstones) == (1, 1)
+    data.write_text("id,day,value,deleted\n1,2026-10-25,a,false\n2,2026-10-25\n")
+    assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 1
+    assert "deleted must be true or false in every row" in capsys.readouterr().err
+
+
+def test_parquet_rows_and_tombstones_are_counted_through_the_duckdb_extra(tmp_path):
     duckdb = pytest.importorskip("duckdb")
     (tmp_path / "orders.contract.json").write_text(contract().to_json())
     data = tmp_path / "orders.parquet"
     duckdb.connect().execute(
-        "COPY (SELECT * FROM (VALUES (3, DATE '2026-10-25', 'c'), (4, DATE '2026-10-26', 'd')) "
-        f"t(id, day, value)) TO '{data}' (FORMAT parquet)"
+        "COPY (SELECT * FROM (VALUES (3, DATE '2026-10-25', 'c', false), (4, NULL, NULL, true)) "
+        f"t(id, day, value, deleted)) TO '{data}' (FORMAT parquet)"
     )
     arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
-    assert (written(data).rows, written(data).keys) == (2, ((3,), (4,)))
+    assert (written(data).rows, written(data).tombstones) == (1, 1)
     assert run(tmp_path, "check", str(data)) == 0
 
 
@@ -217,4 +227,4 @@ def test_check_compares_only_the_hash_of_a_file_it_cannot_count(tmp_path, capsys
         run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY, "--rows", "1") == 0
     )
     assert run(tmp_path, "check", str(data)) == 0
-    assert "rows not compared" in capsys.readouterr().err
+    assert "counts not compared" in capsys.readouterr().err

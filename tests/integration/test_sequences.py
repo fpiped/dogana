@@ -63,6 +63,7 @@ def invariants(before, after, manifest, shape):
 
 
 RECORD_COLUMNS = {"id": "int", "day": "int", "value": "str"}
+DELIVERED = {**RECORD_COLUMNS, "deleted": "bool"}
 DECLARED = shapes()
 START = datetime(2026, 1, 1, tzinfo=UTC)
 KEYS = st.sets(st.integers(min_value=0, max_value=8), max_size=9)
@@ -83,9 +84,10 @@ def sequence_contract():
         key=("id",),
         shapes=DECLARED,
         window_column="day",
-        types={"id": "int", "day": "int"},
+        types={"id": "int", "day": "int", "deleted": "bool"},
         schema_hash=schema_hash(RECORD_COLUMNS),
         max_shrink_fraction=None,
+        deleted_column="deleted",
     )
 
 
@@ -109,7 +111,9 @@ def attempt(c, before, step, name, live, deleted, low, high, issue):
     window = (min(low, high), max(low, high)) if shape.coverage is Coverage.WINDOW else None
     covered = {key for key in range(9) if window is None or window[0] <= key % 3 <= window[1]}
     incoming = sorted(live & covered)
-    rows = [{"id": key, "day": key % 3, "value": f"v{step}"} for key in incoming]
+    gone = sorted((deleted & covered) - live) if shape.deletions is Deletions.TOMBSTONE else []
+    rows = [{"id": key, "day": key % 3, "value": f"v{step}", "deleted": False} for key in incoming]
+    rows += [{"id": key, "day": None, "value": None, "deleted": True} for key in gone]
     manifest = Manifest(
         c.table,
         shape=name,
@@ -121,12 +125,9 @@ def attempt(c, before, step, name, live, deleted, low, high, issue):
         generation=f"g{step}"
         if shape.checkpoint is Checkpoint.GENERATION or (shape.complete and shape.coverage is Coverage.ALL)
         else None,
-        rows=len(rows) + int(issue == "count"),
+        rows=len(incoming) + int(issue == "count"),
         schema_hash=c.schema_hash,
-        keys=tuple((key,) for key in incoming) if shape.coverage is Coverage.KEYS else (),
-        tombstones=tuple((key,) for key in sorted((deleted & covered) - live))
-        if shape.deletions is Deletions.TOMBSTONE
-        else (),
+        tombstones=len(gone),
     )
     return rows, manifest
 
@@ -140,9 +141,15 @@ def expected_rows(previous, rows, manifest, shape):
             for key, row in result.items()
             if window is not None and not window[0] <= row["day"] <= window[1]
         }
-    result.update({row["id"]: row for row in rows})
-    for key in manifest.tombstones:
-        result.pop(key[0], None)
+    live = [
+        {name: value for name, value in row.items() if name != "deleted"}
+        for row in rows
+        if not row["deleted"]
+    ]
+    result.update({row["id"]: row for row in live})
+    for row in rows:
+        if row["deleted"]:
+            result.pop(row["id"], None)
     return result
 
 
@@ -154,7 +161,7 @@ def test_every_admitted_shape_publishes_its_declared_row_effect(name, live, dele
     with DuckDBStore(":memory:") as store:
         first, previous = baseline(store, c)
         rows, manifest = attempt(c, first.ledger, 1, name, live, deleted, low, high, "valid")
-        receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
+        receipt = store.deliver(c, _RowSource(rows, DELIVERED), manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         expected = expected_rows(previous, rows, manifest, c.shape(name))
         assert store.read(c.table) == [expected[key] for key in sorted(expected)]
@@ -181,7 +188,7 @@ def test_delivery_histories_preserve_rows_evidence_and_old_publications(attempts
                 assert store.load_ledger(c) == before
             else:
                 rows, manifest = attempt(c, before, step, name, live, deleted, low, high, issue)
-                receipt = store.deliver(c, _RowSource(rows, RECORD_COLUMNS), manifest, now=at(30))
+                receipt = store.deliver(c, _RowSource(rows, DELIVERED), manifest, now=at(30))
                 assert receipt.accepted is (issue == "valid"), receipt.checks
                 assert store.receipts(c.table) == (*retained, receipt)
                 if issue == "valid":
@@ -286,7 +293,7 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
             c, _FileSource(source, COLUMNS), sidecar(source, c, "full", 18, 2, generation="g1"), now=at(30)
         )
         source = csv_file(tmp_path, "feed.csv", [row(2, value="changed")])
-        manifest = sidecar(source, c, "feed", 19, 1, since="g1", generation="g2", keys=((2,),))
+        manifest = sidecar(source, c, "feed", 19, 1, since="g1", generation="g2")
         second = store.deliver(c, _FileSource(source, COLUMNS), manifest, now=at(30))
         assert first.accepted and second.accepted
         bad_window = Manifest(

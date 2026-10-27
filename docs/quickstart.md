@@ -8,13 +8,10 @@ and an active virtual environment:
 uv pip install -e '.[duckdb]'
 ```
 
-Run this script in an empty directory. Fixed source and receiver times make the story reproducible;
-production callers supply the actual receiver clock as `now`.
+The blocks below form one script: run them in order, in an empty directory. They follow a table
+of orders through one week of files. [Concepts](concepts.md) explains every term used here.
 
-The ordered `columns` mapping is the data contract. Its hash covers compact ASCII JSON pairs of
-column names and logical types. The delivery contract keeps that hash and only the types its key
-and window need. `FileDrop` reads each manifest from its sidecar and uses `columns` to parse CSV.
-The `movements` deliveries use row mappings with inferred types and omit the optional schema check.
+## 1. Write the contract
 
 ```python
 import csv
@@ -23,7 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
-from dogana import Contract, Shape, deliver
+from dogana import Contract, Requirement, Shape, deliver, next_extraction, plan_delivery
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop
 
@@ -31,7 +28,7 @@ columns = {"id": "int", "day": "date", "amount": "int"}
 schema_hash = sha256(
     json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
 ).hexdigest()
-contract = Contract(
+orders = Contract(
     "orders",
     key=("id",),
     shapes={"full": Shape.full(cost=100), "daily": Shape.window(size=timedelta(days=30), cost=10)},
@@ -39,110 +36,175 @@ contract = Contract(
     types={"id": "int", "day": "date"},
     schema_hash=schema_hash,
 )
-window = contract.shape("daily").window_ending_at(datetime(2026, 10, 19, tzinfo=UTC), "date")
-deliveries = [
-    ("Sunday full", 18, "full", [(1, "2026-09-01", 100), (2, "2026-10-18", 200)], None, 2),
-    ("Monday window", 19, "daily", [(3, "2026-10-19", 300)], window, 1),
-    ("Truncated full", 20, "full", [], None, 2),
-    ("Next Sunday full", 25, "full", [(3, "2026-10-19", 300)], None, 1),
-]
-
-
-def show(table, span, claims):
-    print(
-        f"{table:<9}  {span:<26} complete as of {claims.complete_as_of.date()}"
-        f"   deletions as of {claims.deletions_as_of.date()}   {claims.state.value}"
-    )
-
-
-Path("drop").mkdir()
-story = []
-with DuckDBStore("landing.duckdb") as store:
-    movements = Contract(
-        "movements",
-        ("id",),
-        {"full": Shape.full(), "changes": Shape.changes()},
-        types={"id": "int"},
-    )
-    for day, shape, since in [(12, "full", None), (19, "changes", datetime(2026, 10, 12, tzinfo=UTC))]:
-        read_at = datetime(2026, 10, day, tzinfo=UTC)
-        batch = movements.manifest(shape, read_at, since=since, rows=1)
-        assert deliver(store, movements, [{"id": day, "amount": 100}], batch, now=read_at).accepted
-    for label, day, shape, rows, coverage, declared_count in deliveries:
-        path = Path("drop") / f"orders-{day}.csv"
-        with path.open("w", newline="", encoding="utf-8") as stream:
-            csv.writer(stream).writerows([tuple(columns), *rows])
-        boundary = datetime(2026, 10, day, tzinfo=UTC)
-        manifest = contract.manifest(
-            shape,
-            boundary,
-            window=coverage,
-            rows=declared_count,
-            content_hash=sha256(path.read_bytes()).hexdigest(),
-        )
-        path.with_suffix(path.suffix + ".json").write_text(manifest.to_json(), encoding="utf-8")
-        receipt = FileDrop(store, contract, columns=columns).ingest(path, now=boundary)
-        ids = sorted(row["id"] for row in store.read("orders"))
-        story.append(f"{label}: {receipt.outcome.value}, rows {ids}")
-        if day == 19:
-            monday = store.load_ledger(contract)
-            show("orders", "2026-09-20 to 2026-10-19", monday.claims(boundary, window=window))
-            show("orders", "before 2026-09-20", monday.claims(boundary, window=(date.min, date(2026, 9, 19))))
-            show("movements", "whole table", store.load_ledger(movements).claims(boundary))
-        if not receipt.accepted:
-            assert any(check.name == "row_count" and not check.passed for check in receipt.checks)
-        assert ids == {18: [1, 2], 19: [1, 3], 20: [1, 3], 25: [3]}[day]
-    print("\n".join(story))
-    replay = FileDrop(store, contract, columns=columns).ingest(path, now=boundary + timedelta(hours=1))
-    assert replay.identity == receipt.identity and replay.received_at == receipt.received_at
-    print(f"Same file again: {replay.outcome.value}, rows [3]")
-    ledger = store.load_ledger(contract)
-    claims = ledger.claims(now=boundary)
-    print(f"Whole table: complete {claims.complete_as_of.date()}, deletions {claims.deletions_as_of.date()}")
-    assert ledger.claims(now=boundary + timedelta(days=8)).state.value == "expired"
 ```
 
-```text
-orders     2026-09-20 to 2026-10-19   complete as of 2026-10-19   deletions as of 2026-10-19   complete
-orders     before 2026-09-20          complete as of 2026-10-18   deletions as of 2026-10-18   complete
-movements  whole table                complete as of 2026-10-19   deletions as of 2026-10-12   patched
-Sunday full: accepted, rows [1, 2]
-Monday window: accepted, rows [1, 3]
-Truncated full: rejected, rows [1, 3]
-Next Sunday full: accepted, rows [3]
-Same file again: replayed, rows [3]
-Whole table: complete 2026-10-25, deletions 2026-10-25
-```
+`columns` lists every column of the table with its type. The contract keeps a fingerprint of that
+list (its SHA-256 hash), so a file with other columns is rejected. Each order is identified by
+`id`; `day` is its order date, which never changes, so the dates can be kept per range of days.
+The receiver accepts two kinds of file: a full export, and every order dated in the last 30 days.
+The costs say a full export is ten times as expensive to ask for.
 
-The first three lines are the regions on Monday, the ones the README shows. Monday removes order 2 inside the window and retains order 1 outside it. The next full export
-removes order 1. The refused file changes no rows or dates.
-
-The default shrink limit also refuses removal of more than half the rows in complete coverage.
-`max_shrink_fraction=None` disables that guard. Neither counting received rows nor a shrink limit
-proves source completeness: a truncated file with a self-consistent count can still pass.
-A corrected file needs a new `content_hash` and a later truthful source boundary.
-
-## Request the next read
-
-The planner chooses the cheapest admitted shape that can establish the required dates.
-Here a window suffices:
+## 2. Send and receive a file
 
 ```python
-from dogana import Requirement, next_extraction, plan_delivery
+Path("drop").mkdir()
+store = DuckDBStore("landing.duckdb")
+drop = FileDrop(store, orders, columns=columns)
 
-until = datetime(2026, 10, 26, tzinfo=UTC)
-needed = (date(2026, 10, 1), date(2026, 10, 26))
-request = plan_delivery(ledger, Requirement("orders", until, until, window=needed))
-assert request is not None and request.shape == "daily" and request.window == needed
-rolling = next_extraction(ledger, "daily", until)
-assert rolling.interval == (date(2026, 9, 27), date(2026, 10, 26))
-print("Next read: complete daily window, October 1 through October 26.")
+
+def send(name, shape, day, rows, *, window=None, declared=None):
+    """Write a CSV and its manifest as a sender would, then let the receiver ingest it."""
+    path = Path("drop") / f"{name}.csv"
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        csv.writer(stream).writerows([tuple(columns), *rows])
+    read_at = datetime(2026, 10, day, tzinfo=UTC)
+    manifest = orders.manifest(
+        shape,
+        read_at,
+        window=window,
+        rows=len(rows) if declared is None else declared,
+        content_hash=sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".csv.json").write_text(manifest.to_json(), encoding="utf-8")
+    receipt = drop.ingest(path, now=read_at)
+    print(f"{name}: {receipt.outcome.value}, orders {sorted(row['id'] for row in store.read('orders'))}")
+    return receipt
+
+
+send("sunday", "full", 18, [(1, "2026-09-01", 100), (2, "2026-10-18", 200)])
 ```
 
 ```text
-Next read: complete daily window, October 1 through October 26.
+sunday: accepted, orders [1, 2]
 ```
 
-Your extractor fulfills the request and passes its result through `deliver`. A scheduler's logical
-date is not the source read boundary. Keyed timestamp reads can use `lookback` for bounded lag;
-`cursor_column` enables row checks against the declared interval.
+The store is a DuckDB file that holds the rows, the dates and every decision. The manifest travels
+beside the file as `sunday.csv.json`: its shape, the instant the source was read, how many rows,
+and the SHA-256 of the file's bytes. Senders in other languages write it with `dogana manifest`.
+
+## 3. A window file
+
+```python
+window = orders.shape("daily").window_ending_at(datetime(2026, 10, 19, tzinfo=UTC), "date")
+monday = send("monday", "daily", 19, [(3, "2026-10-19", 300)], window=window)
+
+
+def show(label, claims):
+    print(
+        f"{label:<17} complete as of {claims.complete_as_of.date()}, "
+        f"deletions as of {claims.deletions_as_of.date()}, {claims.state.value}"
+    )
+
+
+show("Sep 20 to Oct 19", monday.ledger.claims(monday.received_at, window=window))
+show("before Sep 20", monday.ledger.claims(monday.received_at, window=(date.min, date(2026, 9, 19))))
+```
+
+```text
+monday: accepted, orders [1, 3]
+Sep 20 to Oct 19  complete as of 2026-10-19, deletions as of 2026-10-19, complete
+before Sep 20     complete as of 2026-10-18, deletions as of 2026-10-18, complete
+```
+
+Thirty days ending October 19 start on September 20, both ends included. Inside that range the file
+is complete, so order 2, dated October 18 and missing from it, was deleted at the source. Order 1,
+dated September 1, is outside the range and stays. The range is proven as of Monday, the rest of
+the table still as of Sunday.
+
+## 4. A truncated file
+
+```python
+tuesday = send("tuesday", "full", 20, [], declared=2)
+print([check.name for check in tuesday.checks if not check.passed][0])
+```
+
+```text
+tuesday: rejected, orders [1, 3]
+row_count
+```
+
+The manifest declares two rows and the file has none, so the row count fails and the whole file is
+rejected: no row and no date changes. A file whose count matches but which is still truncated can
+pass the count; the contract's shrink limit then rejects a complete file that removes more than half
+the rows it covers.
+
+## 5. The next full export, and the same file twice
+
+```python
+send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
+again = send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
+claims = again.ledger.claims(again.received_at)
+print(f"whole table: complete as of {claims.complete_as_of.date()}, {claims.state.value}")
+print(f"eight days later: {again.ledger.claims(again.received_at + timedelta(days=8)).state.value}")
+```
+
+```text
+next-sunday: accepted, orders [3]
+next-sunday: replayed, orders [3]
+whole table: complete as of 2026-10-25, complete
+eight days later: expired
+```
+
+The full export removes order 1. Delivered again, the same manifest returns the original receipt
+and publishes nothing. Claims are read at the reader's time: after the contract's freshness, seven
+days by default, the table is expired until a new file arrives.
+
+## 6. Ask for the next read
+
+```python
+until = datetime(2026, 10, 26, tzinfo=UTC)
+needed = (date(2026, 10, 1), date(2026, 10, 26))
+request = plan_delivery(
+    again.ledger, Requirement("orders", complete_as_of=until, deletions_as_of=until, window=needed)
+)
+print(
+    f"to prove {needed[0]} to {needed[1]}: a {request.shape} file for {request.window[0]} to {request.window[1]}"
+)
+rolling = next_extraction(again.ledger, "daily", until)
+print(f"the next daily file: {rolling.window[0]} to {rolling.window[1]}")
+```
+
+```text
+to prove 2026-10-01 to 2026-10-26: a daily file for 2026-10-01 to 2026-10-26
+the next daily file: 2026-09-27 to 2026-10-26
+```
+
+The planner works backwards from what a reader needs. Asked for both dates on October 26 for orders
+dated October 1 to 26, it chooses the cheapest kind of file that proves them: a window file for just
+those days, at cost 10, rather than a full export at cost 100. `next_extraction` instead gives the
+next regular file of a shape: the full 30 days ending October 26. Your job runs the read and delivers
+it; the manifest's read time must be when the source was actually read, never a scheduler's date.
+
+## 7. Deliver deletions
+
+```python
+stock = Contract(
+    "stock",
+    ("id",),
+    {"full": Shape.full(), "feed": Shape.feed()},
+    types={"id": "int", "deleted": "bool"},
+    deleted_column="deleted",
+)
+sunday, monday = datetime(2026, 10, 25, tzinfo=UTC), datetime(2026, 10, 26, tzinfo=UTC)
+full = stock.manifest("full", sunday, rows=2, generation="g1")
+assert deliver(store, stock, [{"id": 1, "qty": 5}, {"id": 2, "qty": 7}], full, now=sunday).accepted
+changes = [{"id": 2, "qty": 9, "deleted": False}, {"id": 1, "qty": None, "deleted": True}]
+feed = stock.manifest("feed", monday, since="g1", generation="g2", rows=1, tombstones=1)
+receipt = deliver(store, stock, changes, feed, now=monday)
+claims = receipt.claims
+print(f"feed: {receipt.outcome.value}, stock {store.read('stock')}")
+print(f"stock: {claims.state.value}, both dates {claims.complete_as_of:%A}")
+store.close()
+```
+
+```text
+feed: accepted, stock [{'id': 2, 'qty': 9}]
+stock: complete, both dates Monday
+```
+
+A feed is a series of change files, each starting where the previous one ended. The Sunday export is
+tagged `g1`; Monday's feed says it starts at `g1` and ends at `g2`, so no change between them is
+missing. It tells its deletions in its own rows: the contract names the boolean column `deleted`,
+and a row whose `deleted` is true deletes its key. The manifest only counts those rows
+(`tombstones=1`), so it stays small however many keys are deleted. Item 1 is gone, item 2 is
+updated, and both dates move to Monday.

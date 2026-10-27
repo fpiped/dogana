@@ -10,7 +10,14 @@ from pathlib import Path
 
 from dogana import Contract, InvalidContract, Manifest, Receipt, SerializationError, Store, deliver
 from dogana.contract import Window
-from dogana.reference._sources import _column_hash, _columns, _count_rows, _file_digest, _FileSource
+from dogana.reference._sources import (
+    _column_hash,
+    _columns,
+    _count_rows,
+    _file_digest,
+    _FileSource,
+    _published,
+)
 from dogana.reference._text import _checkpoint, _instant, _position, _scalar
 
 _DECLARED = ", or a declared timezone"
@@ -91,6 +98,12 @@ class FilePattern:
 
         since = groups.get("since")
         generation = groups.get("generation")
+        declared = groups.get("rows")
+        live, tombstones = (
+            (int(declared), int(groups.get("tombstones") or 0))
+            if declared is not None
+            else _count_rows(path, contract.deleted_column)
+        )
         return Manifest(
             table=contract.table,
             shape=shape_name,
@@ -98,7 +111,8 @@ class FilePattern:
             window=window,
             since=_checkpoint(since, shape, self.timezone, remedy=_DECLARED) if since is not None else None,
             generation=_position(generation, contract) if generation is not None else None,
-            rows=int(groups["rows"]) if groups.get("rows") is not None else _count_rows(path),
+            rows=live,
+            tombstones=tombstones,
             schema_hash=groups.get("schema_hash") or contract.schema_hash,
         )
 
@@ -117,9 +131,16 @@ class FileDrop:
     ) -> None:
         self.store, self.contract, self.pattern = store, contract, pattern
         self.columns = _columns(columns)
-        if any(self.columns.get(name) != kind for name, kind in contract.types.items()):
+        if any(
+            self.columns.get(name) != kind
+            for name, kind in contract.types.items()
+            if name != contract.deleted_column or name in self.columns
+        ):
             raise InvalidContract("file columns must match the contract's bound column types")
-        if contract.schema_hash is not None and _column_hash(self.columns) != contract.schema_hash:
+        if (
+            contract.schema_hash is not None
+            and _column_hash(_published(self.columns, contract)) != contract.schema_hash
+        ):
             raise InvalidContract("file column hash differs from the contract schema_hash")
         self.root = _resolved_path(Path(root)) if root is not None else None
 

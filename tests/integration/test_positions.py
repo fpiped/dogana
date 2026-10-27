@@ -87,7 +87,8 @@ def test_contracts_keep_one_kind_of_position_and_a_cursor_that_checks_something(
             "orders",
             ("id",),
             {"feed": Shape.feed(), "changes": Shape.changes(checkpoint=Checkpoint.SEQUENCE)},
-            types={"id": "int"},
+            types={"id": "int", "deleted": "bool"},
+            deleted_column="deleted",
         )
     with pytest.raises(InvalidContract, match="append-only timestamp intervals"):
         Contract("events", (), {"log": Shape.changes(checkpoint=Checkpoint.SEQUENCE)}, start_at=at(1))
@@ -162,11 +163,10 @@ def test_a_change_feed_by_log_position_repairs_deletion_date_with_its_tombstones
         "orders",
         ("id",),
         {"full": Shape.full(), "feed": Shape.feed(checkpoint=Checkpoint.SEQUENCE)},
-        types={"id": "int"},
+        types={"id": "int", "deleted": "bool"},
+        deleted_column="deleted",
     )
     base = Ledger(c).apply(Manifest(c.table, "full", at(18), generation=100))
-    fed = base.apply(
-        Manifest(c.table, "feed", at(19), since=100, generation=120, keys=((1,),), tombstones=((2,),))
-    )
+    fed = base.apply(Manifest(c.table, "feed", at(19), since=100, generation=120, rows=1, tombstones=1))
     claims = fed.claims(at(19))
     assert (fed.generation, claims.complete_as_of, claims.deletions_as_of) == (120, at(19), at(19))

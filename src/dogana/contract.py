@@ -19,7 +19,6 @@ Window = tuple[Scalar, Scalar]
 class Coverage(StrEnum):
     ALL = "all"
     WINDOW = "window"
-    KEYS = "keys"
 
 
 class Completeness(StrEnum):
@@ -202,9 +201,7 @@ class Shape(Wire):
 
     @classmethod
     def feed(cls, *, checkpoint: Checkpoint = Checkpoint.GENERATION, cost: float = 1) -> Shape:
-        return cls.changes(
-            coverage=Coverage.KEYS, checkpoint=checkpoint, deletions=Deletions.TOMBSTONE, cost=cost
-        )
+        return cls.changes(checkpoint=checkpoint, deletions=Deletions.TOMBSTONE, cost=cost)
 
     @classmethod
     def append(cls, *, cost: float = 1) -> Shape:
@@ -237,6 +234,7 @@ class Contract(Wire):
     freshness: timedelta = timedelta(days=7)
     start_at: datetime | None = None
     cursor_column: str | None = None
+    deleted_column: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -258,12 +256,22 @@ class Contract(Wire):
         if self.cursor_column is not None:
             identifier(self.cursor_column)
             bound_columns.add(self.cursor_column)
+        tombstones = any(s.deletions is Deletions.TOMBSTONE for s in self.shapes.values())
+        if tombstones != (self.deleted_column is not None):
+            raise InvalidContract("a tombstone shape needs exactly one deleted column")
+        if self.deleted_column is not None:
+            identifier(self.deleted_column)
+            if self.deleted_column in bound_columns:
+                raise InvalidContract("the deleted column is a column of its own")
+            bound_columns.add(self.deleted_column)
         if set(self.types) != bound_columns:
-            raise InvalidContract("types must cover exactly the key, window and cursor columns")
+            raise InvalidContract("types must cover exactly the key, window, cursor and deleted columns")
         for name, logical_type in self.types.items():
             identifier(name)
             if logical_type not in LOGICAL_TYPES:
                 raise InvalidContract(f"unsupported logical type {logical_type!r} for {name!r}")
+        if self.deleted_column is not None and self.types[self.deleted_column] != "bool":
+            raise InvalidContract("deleted_column must have type bool")
         checkpoints = {s.checkpoint for s in self.shapes.values()}
         cursor_type = self.types.get(self.cursor_column or "")
         if cursor_type not in (None, "datetime", "int"):
@@ -343,6 +351,7 @@ class Contract(Wire):
                 self.freshness,
                 self.start_at,
                 self.cursor_column,
+                self.deleted_column,
             )
         )
 
@@ -355,8 +364,7 @@ class Contract(Wire):
         since: str | datetime | int | None = None,
         generation: str | int | None = None,
         rows: int | None = None,
-        keys: tuple[tuple[Scalar, ...], ...] = (),
-        tombstones: tuple[tuple[Scalar, ...], ...] = (),
+        tombstones: int = 0,
         content_hash: str | None = None,
     ) -> Manifest:
         manifest = Manifest(
@@ -368,7 +376,6 @@ class Contract(Wire):
             generation=generation,
             rows=rows,
             schema_hash=self.schema_hash,
-            keys=keys,
             tombstones=tombstones,
             content_hash=content_hash,
         )
@@ -387,8 +394,7 @@ class Manifest(Wire):
     generation: str | int | None = None
     rows: int | None = None
     schema_hash: str | None = None
-    keys: tuple[tuple[Scalar, ...], ...] = ()
-    tombstones: tuple[tuple[Scalar, ...], ...] = ()
+    tombstones: int = 0
     content_hash: str | None = None
 
     def __post_init__(self) -> None:
@@ -399,17 +405,14 @@ class Manifest(Wire):
         object.__setattr__(self, "window", bounds(self.window))
         if self.rows is not None and self.rows < 0:
             raise InvalidContract("rows must be a nonnegative integer")
+        if self.tombstones < 0:
+            raise InvalidContract("tombstones must be a nonnegative integer")
         if isinstance(self.since, str) and not self.since:
             raise InvalidContract("since must be a nonempty generation token")
         if isinstance(self.generation, str) and not self.generation:
             raise InvalidContract("generation must be a nonempty string")
         if self.content_hash is not None and not re.fullmatch(r"[0-9a-f]{64}", self.content_hash):
             raise InvalidContract("content_hash must be the lowercase hex SHA-256 of the delivered bytes")
-        for group in (self.keys, self.tombstones):
-            if any(not key for key in group) or len(set(group)) != len(group):
-                raise InvalidContract("named keys must be nonempty and unique")
-        if set(self.keys) & set(self.tombstones):
-            raise InvalidContract("a key cannot be both live and deleted")
 
     def check(self, contract: Contract) -> ParsedDelivery:
         if not isinstance(contract, Contract):
@@ -425,7 +428,7 @@ class Manifest(Wire):
             raise InvalidContract("only changed-only deliveries supply since")
         if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(self.since, datetime):
             raise InvalidContract("timestamp checkpoints must be datetimes")
-        if shape.checkpoint is Checkpoint.TIMESTAMP and self.since == self.produced_at and self.rows:
+        if shape.checkpoint is Checkpoint.TIMESTAMP and self.since == self.produced_at and self._carries_rows:
             raise InvalidContract("an empty interval carries no rows")
         if shape.checkpoint is Checkpoint.GENERATION and (
             not isinstance(self.since, str) or not self.since or not isinstance(self.generation, str)
@@ -436,27 +439,17 @@ class Manifest(Wire):
                 raise InvalidContract("sequence reads require integer since and generation positions")
             if self.generation < self.since:
                 raise InvalidContract("a sequence read cannot end before its start")
-            if self.generation == self.since and self.rows:
+            if self.generation == self.since and self._carries_rows:
                 raise InvalidContract("an empty interval carries no rows")
         positions = any(s.checkpoint is Checkpoint.SEQUENCE for s in contract.shapes.values())
         if self.generation is not None and (type(self.generation) is int) != positions:
             raise InvalidContract("a delivery issues the table's kind of position")
         if self.tombstones and shape.deletions is not Deletions.TOMBSTONE:
             raise InvalidContract("only tombstone shapes carry deleted keys")
-        for group in (self.keys, self.tombstones):
-            if any(len(key) != len(contract.key) for key in group):
-                raise InvalidContract("named keys must have the contract's width")
-        declared = contract.types
         if self.window is not None:
             assert contract.window_column is not None
-            if type(self.window[0]) is not LOGICAL_TYPES[declared[contract.window_column]].python_type:
+            if type(self.window[0]) is not LOGICAL_TYPES[contract.types[contract.window_column]].python_type:
                 raise InvalidContract("window bound types differ from the contract types")
-        for key in (*self.keys, *self.tombstones):
-            if any(
-                type(value) is not LOGICAL_TYPES[declared[name]].python_type
-                for name, value in zip(contract.key, key, strict=True)
-            ):
-                raise InvalidContract("named key types differ from the contract types")
         if shape.complete:
             return (
                 FullDelivery(self, shape) if self.window is None else WindowDelivery(self, shape, self.window)
@@ -464,22 +457,18 @@ class Manifest(Wire):
         if isinstance(self.since, str):
             assert isinstance(self.generation, str)
             return GenerationChanges(self, shape, self.since, self.generation)
-        coverage: DeliveryCoverage
         if type(self.since) is int:
             assert type(self.generation) is int
-            coverage = KeyCoverage(self.keys) if shape.coverage is Coverage.KEYS else AllCoverage()
-            return SequenceChanges(self, shape, self.since, self.generation, coverage)
+            return SequenceChanges(self, shape, self.since, self.generation)
         assert isinstance(self.since, datetime)
         if not contract.key:
             return AppendInterval(self, shape, self.since)
-        coverage = (
-            WindowCoverage(self.window)
-            if self.window is not None
-            else KeyCoverage(self.keys)
-            if shape.coverage is Coverage.KEYS
-            else AllCoverage()
-        )
+        coverage = WindowCoverage(self.window) if self.window is not None else AllCoverage()
         return TimestampChanges(self, shape, self.since, coverage)
+
+    @property
+    def _carries_rows(self) -> bool:
+        return bool(self.rows or self.tombstones)
 
 
 @dataclass(frozen=True)
@@ -492,12 +481,7 @@ class WindowCoverage:
     window: Window
 
 
-@dataclass(frozen=True)
-class KeyCoverage:
-    keys: tuple[tuple[Scalar, ...], ...]
-
-
-DeliveryCoverage: TypeAlias = AllCoverage | WindowCoverage | KeyCoverage
+DeliveryCoverage: TypeAlias = AllCoverage | WindowCoverage
 
 
 @dataclass(frozen=True)
@@ -542,7 +526,6 @@ class SequenceChanges:
     shape: Shape
     since: int
     through: int
-    coverage: DeliveryCoverage
 
 
 ParsedDelivery: TypeAlias = (

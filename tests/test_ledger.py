@@ -156,7 +156,7 @@ def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage(
 def test_a_change_feed_with_tombstones_keeps_a_clean_base_complete():
     c = contract(shapes={"full": FULL, "feed": FEED})
     ledger = full(c, generation="g1")
-    ledger = ledger.apply(Manifest(c.table, "feed", at(19), since="g1", generation="g2", tombstones=((7,),)))
+    ledger = ledger.apply(Manifest(c.table, "feed", at(19), since="g1", generation="g2", tombstones=1))
     assert ledger.generation == "g2"
     assert ledger.claims(at(19)).state is State.COMPLETE
     assert ledger.claims(at(19)).deletions_as_of == at(19)
