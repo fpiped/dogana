@@ -59,7 +59,8 @@ including for accounting-only contracts, where `schema_hash` is not applicable.
 For an ODCS schema object, traverse its properties in declared column order, map each property's
 name and logical type to an ordered `[name, type]` pair, then compute SHA-256 of
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`. Use dogana's six
-logical type names, resolving physical or nested types explicitly in the receiver. Hash only
+logical type names, or `decimal(p,s)` for an exact decimal of precision `p` and scale `s`, resolving
+physical or nested types explicitly in the receiver. Hash only
 these pairs, not the ODCS document, metadata or wire JSON. The reference store and file drop use
 this recipe; another store must agree with its receiver on the opaque hash.
 

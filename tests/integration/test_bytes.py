@@ -167,3 +167,59 @@ def test_filename_counts_must_be_integers(tmp_path):
     pattern = FilePattern(r"f_(?P<produced_at>[^_]+)_(?P<rows>\d*)\.csv", shape="full")
     with DuckDBStore(":memory:") as store, pytest.raises(InvalidContract, match="integer"):
         FileDrop(store, C, pattern, columns=COLUMNS).ingest(path, now=at(19))
+
+
+MONEY = {"id": "int", "amount": "decimal(18,2)"}
+PRICED = Contract("t", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(MONEY))
+
+
+def _priced(rows: int) -> Manifest:
+    return Manifest("t", "full", at(18), rows=rows, schema_hash=PRICED.schema_hash)
+
+
+def test_a_parquet_decimal_is_published_exactly(tmp_path):
+    from decimal import Decimal
+
+    path = tmp_path / "f.parquet"
+    with duckdb.connect() as connection:
+        connection.execute(f"COPY (SELECT 1 AS id, 1234567890123456.78::DECIMAL(18,2) AS amount) TO '{path}'")
+    with DuckDBStore(":memory:") as store:
+        assert deliver(store, PRICED, _FileSource(path, MONEY), _priced(1), at(19)).accepted
+        assert store.read("t") == [{"id": 1, "amount": Decimal("1234567890123456.78")}]
+
+
+def test_a_decimal_is_never_read_as_a_float(tmp_path):
+    path = tmp_path / "f.parquet"
+    with duckdb.connect() as connection:
+        connection.execute(f"COPY (SELECT 1 AS id, 1.25::DECIMAL(18,2) AS amount) TO '{path}'")
+    floats = {"id": "int", "amount": "float"}
+    contract = replace(PRICED, schema_hash=schema_hash(floats))
+    manifest = Manifest("t", "full", at(18), rows=1, schema_hash=contract.schema_hash)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, contract, _FileSource(path, floats), manifest, at(19))
+        assert not receipt.accepted
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"), [("12.30", True), ("-5", True), ("1.234", False), ("1e3", False)]
+)
+def test_a_csv_decimal_is_read_exactly_or_refused(tmp_path, value, accepted):
+    from decimal import Decimal
+
+    path = tmp_path / "f.csv"
+    path.write_text(f"id,amount\n1,{value}\n")
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, PRICED, _FileSource(path, MONEY), _priced(1), at(19))
+        assert receipt.accepted is accepted
+        assert not accepted or store.read("t") == [{"id": 1, "amount": Decimal(value)}]
+
+
+def test_rows_carry_decimals_into_a_declared_decimal_column():
+    from decimal import Decimal
+
+    from dogana.reference._sources import _RowSource
+
+    rows = _RowSource([{"id": 1, "amount": Decimal("0.10")}], MONEY)
+    with DuckDBStore(":memory:") as store:
+        assert deliver(store, PRICED, rows, _priced(1), at(19)).accepted
+        assert store.read("t") == [{"id": 1, "amount": Decimal("0.10")}]

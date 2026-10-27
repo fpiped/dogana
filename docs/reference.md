@@ -35,7 +35,11 @@ Row mappings cannot infer types from an empty input or an all-null column. For t
 use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
 including for files with only nulls or no rows. Parquet retains its physical schema for validation.
 Successful candidates normalize to
-BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE and TIMESTAMPTZ. When the candidate has the contract's
+BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMPTZ and DECIMAL. A payload column declared
+`decimal(p,s)` in `columns` (precision up to 38) stays exact: a Parquet DECIMAL of that precision and
+scale, a CSV value with at most `s` fraction digits and no exponent, or a Python `Decimal` row value.
+A DECIMAL is never read as a float, so a column declared `float` refuses one. Key, window and cursor
+columns keep the contract's six types. When the candidate has the contract's
 deleted column, its tombstone rows move to a separate staging table holding only their keys, and
 the deleted column is dropped: every later check and the published table see live rows only, and
 the plan's `tombstone` action deletes the published rows with those keys. Tombstone rows usually

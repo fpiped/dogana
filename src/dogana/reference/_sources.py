@@ -2,6 +2,7 @@
 
 import csv
 import os
+import re
 import stat
 import sys
 from collections.abc import Iterable, Mapping
@@ -16,6 +17,17 @@ from types import MappingProxyType
 from dogana.contract import LOGICAL_TYPES, Contract, identifier
 from dogana.errors import InvalidContract
 
+_DECIMAL = re.compile(r"decimal\(([0-9]{1,2}),([0-9]{1,2})\)")
+
+
+def _decimal(kind: str) -> tuple[int, int] | None:
+    """The precision and scale of an exact `decimal(p,s)` column; None for any other type."""
+    match = _DECIMAL.fullmatch(kind)
+    if match is None:
+        return None
+    precision, scale = int(match[1]), int(match[2])
+    return (precision, scale) if 1 <= precision <= 38 and scale <= precision else None
+
 
 def _columns(columns: Mapping[str, str]) -> Mapping[str, str]:
     if not isinstance(columns, Mapping) or not columns:
@@ -23,7 +35,7 @@ def _columns(columns: Mapping[str, str]) -> Mapping[str, str]:
     result = dict(columns)
     for name, kind in result.items():
         identifier(name)
-        if not isinstance(kind, str) or kind not in LOGICAL_TYPES:
+        if not isinstance(kind, str) or (kind not in LOGICAL_TYPES and _decimal(kind) is None):
             raise InvalidContract(f"source column {name} has an unsupported type")
     if len({name.casefold() for name in result}) != len(result):
         raise InvalidContract("source column names must be distinct ignoring case")

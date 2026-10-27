@@ -16,6 +16,9 @@ unchanged.
   instead of read as UTC.
 - A file the store cannot read (not UTF-8, compressed, a value out of range) is a rejection with an
   `execution` check, not a `StoreError` that a retrying receiver would repeat forever.
+- A payload column can be declared `decimal(p,s)`, published as DECIMAL and read back as
+  `Decimal`. A DECIMAL used to be read as a float, so 1234567890123456.78 was published as
+  1234567890123456.8; it is now exact, or refused when the declared type differs.
 - A window delivery refuses a key published outside its window. Moving it used to leave the region
   it came from claiming exactness without it; only a delivery covering the whole table moves a key.
 - A replay compares the bytes with the accepted digest and nothing else, through the new `Store`

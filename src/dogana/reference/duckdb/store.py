@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from functools import cached_property, wraps
 from hashlib import sha256
 from os import PathLike, stat
@@ -50,6 +51,7 @@ from dogana.errors import (
 from dogana.reference._sources import (
     _column_hash,
     _columns,
+    _decimal,
     _file_digest,
     _FileSource,
     _published,
@@ -86,6 +88,11 @@ class _File:
 
 # By DuckDB's name for the file and by its inode, so another name for one file is refused.
 _FILES: WeakValueDictionary[object, _File] = WeakValueDictionary()
+
+
+def _duck(kind: str) -> str:
+    """The DuckDB type of a column type: `decimal(18,2)` stays exact as DECIMAL(18,2)."""
+    return _TYPES.get(kind) or "DECIMAL" + kind.removeprefix("decimal")
 
 
 def _quote(value: str) -> str:
@@ -143,7 +150,9 @@ def _logical(value: str) -> str:
         "UHUGEINT",
     }:
         return "int"
-    if value in ("DOUBLE", "FLOAT", "REAL") or value.startswith("DECIMAL"):
+    if value.startswith("DECIMAL"):
+        return "decimal" + value.removeprefix("DECIMAL").replace(" ", "")
+    if value in ("DOUBLE", "FLOAT", "REAL"):
         return "float"
     if value == "TIMESTAMP WITH TIME ZONE":
         return "datetime"
@@ -588,7 +597,7 @@ class DuckDBStore:
 
         def create() -> None:
             declarations = ", ".join(
-                f"{_quote(name)} {_TYPES[kind or 'str']}" for name, kind in inferred.items()
+                f"{_quote(name)} {_duck(kind or 'str')}" for name, kind in inferred.items()
             )
             self.connection.execute(f"CREATE TEMP TABLE {staging} ({declarations})")
 
@@ -613,6 +622,8 @@ class DuckDBStore:
                 if value is None:
                     continue
                 kind = next((k for k, t in LOGICAL_TYPES.items() if type(value) is t.python_type), None)
+                if isinstance(value, Decimal) and _decimal(inferred[name] or "") is not None:
+                    kind = inferred[name]
                 if kind is None or isinstance(value, datetime) and value.utcoffset() is None:
                     raise InvalidContract(f"source column {name} has an unsupported value")
                 previous = inferred[name]
@@ -626,7 +637,7 @@ class DuckDBStore:
                     ):
                         raise InvalidContract(f"source column {name} has inconsistent types")
                     flush()
-                    self.connection.execute(f"ALTER TABLE {staging} ALTER {_quote(name)} TYPE {_TYPES[kind]}")
+                    self.connection.execute(f"ALTER TABLE {staging} ALTER {_quote(name)} TYPE {_duck(kind)}")
                     inferred[name] = kind
             batch.append([row[name] for name in inferred])
             if len(batch) == 1000:
@@ -638,13 +649,20 @@ class DuckDBStore:
     def _typed_csv(self, candidate: str, columns: Mapping[str, str]) -> bool:
         source = _quote(candidate)
         predicates = [
-            f"({_quote(name)} IS NOT NULL AND TRY_CAST({_quote(name)} AS {_TYPES[kind]}) IS NULL)"
+            f"({_quote(name)} IS NOT NULL AND TRY_CAST({_quote(name)} AS {_duck(kind)}) IS NULL)"
             for name, kind in columns.items()
         ]
         predicates.extend(
             f"({_quote(name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(name)}), '[+-]?[0-9]+'))"
             for name, kind in columns.items()
             if kind == "int"
+        )
+        # A decimal is read exactly: more fraction digits than its scale would be rounded away.
+        predicates.extend(
+            f"({_quote(name)} IS NOT NULL AND NOT regexp_full_match(trim({_quote(name)}), "
+            f"'[+-]?[0-9]+([.][0-9]{{0,{scale[1]}}})?'))"
+            for name, kind in columns.items()
+            if (scale := _decimal(kind)) is not None
         )
         # A time without its offset names no instant; reading it as UTC would guess.
         predicates.extend(
@@ -662,7 +680,7 @@ class DuckDBStore:
     def _recast(self, candidate: str, columns: Mapping[str, str]) -> None:
         staging = _quote(candidate)
         casts = ", ".join(
-            f"CAST({_quote(name)} AS {_TYPES[kind]}) AS {_quote(name)}" for name, kind in columns.items()
+            f"CAST({_quote(name)} AS {_duck(kind)}) AS {_quote(name)}" for name, kind in columns.items()
         )
         self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {staging} AS SELECT {casts} FROM {staging}")
 
