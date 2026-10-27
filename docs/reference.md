@@ -3,7 +3,7 @@
 The [protocol](protocol.md) defines required behavior. This page describes the command line, the
 accounting path without a store, the conformance suite a store passes, and the example store and
 file drop in the repository's `examples/duckdb`. The example is not installed with dogana: install
-it from a checkout with `uv pip install -e examples/duckdb`, copy it, or write a store for your own
+it from a checkout with `uv pip install -e . -e examples/duckdb`, copy it, or write a store for your own
 database.
 
 ## Column types and hashes
@@ -234,15 +234,16 @@ Times need a UTC offset. `--produced-at` is the source read boundary, never the 
 runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
 never reads half a manifest; it is readable by the receiver's account under the usual umask; `-o -` writes to standard output instead.
 
-`check` validates FILE's manifest against the contract and compares the SHA-256 of FILE with the
-manifest's `content_hash`. A sender runs it before handing a file over. It refuses a manifest
+`check` validates FILE's manifest against the contract, its schema hash included, and compares the
+SHA-256 of FILE with the manifest's `content_hash`. A sender runs it before handing a file over. It refuses a manifest
 without a hash. Counts, keys, windows and column types are checked by the receiver's store, which
 reads the rows.
 
 `claims` prints what a ledger claims at `--at`, now by default. LEDGER is the ledger as JSON, as a
 store returns it: `store.load_ledger(contract).to_json()`. One line per region gives its bounds, its
 state and its two dates, then one line the table's state and the instant it is exact at, if any.
-`--window LOW HIGH`, typed by the window column, keeps the regions meeting that window. Date and
+`--window LOW HIGH`, typed by the window column, prints the regions within that window, cut to its
+bounds. Date and
 integer bounds print closed.
 
 ```text

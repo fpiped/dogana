@@ -13,8 +13,8 @@ example.
   (`DuckDBStore`, `FileDrop`, `FilePattern`, `Rows`, `ingest_together`).
 - `dogana manifest` no longer counts rows: `--rows` is required, and `--tombstones` for a tombstone
   shape, since the export that wrote the file knows them and the receiver's store counts them again.
-  It still hashes the file. `dogana check` compares the manifest with the contract and the file's
-  SHA-256 with the manifest, and refuses a manifest without a hash.
+  It still hashes the file. `dogana check` compares the manifest with the contract, its schema hash
+  included, and the file's SHA-256 with the manifest, and refuses a manifest without a hash.
 - `dogana claims LEDGER` prints what a ledger, as JSON, claims at an instant: each region's bounds,
   state and two dates, then the instant the table is exact at, if any.
 - The development tools are a `dev` dependency group, not an extra, so the published package

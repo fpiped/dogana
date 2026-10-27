@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -178,6 +179,19 @@ def test_check_accepts_the_bytes_the_manifest_names_and_refuses_others(files, ca
     data.write_text("id,day,value\n1,2026-10-25,x\n")
     assert run(tmp_path, "check", str(data)) == 1
     assert "content_hash: the manifest declares" in capsys.readouterr().err
+
+
+def test_check_refuses_a_schema_hash_the_gate_would_refuse(files, capsys):
+    tmp_path, data = files
+    manifest = contract().manifest(
+        "full",
+        datetime(2026, 10, 26, 6, tzinfo=UTC),
+        rows=2,
+        content_hash=sha256(data.read_bytes()).hexdigest(),
+    )
+    (tmp_path / "orders.csv.json").write_text(replace(manifest, schema_hash="0" * 64).to_json())
+    assert run(tmp_path, "check", str(data)) == 1
+    assert "schema_hash: the manifest declares 000" in capsys.readouterr().err
 
 
 def test_check_refuses_a_manifest_without_a_hash_and_a_missing_file(files, capsys):

@@ -115,7 +115,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     claims.add_argument("ledger", type=Path, metavar="LEDGER", help="a ledger as JSON")
     claims.add_argument("--at", metavar="TIME", help="the instant to judge freshness at, with a UTC offset")
-    claims.add_argument("--window", nargs=2, metavar=("LOW", "HIGH"), help="only regions meeting this window")
+    claims.add_argument(
+        "--window", nargs=2, metavar=("LOW", "HIGH"), help="only this window, regions cut to it"
+    )
     claims.set_defaults(run=_claims, command="claims")
     return parser
 
@@ -157,6 +159,13 @@ def _check(args: argparse.Namespace) -> int:
     path = args.manifest if args.manifest is not None else _sidecar(args.file)
     manifest = Manifest.from_json(path.read_text(encoding="utf-8"))
     manifest.check(contract)
+    if contract.schema_hash is not None and manifest.schema_hash != contract.schema_hash:
+        print(
+            f"dogana check: schema_hash: the manifest declares {manifest.schema_hash}, "
+            f"the contract {contract.schema_hash}",
+            file=sys.stderr,
+        )
+        return 1
     digest = _file_digest(args.file)
     if manifest.content_hash is None:
         print(
