@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-27)
 
-Tables that depend on each other can be delivered and read together. The wire format is unchanged.
+Tables that depend on each other can be delivered and read together. The wire format is unchanged,
+so stores and documents written by 0.2.0 keep working.
 
 - `Claims.exact_as_of` is the instant at which every region equals the source, if there is one. On
   claims combined across tables it is their common instant: tables each exact at the same instant
@@ -20,6 +21,13 @@ Tables that depend on each other can be delivered and read together. The wire fo
 - `TogetherStore` is an optional store tier (`check_references`, `publish_together`), tested by
   `TogetherConformance`. The DuckDB store implements it and adds `read_together`; the file drop adds
   `ingest_together`.
+- The DuckDB store shares one lock among stores on one database file whatever path names it, and
+  refuses a second name for an open file, such as a hard link. While a rollback is unresolved it
+  refuses reads of receipts and stamps too, and closing it releases the lock.
+- In a CSV delivery to the DuckDB store, a quoted empty field is now the empty string; an unquoted
+  empty field is still null.
+- A window bound at the end of the date, timestamp or integer range now covers every stored value on
+  that side, as the ledger does, including values past what Python can name.
 
 ## 0.2.0 (2026-10-27)
 

@@ -1,7 +1,7 @@
 [project]
 name = "dogana"
-version = "0.2.0"
-description = "A ledger of what each data delivery proves about a table: two dates per region, a gate that refuses contradictions, auditable receipts"
+version = "0.3.0"
+description = "Make messy data integration trustworthy: a ledger of what each data delivery proves, a gate that refuses contradictions, and tables delivered together"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Filippo Scotti" }]
