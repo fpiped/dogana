@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:2:RegionClaim",
+  "$id": "urn:dogana:wire:3:RegionClaim",
   "title": "RegionClaim",
   "type": "object",
   "properties": {
@@ -9,13 +9,13 @@
     },
     "version": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "table": {
-      "$ref": "urn:dogana:wire:2:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:3:types#/$defs/identifier"
     },
     "region": {
-      "$ref": "urn:dogana:wire:2:Region"
+      "$ref": "urn:dogana:wire:3:Region"
     },
     "state": {
       "enum": [

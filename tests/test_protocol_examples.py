@@ -24,7 +24,8 @@ def test_the_protocol_receipt_replays_to_the_documented_ledger():
     m = Manifest.from_json((EXAMPLES / "manifest.json").read_text())
     ledger = Ledger.from_json((EXAMPLES / "ledger.json").read_text())
     receipt = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
-    assert Ledger(c).apply(m) == ledger == receipt.ledger
+    assert Ledger(c).apply(m) == ledger == Ledger(c).follow(receipt)
+    assert ledger.identity == receipt.ledger_identity
     assert receipt.manifest == m
 
 
@@ -74,7 +75,7 @@ def test_receipt_schema_distinguishes_all_outcomes_and_rejects_the_removed_boole
 
     from jsonschema import ValidationError
 
-    from dogana import Check, Claims, Region, RegionClaim, State
+    from dogana import Check
 
     accepted = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
     rejected = replace(
@@ -82,8 +83,7 @@ def test_receipt_schema_distinguishes_all_outcomes_and_rejects_the_removed_boole
         outcome="rejected",
         checks=(Check("row_count", False, "row count differs"),),
         transition=None,
-        ledger=Ledger(accepted.ledger.contract),
-        claims=Claims((RegionClaim(accepted.manifest.table, Region(), State.UNKNOWN),)),
+        ledger_identity=Ledger(accepted.contract).identity,
         publication_id=None,
     )
     replayed = replace(accepted, outcome="replayed")

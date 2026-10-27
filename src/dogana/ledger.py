@@ -359,24 +359,26 @@ class Ledger(Wire):
             raise InvalidContract("contract changes fields bound to the publication history")
         return self if self.contract == contract else replace(self, contract=contract)
 
+    def follow(self, receipt: Receipt) -> Ledger:
+        """The ledger an accepted receipt leaves after this one, checked against what the receipt names."""
+        if not receipt.accepted:
+            return self
+        try:
+            ledger = self.with_contract(receipt.contract)
+            if receipt.base_publication_id != ledger.publication_id:
+                raise InconsistentPublication("accepted receipt has a different parent publication")
+            after = ledger.apply(receipt.manifest)
+        except (InvalidContract, RejectedDelivery) as exc:
+            raise InconsistentPublication(f"accepted receipt breaks publication chain: {exc}") from exc
+        if after.publication_id != receipt.publication_id or after.identity != receipt.ledger_identity:
+            raise InconsistentPublication("accepted receipt breaks publication chain or ledger evidence")
+        return after
+
     @classmethod
     def from_receipts(cls, contract: Contract, receipts: Iterable[Receipt]) -> Ledger:
         ledger = cls(contract)
         for receipt in receipts:
-            if not receipt.accepted:
-                continue
-            try:
-                ledger = ledger.with_contract(receipt.ledger.contract)
-                if receipt.base_publication_id != ledger.publication_id:
-                    raise InconsistentPublication("accepted receipt has a different parent publication")
-                after = ledger.apply(receipt.manifest)
-                if receipt.transition is None or _steps(receipt.transition.before) != ledger._cuts:
-                    raise InconsistentPublication("accepted receipt has different preceding evidence")
-            except (InvalidContract, RejectedDelivery) as exc:
-                raise InconsistentPublication(f"accepted receipt breaks publication chain: {exc}") from exc
-            if after.publication_id != receipt.publication_id or after != receipt.ledger:
-                raise InconsistentPublication("accepted receipt breaks publication chain or ledger evidence")
-            ledger = after
+            ledger = ledger.follow(receipt)
         return ledger.with_contract(contract)
 
     @classmethod
@@ -402,10 +404,10 @@ class Ledger(Wire):
             if (
                 not retained_head.accepted
                 or retained_head.publication_id != stamp
-                or not retained_head.ledger.contract.compatible_with(contract)
-                or retained_head.ledger.with_contract(contract) != current
+                or not retained_head.contract.compatible_with(contract)
+                or current.with_contract(retained_head.contract).identity != retained_head.ledger_identity
                 or _publication(
-                    retained_head.base_publication_id, retained_head.ledger.contract, retained_head.manifest
+                    retained_head.base_publication_id, retained_head.contract, retained_head.manifest
                 )
                 != stamp
             ):
@@ -428,15 +430,12 @@ class Ledger(Wire):
                 raise StampAhead("current ledger evidence differs from its accepted history")
             return current
         if current is not None:
-            expected = next(
-                (
-                    r.ledger.with_contract(contract)
-                    for r in accepted
-                    if r.publication_id == current.publication_id
-                ),
-                cls(contract),
-            )
-            if current != expected:
+            head = next((r for r in accepted if r.publication_id == current.publication_id), None)
+            if (
+                current != cls(contract)
+                if head is None
+                else current.with_contract(head.contract).identity != head.ledger_identity
+            ):
                 raise StampAhead("current ledger is unrelated to the publication stamp")
         if not repair and stamp is not None:
             raise StampAhead("publication stamp is ahead of the ledger; repair from accepted receipts")

@@ -151,9 +151,7 @@ class MemoryStore:
 
     def receipts(self, table=None):
         with self.lock:
-            return tuple(
-                r for r in self.state[2].values() if table is None or r.ledger.contract.table == table
-            )
+            return tuple(r for r in self.state[2].values() if table is None or r.contract.table == table)
 
     def accepted_receipt(self, identity):
         with self.lock:
@@ -252,15 +250,15 @@ class MemoryStore:
                     raise StoreError("replay responses cannot create publications")
                 if candidate is not None:
                     contract, manifest, _ = self.candidates[candidate]
-                    if contract != receipt.ledger.contract or manifest != receipt.manifest:
+                    if contract != receipt.contract or manifest != receipt.manifest:
                         raise StoreError("receipt belongs to another candidate")
                 else:
-                    contract, manifest = receipt.ledger.contract, receipt.manifest
+                    contract, manifest = receipt.contract, receipt.manifest
                 current = self._base(contract, manifest)
                 if current.publication_id != receipt.base_publication_id:
                     raise StoreError("base publication moved")
                 if not receipt.accepted:
-                    if current != receipt.ledger:
+                    if current.identity != receipt.ledger_identity:
                         raise StoreError("rejection evidence differs from the current ledger")
                     self._save_receipt(receipt)
                     return
@@ -281,7 +279,7 @@ class MemoryStore:
                 self._publication_point()
                 tables, ledgers, receipts = (dict(part) for part in self.state)
                 tables[contract.table] = rows, receipt.publication_id
-                ledgers[contract.table] = receipt.ledger
+                ledgers[contract.table] = current.apply(manifest)
                 receipts[uuid4().hex] = receipt
                 self.publications[manifest.identity] = receipt.publication_id
                 self.snapshots[receipt.publication_id] = rows

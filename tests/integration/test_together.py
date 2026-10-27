@@ -16,7 +16,7 @@ from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern, ingest_together
 from tests.integration.support import csv_file
 from tests.memory_store import MemoryStore
-from tests.support import COLUMNS, FULL, SINCE, WINDOW, at, contract
+from tests.support import COLUMNS, FULL, SINCE, WINDOW, at, contract, fold
 
 LINE_COLUMNS = {"id": "int", "order_id": "int", "day": "date", "value": "str"}
 ORDERS = contract("orders", shapes={"full": FULL, "since": SINCE})
@@ -49,7 +49,7 @@ def test_a_group_is_read_with_its_evidence_at_one_moment():
         assert all(r.accepted for r in receipts.values())
         rows, ledgers = store.read_together(GROUP)
         assert rows == {"orders": [order(1)], "order_lines": [line(10, 1)]}
-        assert ledgers == {t: r.ledger for t, r in receipts.items()}
+        assert ledgers == {t: fold(r) for t, r in receipts.items()}
         assert GROUP.claims(ledgers, at(20)).exact_as_of == at(18)
 
 

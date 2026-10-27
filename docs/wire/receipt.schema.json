@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:2:Receipt",
+  "$id": "urn:dogana:wire:3:Receipt",
   "title": "Receipt",
   "type": "object",
   "properties": {
@@ -9,15 +9,18 @@
     },
     "version": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "manifest": {
-      "$ref": "urn:dogana:wire:2:Manifest"
+      "$ref": "urn:dogana:wire:3:Manifest"
+    },
+    "contract": {
+      "$ref": "urn:dogana:wire:3:Contract"
     },
     "checks": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:2:Check"
+        "$ref": "urn:dogana:wire:3:Check"
       }
     },
     "outcome": {
@@ -30,23 +33,20 @@
     "transition": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:2:Transition"
+          "$ref": "urn:dogana:wire:3:Transition"
         },
         {
           "type": "null"
         }
       ]
     },
-    "ledger": {
-      "$ref": "urn:dogana:wire:2:Ledger"
-    },
-    "claims": {
-      "$ref": "urn:dogana:wire:2:Claims"
+    "ledger_identity": {
+      "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
     },
     "publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
         },
         {
           "type": "null"
@@ -54,12 +54,12 @@
       ]
     },
     "received_at": {
-      "$ref": "urn:dogana:wire:2:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
     },
     "source": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:2:types#/$defs/text"
+          "$ref": "urn:dogana:wire:3:types#/$defs/text"
         },
         {
           "type": "null"
@@ -69,7 +69,7 @@
     "base_publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:2:types#/$defs/text"
+          "$ref": "urn:dogana:wire:3:types#/$defs/text"
         },
         {
           "type": "null"
@@ -81,11 +81,11 @@
     "kind",
     "version",
     "manifest",
+    "contract",
     "checks",
     "outcome",
     "transition",
-    "ledger",
-    "claims",
+    "ledger_identity",
     "publication_id",
     "received_at",
     "source",
@@ -111,7 +111,7 @@
       "else": {
         "properties": {
           "transition": {
-            "$ref": "urn:dogana:wire:2:Transition"
+            "$ref": "urn:dogana:wire:3:Transition"
           },
           "checks": {
             "items": {

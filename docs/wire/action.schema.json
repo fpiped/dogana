@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:2:Action",
+  "$id": "urn:dogana:wire:3:Action",
   "title": "Action",
   "type": "object",
   "properties": {
@@ -9,7 +9,7 @@
     },
     "version": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "operation": {
       "enum": [
@@ -23,7 +23,7 @@
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:2:types#/$defs/window"
+          "$ref": "urn:dogana:wire:3:types#/$defs/window"
         },
         {
           "type": "null"
@@ -50,7 +50,7 @@
       "then": {
         "properties": {
           "window": {
-            "$ref": "urn:dogana:wire:2:types#/$defs/window"
+            "$ref": "urn:dogana:wire:3:types#/$defs/window"
           }
         }
       },

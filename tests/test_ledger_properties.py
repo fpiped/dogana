@@ -280,7 +280,8 @@ def test_store_replay_preserves_the_current_publication_and_original_receipt(
         )
         assert deliver(store, CONTRACT, rows, manifest, at(tick + 1)).accepted
     receipts = store.receipts(CONTRACT.table)
-    original = receipts[replay_index % (len(receipts) - 1)]
+    index = replay_index % (len(receipts) - 1)
+    original = receipts[index]
     assert original.outcome is Outcome.ACCEPTED and not original.replayed
     before = store.read(CONTRACT.table), store.load_ledger(CONTRACT), store.publication_stamp(CONTRACT.table)
     for _ in range(repeats):
@@ -299,7 +300,7 @@ def test_store_replay_preserves_the_current_publication_and_original_receipt(
         assert current == before
     assert Ledger.from_receipts(CONTRACT, receipts) == store.load_ledger(CONTRACT)
     with pytest.raises(RejectedDelivery):
-        original.ledger.apply(original.manifest)
+        Ledger.from_receipts(CONTRACT, receipts[: index + 1]).apply(original.manifest)
 
 
 @st.composite

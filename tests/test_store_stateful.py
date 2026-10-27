@@ -58,6 +58,7 @@ class PublicationSequences(RuleBasedStateMachine):
         first = deliver(self.store, self.contract, rows_for({}), self.full_manifest({}, START), NOW)
         assert first.accepted
         self.accepted = [first]
+        self.ledgers = [Ledger(self.contract).follow(first)]
         self.attempts = [first]
         self.snapshots: dict[str, list[dict[str, int]]] = {}
         assert first.publication_id is not None
@@ -82,6 +83,7 @@ class PublicationSequences(RuleBasedStateMachine):
         assert receipt.outcome == "accepted"
         assert receipt.publication_id is not None
         self.accepted.append(receipt)
+        self.ledgers.append(self.ledgers[-1].follow(receipt))
         self.attempts.append(receipt)
         self.snapshots[receipt.publication_id] = rows_for(self.values)
 
@@ -98,7 +100,7 @@ class PublicationSequences(RuleBasedStateMachine):
 
     def remember_rejection(self, receipt: Receipt) -> None:
         assert receipt.outcome == "rejected"
-        assert receipt.ledger == self.accepted[-1].ledger
+        assert receipt.ledger_identity == self.ledgers[-1].identity
         self.attempts.append(receipt)
 
     @rule(values=VALUES)
@@ -235,7 +237,7 @@ class PublicationSequences(RuleBasedStateMachine):
         checks = self.store.check(
             candidate, self.contract, manifest, Gate.requirements(self.contract, manifest)
         )
-        stale = Gate.evaluate(self.accepted[-1].ledger, manifest, checks, now=NOW)
+        stale = Gate.evaluate(self.ledgers[-1], manifest, checks, now=NOW)
         assert stale.accepted
         self.accept_full({0: self.tick})
         with pytest.raises(StoreError, match="base publication moved"):
@@ -244,7 +246,7 @@ class PublicationSequences(RuleBasedStateMachine):
     @rule()
     def refuse_to_persist_a_rejection_after_its_base_moves(self) -> None:
         manifest = self.full_manifest({0: 0}, START)
-        stale = Gate.evaluate(self.accepted[-1].ledger, manifest, now=NOW)
+        stale = Gate.evaluate(self.ledgers[-1], manifest, now=NOW)
         assert not stale.accepted
         self.accept_full({0: self.tick})
         with pytest.raises(StoreError, match="base publication moved"):
@@ -255,16 +257,16 @@ class PublicationSequences(RuleBasedStateMachine):
         self.store.state[1].pop(self.contract.table)
         with pytest.raises(StampAhead):
             self.store.load_ledger(self.contract)
-        assert self.store.repair(self.contract) == self.accepted[-1].ledger
+        assert self.store.repair(self.contract) == self.ledgers[-1]
 
     @precondition(lambda self: len(self.accepted) > 1)
     @rule(index=st.integers(0, 100))
     def repair_a_cached_prefix_without_rewinding_rows(self, index: int) -> None:
-        older = self.accepted[index % (len(self.accepted) - 1)]
-        self.store.state[1][self.contract.table] = older.ledger
+        older = self.ledgers[index % (len(self.ledgers) - 1)]
+        self.store.state[1][self.contract.table] = older
         with pytest.raises(StampAhead):
             self.store.load_ledger(self.contract)
-        assert self.store.repair(self.contract) == self.accepted[-1].ledger
+        assert self.store.repair(self.contract) == self.ledgers[-1]
 
     @rule(index=st.integers(0, 100))
     def refuse_to_relabel_rows_with_newer_ledger_evidence(self, index: int) -> None:
@@ -284,7 +286,7 @@ class PublicationSequences(RuleBasedStateMachine):
     def rows_claims_and_retained_history_describe_one_publication(self) -> None:
         table = self.contract.table
         current = self.store.load_ledger(self.contract)
-        assert current == self.accepted[-1].ledger
+        assert current == self.ledgers[-1]
         assert self.store.publication_stamp(table) == current.publication_id
         assert self.store.receipts(table) == tuple(self.attempts)
         assert Ledger.from_receipts(self.contract, self.attempts) == current

@@ -195,6 +195,22 @@ def _marked(
     return [*({**row, marker: False} for row in rows), *deleted], {**columns, marker: "bool"}
 
 
+def _after(store: Store, contract: Contract, receipt: Receipt) -> Ledger:
+    """The ledger an accepted receipt left: the store's accepted receipts folded up to it."""
+    accepted = [r for r in store.receipts(contract.table) if r.accepted]
+    end = next(i for i, r in enumerate(accepted) if r.publication_id == receipt.publication_id) + 1
+    return Ledger.from_receipts(contract, accepted[:end])
+
+
+def _claims(store: Store, contract: Contract, receipt: Receipt) -> Claims:
+    return _after(store, contract, receipt).claims(receipt.received_at)
+
+
+def _dates(store: Store, contract: Contract, receipt: Receipt) -> tuple[datetime | None, datetime | None]:
+    claims = _claims(store, contract, receipt)
+    return claims.complete_as_of, claims.deletions_as_of
+
+
 class _StoreScenarios:
     """Shared publication fixtures and assertions."""
 
@@ -256,8 +272,8 @@ class StoreConformance(_StoreScenarios):
         assert receipt.manifest.schema_hash is None
         assert all(check.name != "schema_hash" for check in receipt.checks)
         assert factory.read_table(store, c.table) == rows
-        assert store.load_ledger(c) == receipt.ledger
-        assert receipt.claims.complete_as_of == receipt.claims.deletions_as_of == _at(18)
+        assert store.load_ledger(c).identity == receipt.ledger_identity
+        assert _dates(store, c, receipt) == (_at(18), _at(18))
         assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
         assert store.receipts(c.table) == (receipt,)
 
@@ -415,7 +431,7 @@ class StoreConformance(_StoreScenarios):
             assert any(check.name == "schema_hash" and not check.passed for check in refused.checks)
         assert refused.publication_id == first.publication_id
         assert self._rows(factory, store, c.table) == before
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert store.receipts(c.table) == (first, refused)
         self._fold(store, c)
 
@@ -440,7 +456,7 @@ class StoreConformance(_StoreScenarios):
         with factory.fail_after_rows(store):
             with pytest.raises(StoreError):
                 _submit(store, c, source, manifest)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1), _row(2)]
         assert not any(r.accepted and r.manifest == manifest for r in store.receipts(c.table))
         retried = _submit(store, c, source, manifest)
@@ -456,7 +472,7 @@ class StoreConformance(_StoreScenarios):
         first = self._deliver(factory, store, c, [_row(1)])
         second = self._deliver(factory, store, c, [_row(2)], day=19)
         assert _submit(store, c, object(), first.manifest) == replace(first, outcome=Outcome.REPLAYED)
-        assert store.load_ledger(c) == second.ledger
+        assert store.load_ledger(c).identity == second.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, second)
         self._fold(store, c)
@@ -472,7 +488,7 @@ class StoreConformance(_StoreScenarios):
             factory, store, c, [_row(1, 19, "old")], "daily", 20, window=(_at(17).date(), _at(19).date())
         )
         assert not refused.accepted
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1, 19)]
 
     def test_append_requires_an_atomic_commit_and_replay_never_duplicates_events(
@@ -496,7 +512,7 @@ class StoreConformance(_StoreScenarios):
         with factory.fail_after_rows(store):
             with pytest.raises(StoreError):
                 _submit(store, c, source, second_manifest)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert factory.read_table(store, c.table) == [{"event": "one"}]
         self._fold(store, c)
         second = _submit(store, c, source, second_manifest)
@@ -525,14 +541,14 @@ class StoreConformance(_StoreScenarios):
                 rows,
                 "feed",
                 day,
-                since=previous.ledger.generation,
+                since=_after(store, c, previous).generation,
                 generation=offset,
                 tombstones=tombstones,
             )
             assert receipt.accepted, receipt.checks
             assert receipt.base_publication_id == previous.publication_id
-            assert receipt.ledger.generation == offset
-            assert (receipt.claims.complete_as_of, receipt.claims.deletions_as_of) == (_at(day), _at(day))
+            assert _after(store, c, receipt).generation == offset
+            assert _dates(store, c, receipt) == (_at(day), _at(day))
             retained = store.receipts(c.table)
             replay = _submit(store, c, object(), receipt.manifest)
             assert replay == replace(receipt, outcome=Outcome.REPLAYED)
@@ -564,7 +580,7 @@ class StoreConformance(_StoreScenarios):
             assert failures[0].detail.endswith(
                 "generation_chain: generation chain differs from the base; request a complete delivery"
             )
-            assert store.load_ledger(c) == first.ledger
+            assert store.load_ledger(c).identity == first.ledger_identity
             assert self._rows(factory, store, c.table) == [_row(1)]
         assert self._deliver(factory, store, c, [_row(2)], day=21, generation="restored:201").accepted
         assert self._deliver(
@@ -604,13 +620,16 @@ class StoreConformance(_StoreScenarios):
             assert failures[0].detail.endswith(
                 "append_contiguous: append-only intervals must be contiguous without overlap"
             )
-            assert store.load_ledger(c) == first.ledger
+            assert store.load_ledger(c).identity == first.ledger_identity
             assert factory.read_table(store, c.table) == [event]
         request = next_extraction(store.load_ledger(c), "append", _at(20))
         assert request.since == _at(19)
         second = _submit(store, c, source, c.manifest("append", request.until, since=request.since, rows=1))
         assert second.accepted
-        assert (second.claims.complete_as_of, second.claims.deletions_as_of) == (_at(20), _at(20))
+        assert _dates(store, c, second) == (
+            _at(20),
+            _at(20),
+        )
         assert factory.read_table(store, c.table) == [event, event]
         retained = store.receipts(c.table)
         assert _submit(store, c, object(), second.manifest) == replace(second, outcome=Outcome.REPLAYED)
@@ -648,10 +667,10 @@ class StoreConformance(_StoreScenarios):
             manifest = c.manifest("upserts", until, since=request.since, rows=len(rows))
             receipt = _submit(store, c, factory.write_source(rows, columns), manifest)
             assert receipt.accepted, receipt.checks
-            assert (receipt.claims.complete_as_of, receipt.claims.deletions_as_of) == (until, start)
+            assert _dates(store, c, receipt) == (until, start)
             assert self._rows(factory, store, c.table) == visible
         assert late["updated_at"] < start + timedelta(seconds=5) < committed_at
-        assert receipt.ledger.claims(until).state is State.PATCHED
+        assert _after(store, c, receipt).claims(until).state is State.PATCHED
         self._fold(store, c)
 
     def test_a_window_delivery_cannot_move_a_key_out_of_another_window(
@@ -664,7 +683,7 @@ class StoreConformance(_StoreScenarios):
         )
         assert not refused.accepted
         assert not next(check for check in refused.checks if check.name == "rows_in_window").passed
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
         moved = self._deliver(factory, store, c, [_row(1, 19)], day=20)
         assert moved.accepted
@@ -693,7 +712,7 @@ class StoreConformance(_StoreScenarios):
             tombstones=(1,),
         )
         assert not refused.accepted
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1), _row(2, 19)]
 
     def test_a_key_cannot_be_both_live_and_deleted_in_one_delivery(
@@ -706,7 +725,7 @@ class StoreConformance(_StoreScenarios):
         )
         assert not refused.accepted
         assert [check.name for check in refused.checks if not check.passed] == ["key_integrity"]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
 
     @pytest.mark.parametrize("declared,delivered", [(0, (1,)), (1, ())])
     def test_the_declared_tombstones_must_be_the_marked_rows(
@@ -718,7 +737,7 @@ class StoreConformance(_StoreScenarios):
         rows, columns = _marked(c, "feed", [_row(2)], delivered, COLUMNS)
         refused = _submit(store, c, factory.write_source(rows, columns), manifest)
         assert [check.name for check in refused.checks if not check.passed] == ["row_count"]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
     @pytest.mark.parametrize("deleted,accepted", [(False, True), (True, False)])
@@ -735,7 +754,7 @@ class StoreConformance(_StoreScenarios):
             [] if accepted else ["row_count"]
         )
         assert self._rows(factory, store, c.table) == ([_row(1), _row(2)] if accepted else [_row(1)])
-        assert store.load_ledger(c) == (receipt.ledger if accepted else first.ledger)
+        assert store.load_ledger(c).identity == (receipt if accepted else first).ledger_identity
         self._fold(store, c)
 
     def test_an_unmarked_row_is_neither_live_nor_deleted(self, factory: StoreFactory, store: Store) -> None:
@@ -745,7 +764,7 @@ class StoreConformance(_StoreScenarios):
         rows = [{**_row(2), "deleted": False}, {**_row(3), "deleted": None}]
         refused = _submit(store, c, factory.write_source(rows, {**COLUMNS, "deleted": "bool"}), manifest)
         assert [check.name for check in refused.checks if not check.passed] == ["row_count"]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
 
     def test_an_empty_partition_decommissions_it_without_erasing_unknown_history(
         self, factory: StoreFactory, store: Store
@@ -755,9 +774,9 @@ class StoreConformance(_StoreScenarios):
         receipt = self._deliver(factory, store, c, [], "daily", 19, window=(_at(18).date(), _at(18).date()))
         assert receipt.accepted
         assert self._rows(factory, store, c.table) == []
-        assert receipt.ledger.claims(_at(19)).state is State.UNKNOWN
+        assert _after(store, c, receipt).claims(_at(19)).state is State.UNKNOWN
         day = (_at(18).date(), _at(18).date())
-        assert receipt.ledger.claims(_at(19), window=day).deletions_as_of == _at(19)
+        assert _after(store, c, receipt).claims(_at(19), window=day).deletions_as_of == _at(19)
 
     def test_a_foreign_manifest_is_audited_under_the_receiving_contract(
         self, factory: StoreFactory, store: Store
@@ -780,7 +799,7 @@ class StoreConformance(_StoreScenarios):
         receipt = self._deliver(factory, store, c, [_row(i) for i in range(remaining)], day=19)
         assert receipt.accepted is accepted
         assert len(factory.read_table(store, c.table)) == (remaining if accepted else 10)
-        assert store.load_ledger(c) == (receipt.ledger if accepted else first.ledger)
+        assert store.load_ledger(c).identity == (receipt if accepted else first).ledger_identity
 
     def test_empty_named_plant_exports_preserve_other_plants_and_unknown_history(
         self, factory: StoreFactory, store: Store
@@ -826,7 +845,7 @@ class StoreConformance(_StoreScenarios):
                     schema_hash=c.schema_hash,
                 )
                 pulled = _submit(pull, c, factory.write_source(rows, COLUMNS), manifest)
-                assert pushed.ledger == pulled.ledger
+                assert pushed.ledger_identity == pulled.ledger_identity
                 assert pushed.checks == pulled.checks
                 assert self._rows(factory, store, c.table) == self._rows(factory, pull, c.table)
                 assert store.load_ledger(c) == pull.load_ledger(c)
@@ -869,8 +888,7 @@ class StoreConformance(_StoreScenarios):
             {"id": 1, "updated_at": _at(17), "value": "old"},
             *source,
         ]
-        assert receipt.claims.complete_as_of == _at(19)
-        assert receipt.claims.deletions_as_of == _at(18)
+        assert _dates(store, c, receipt) == (_at(19), _at(18))
 
     def test_two_writers_from_one_base_publish_only_one_candidate(
         self, factory: StoreFactory, store: Store
@@ -899,7 +917,7 @@ class StoreConformance(_StoreScenarios):
         finally:
             store.abort(winner)
             store.abort(loser)
-        assert store.load_ledger(c) == receipt.ledger
+        assert store.load_ledger(c).identity == receipt.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, receipt)
 
@@ -933,7 +951,7 @@ class StoreConformance(_StoreScenarios):
         reopened = durable.reopen(store)
         try:
             assert reopened.receipts(c.table) == (receipt,)
-            assert reopened.load_ledger(c) == receipt.ledger
+            assert reopened.load_ledger(c).identity == receipt.ledger_identity
             assert self._rows(factory, reopened, c.table) == [_row(1)]
         finally:
             close = getattr(reopened, "close", None)
@@ -994,7 +1012,7 @@ class StoreConformance(_StoreScenarios):
         refused = _submit(store, c, factory.write_source([_row(2)], COLUMNS), first.manifest)
         assert not refused.accepted and not refused.replayed
         assert any(check.name == "content_hash" and not check.passed for check in refused.checks)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
     def test_a_sequence_read_refuses_rows_outside_its_positions(
@@ -1051,7 +1069,7 @@ class StoreConformance(_StoreScenarios):
         refused = _submit(store, c, object(), manifest)
         assert not refused.accepted
         assert any(not check.passed and check.name == "receiver_time" for check in refused.checks)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
     def test_schema_failure_marks_dependent_checks_not_evaluated(
@@ -1123,7 +1141,7 @@ class StoreConformance(_StoreScenarios):
         with pytest.raises(SerializationError):
             _submit(store, c, object(), manifest)
         assert store.receipts(c.table) == (first,)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         self._fold(store, c)
 
     def test_a_rejection_cannot_be_persisted_against_a_newer_publication(
@@ -1133,12 +1151,14 @@ class StoreConformance(_StoreScenarios):
 
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
-        refused = Gate.evaluate(first.ledger, replace(first.manifest, shape="missing"), now=_at(30))
+        refused = Gate.evaluate(
+            _after(store, c, first), replace(first.manifest, shape="missing"), now=_at(30)
+        )
         second = self._deliver(factory, store, c, [_row(2)], day=19)
         with pytest.raises(StoreError):
             store.publish(None, refused)
         assert store.receipts(c.table) == (first, second)
-        assert store.load_ledger(c) == second.ledger
+        assert store.load_ledger(c).identity == second.ledger_identity
 
     def test_checks_require_a_candidate_held_by_the_store(self, factory: StoreFactory, store: Store) -> None:
         from dogana import Gate
@@ -1149,7 +1169,7 @@ class StoreConformance(_StoreScenarios):
         with pytest.raises(StoreError):
             store.check("not_held", c, manifest, Gate.requirements(c, manifest))
         assert store.receipts(c.table) == (first,)
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
 
@@ -1163,12 +1183,12 @@ class StampedLedgerConformance(_StoreScenarios):
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)])
         second = self._deliver(factory, store, c, [_row(2)], day=19)
-        factory.set_ledger(store, first.ledger)
+        factory.set_ledger(store, _after(store, c, first))
         with pytest.raises(StampAhead):
             store.load_ledger(c)
         with pytest.raises(InconsistentPublication):
             _submit(store, c, object(), second.manifest)
-        assert stamped.repair(c) == second.ledger
+        assert stamped.repair(c) == _after(store, c, second)
         assert _submit(store, c, object(), second.manifest) == replace(second, outcome=Outcome.REPLAYED)
         assert self._rows(factory, store, c.table) == [_row(2)]
         self._fold(store, c)
@@ -1201,7 +1221,7 @@ class StampedLedgerConformance(_StoreScenarios):
         factory.remove_ledger(store, c.table)
         with pytest.raises(InconsistentPublication):
             _submit(store, c, object(), receipt.manifest)
-        assert stamped.repair(c) == receipt.ledger
+        assert stamped.repair(c) == _after(store, c, receipt)
         assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
 
 
@@ -1340,7 +1360,7 @@ class TogetherConformance(_StoreScenarios):
             day=19,
         )
         assert not any(r.accepted for r in receipts.values())
-        failed = {r.ledger.contract.table: [c for c in r.checks if not c.passed] for r in receipts.values()}
+        failed = {r.contract.table: [c for c in r.checks if not c.passed] for r in receipts.values()}
         assert [c.name for c in failed["orders"]] == [c.name for c in failed["order_lines"]] == ["references"]
         assert self._state(factory, store, group) == before
 

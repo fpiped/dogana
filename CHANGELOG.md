@@ -2,9 +2,17 @@
 
 ## 0.4.0 (unreleased)
 
-The store publishes exactly the bytes the sender hashed and counted, and every delivery it cannot
-read is a recorded rejection. Some files 0.3.0 accepted are now refused; the wire format is
-unchanged.
+The store publishes exactly the bytes the sender hashed and counted, every delivery it cannot read
+is a recorded rejection, and a receipt no longer grows with the table's history. This changes the
+wire format to version 3: stores and documents written by 0.3.0 are refused, and a table moves to
+0.4.0 with a new full delivery into a new store.
+
+- A receipt records one decision and names the ledger it leaves by identity (`ledger_identity`)
+  instead of carrying it, its claims and the whole ledger before it. `Transition` keeps the plan and
+  the regions over the delivery's coverage. With one window a day, after a year a receipt carried four
+  copies of a 90 KB ledger, over 350 KB; it is now about 2.5 KB. The ledger is the fold of accepted
+  receipts: `Ledger.follow(receipt)` takes one checked step, `Ledger.from_receipts` all of them, and
+  `store.load_ledger(contract)` reads the current one.
 
 - A delivered file is opened once and copied into the store's private folder while it is hashed;
   every read uses the copy. A symbolic link swapped after the drop's root check, or a file changed

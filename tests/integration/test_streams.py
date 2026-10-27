@@ -11,7 +11,7 @@ pytest.importorskip("duckdb")
 from dogana import Contract, Ledger, Shape, deliver, next_extraction
 from dogana.reference._sources import Rows
 from dogana.reference.duckdb import DuckDBStore
-from tests.support import at, schema_hash
+from tests.support import at, fold, schema_hash
 
 
 @pytest.mark.parametrize("after_commit", [False, True])
@@ -73,8 +73,11 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
             assert retried == replace(stored, outcome="replayed")
             assert retried.identity == stored.identity
             assert retried.received_at == at(19)
-        assert restarted.read_publication(c) == (rows, retried.ledger)
-        assert (retried.claims.complete_as_of, retried.claims.deletions_as_of) == (at(19), at(19))
+        ledger = Ledger(c).apply(snapshot).apply(batch)
+        assert ledger.identity == retried.ledger_identity
+        assert restarted.read_publication(c) == (rows, ledger)
+        claims = ledger.claims(retried.received_at)
+        assert (claims.complete_as_of, claims.deletions_as_of) == (at(19), at(19))
         request = next_extraction(restarted.load_ledger(c), "cdc", at(20))
         assert request.since == "log:103"
         next_batch = c.manifest(
@@ -83,10 +86,12 @@ def test_a_cdc_stream_restart_reads_the_committed_offset_and_converges(tmp_path,
         gone = Rows([{"id": 2, "value": None, "deleted": True}], {**columns, "deleted": "bool"})
         final = deliver(restarted, c, gone, next_batch, now=at(20))
         assert final.accepted
-        assert (final.claims.complete_as_of, final.claims.deletions_as_of) == (at(20), at(20))
+        ledger = Ledger(c).apply(snapshot).apply(batch).apply(next_batch)
+        claims = ledger.claims(final.received_at)
+        assert (claims.complete_as_of, claims.deletions_as_of) == (at(20), at(20))
         assert restarted.read(c.table) == [{"id": 3, "value": "new"}]
-        assert final.ledger == Ledger(c).apply(snapshot).apply(batch).apply(next_batch)
-        assert final.ledger == Ledger.from_receipts(c, restarted.receipts(c.table))
+        assert ledger.identity == final.ledger_identity
+        assert ledger == Ledger.from_receipts(c, restarted.receipts(c.table)) == restarted.load_ledger(c)
         assert len(restarted.receipts(c.table)) == 3
         assert restarted.connection.execute("SELECT count(*) FROM __dogana_commits").fetchone()[0] == 3
 
@@ -122,7 +127,7 @@ def test_an_event_stream_restart_replays_the_last_arrival_interval_and_refuses_a
         assert refused.checks[-1].detail.endswith(
             "append_contiguous: append-only intervals must be contiguous without overlap"
         )
-        assert restarted.read_publication(c) == (rows, first.ledger)
+        assert restarted.read_publication(c) == (rows, fold(first))
         request = next_extraction(restarted.load_ledger(c), "append", at(20))
         assert request.since == at(19)
         next_rows = [{"event": "next", "arrived_at": at(20)}]
@@ -150,7 +155,7 @@ def test_two_event_stream_consumers_racing_on_the_same_interval_publish_once(tmp
             receipts = list(pool.map(consume, (first, second)))
         assert sorted(r.outcome.value for r in receipts) == ["accepted", "replayed"]
         assert receipts[0].identity == receipts[1].identity
-        assert first.read_publication(c) == second.read_publication(c) == (rows, receipts[0].ledger)
+        assert first.read_publication(c) == second.read_publication(c) == (rows, fold(receipts[0]))
         assert len(first.receipts(c.table)) == 1
         assert first.connection.execute("SELECT count(*) FROM __dogana_commits").fetchone()[0] == 1
 
@@ -171,8 +176,9 @@ def test_a_micro_batch_stream_commits_1000_tiny_batches_with_bounded_receipts(tm
         assert len(receipts) == len(store.read(c.table)) == 1_000
         assert max(sizes) < 5_000
         assert max(sizes) - min(sizes) < 500
-        assert len(receipt.ledger.regions) == 1
-        assert receipt.ledger == Ledger.from_receipts(c, receipts)
+        ledger = Ledger.from_receipts(c, receipts)
+        assert len(ledger.regions) == 1
+        assert ledger.identity == receipt.ledger_identity == store.load_ledger(c).identity
         assert deliver(store, c, object(), manifest, now=boundary).replayed
         assert store.receipts(c.table) == receipts
         assert store.connection.execute("SELECT count(*) FROM __dogana_commits").fetchone()[0] == 1_000

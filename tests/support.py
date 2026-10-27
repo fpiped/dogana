@@ -2,7 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
-from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, Shape
+from dogana import Checkpoint, Completeness, Contract, Coverage, Deletions, Ledger, Shape
 
 FULL = Shape(
     coverage=Coverage.ALL,
@@ -47,6 +47,14 @@ def schema_hash(columns):
     return sha256(
         json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
     ).hexdigest()
+
+
+def fold(*receipts):
+    """The ledger a receipt chain leaves, from the initial ledger, each step checked by Ledger.follow."""
+    ledger = Ledger(receipts[0].contract)
+    for receipt in receipts:
+        ledger = ledger.follow(receipt)
+    return ledger
 
 
 def at(day: int, hour: int = 0) -> datetime:

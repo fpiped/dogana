@@ -204,7 +204,7 @@ def test_a_commit_failure_before_publication_leaves_no_receipt_or_rows(monkeypat
         )
         with pytest.raises(StoreError, match="interrupted before commit"):
             deliver(store, c, [row(2)], manifest, at(20))
-    assert store.load_ledger(c) == first.ledger
+    assert store.load_ledger(c).identity == first.ledger_identity
     assert store.receipts(c.table) == (first,)
     assert store.read(c.table) == [row(1)]
     assert not store.candidates

@@ -19,11 +19,12 @@ from .contract import (
     WindowCoverage,
     WindowDelivery,
     bounds,
+    coverage_window,
     cursor_interval,
     identifier,
 )
 from .errors import InvalidContract, RejectedDelivery
-from .ledger import Claims, Ledger, Region
+from .ledger import Ledger, Region
 from .wire import Wire, utc
 
 if TYPE_CHECKING:
@@ -116,14 +117,15 @@ class Check(Wire):
 
 @dataclass(frozen=True)
 class Transition(Wire):
-    before: tuple[Region, ...]
-    after: tuple[Region, ...]
+    """What an accepted delivery did: its plan, and the regions over its coverage afterwards."""
+
     plan: ApplyPlan
+    regions: tuple[Region, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if not self.before or not self.after:
-            raise InvalidContract("a transition needs preceding and resulting regions")
+        if not self.regions:
+            raise InvalidContract("a transition needs the regions it establishes")
 
 
 class Outcome(StrEnum):
@@ -134,12 +136,18 @@ class Outcome(StrEnum):
 
 @dataclass(frozen=True)
 class Receipt(Wire):
+    """One decision: what was delivered and checked, what it changed, and where it sits in the chain.
+
+    The ledger is the fold of accepted receipts; a receipt names the ledger it leaves by identity, so
+    its size follows the delivery's coverage, never the table's history.
+    """
+
     manifest: Manifest
+    contract: Contract
     checks: tuple[Check, ...]
     outcome: Outcome
     transition: Transition | None
-    ledger: Ledger
-    claims: Claims
+    ledger_identity: str
     publication_id: str | None
     received_at: datetime
     source: str | None = None
@@ -151,12 +159,6 @@ class Receipt(Wire):
             raise InvalidContract("only accepted receipts contain a transition")
         if self.accepted and not all(c.passed for c in self.checks):
             raise InvalidContract("accepted receipts require passing checks")
-        if self.publication_id != self.ledger.publication_id:
-            raise InvalidContract("receipt publication must identify its ledger")
-        if self.transition is not None and (
-            Ledger(self.ledger.contract, self.transition.after).regions != self.ledger.regions
-        ):
-            raise InvalidContract("receipt transition must establish its ledger regions")
         if self.accepted and self.manifest.produced_at > self.received_at:
             raise InvalidContract("accepted receipts cannot attest a future source boundary")
         if not self.accepted and self.base_publication_id != self.publication_id:
@@ -216,14 +218,14 @@ class Gate:
     @staticmethod
     def together(alone: tuple[Receipt, ...], references: tuple[Reference, ...] = ()) -> Check:
         """The joint check of a group: one read boundary, and every table accepted on its own."""
-        reads = sorted((receipt.ledger.contract.table, receipt.manifest.produced_at) for receipt in alone)
-        refused = sorted(receipt.ledger.contract.table for receipt in alone if not receipt.accepted)
+        reads = sorted((receipt.contract.table, receipt.manifest.produced_at) for receipt in alone)
+        refused = sorted(receipt.contract.table for receipt in alone if not receipt.accepted)
         if len({boundary for _, boundary in reads}) != 1:
             boundaries = ", ".join(f"{table} {boundary.isoformat()}" for table, boundary in reads)
             return Check("together", False, f"read boundaries differ: {boundaries}")
         if refused:
             return Check("together", False, f"refused with {', '.join(refused)}")
-        return Gate.delivered(tuple((r.ledger.contract.table, r.manifest) for r in alone), references)
+        return Gate.delivered(tuple((r.contract.table, r.manifest) for r in alone), references)
 
     @staticmethod
     def delivered(reads: tuple[tuple[str, Manifest], ...], references: tuple[Reference, ...] = ()) -> Check:
@@ -254,11 +256,11 @@ class Gate:
             raise InvalidContract("a rejection needs a failed check")
         return Receipt(
             manifest,
+            ledger.contract,
             checks,
             Outcome.REJECTED,
             None,
-            ledger,
-            ledger.claims(now),
+            ledger.identity,
             ledger.publication_id,
             now,
             source=source,
@@ -305,15 +307,15 @@ class Gate:
         if not all(c.passed for c in checks):
             return cls.reject(ledger, manifest, checks, now=now, source=source)
         after = ledger.apply(manifest)
-        plan = ApplyPlan.build(ledger.contract, manifest)
-        transition = Transition(ledger.regions, after.regions, plan)
+        coverage = coverage_window(manifest.check(ledger.contract))
+        transition = Transition(ApplyPlan.build(ledger.contract, manifest), after.covered(coverage))
         return Receipt(
             manifest,
+            ledger.contract,
             checks,
             Outcome.ACCEPTED,
             transition,
-            after,
-            after.claims(now),
+            after.identity,
             after.publication_id,
             now,
             source=source,

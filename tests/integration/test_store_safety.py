@@ -12,7 +12,7 @@ from dogana.errors import InconsistentPublication, StoreError
 from dogana.reference._sources import Rows, _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
-from tests.support import COLUMNS, FULL, SINCE, at, contract, schema_hash
+from tests.support import COLUMNS, FULL, SINCE, at, contract, fold, schema_hash
 
 
 def publish(store, tmp_path, rows, *, c=None, columns=COLUMNS, day=18, shape="full", **kwargs):
@@ -104,7 +104,7 @@ def test_a_held_csv_can_be_checked_twice_and_published_once(tmp_path):
         receipt = Gate.evaluate(store.load_ledger(c), manifest, repeated, now=at(20))
         assert receipt.accepted
         store.publish(candidate, receipt)
-        assert store.read_publication(c) == (rows, receipt.ledger)
+        assert store.read_publication(c) == (rows, fold(receipt))
         assert store.receipts(c.table) == (receipt,)
         assert not store._candidates and store._transaction is None
 
@@ -126,7 +126,7 @@ def test_a_held_file_with_tombstones_can_be_checked_twice_and_published_once(tmp
         checks = store.check(candidate, c, manifest, requirements)
         assert store.check(candidate, c, manifest, requirements) == checks
         assert all(check.passed for check in checks), checks
-        receipt = Gate.evaluate(first.ledger, manifest, checks, now=at(20))
+        receipt = Gate.evaluate(fold(first), manifest, checks, now=at(20))
         store.publish(candidate, receipt)
         assert store.read(c.table) == [row(2, value="new")]
 
@@ -197,11 +197,11 @@ def test_cached_checks_cannot_be_reused_after_the_base_moves(tmp_path, rebase):
         checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
         assert all(check.passed for check in checks)
         latest = publish(store, tmp_path, [row(i) for i in range(10)], day=19)
-        stale = Gate.evaluate(latest.ledger if rebase else first.ledger, manifest, checks, now=at(30))
+        stale = Gate.evaluate(fold(first, latest) if rebase else fold(first), manifest, checks, now=at(30))
         with pytest.raises(StoreError, match="different base" if rebase else "changed after"):
             store.publish(candidate, stale)
         assert store.read(c.table) == [row(i) for i in range(10)]
-        assert store.load_ledger(c) == latest.ledger
+        assert store.load_ledger(c).identity == latest.ledger_identity
         assert not store._candidates
 
 
@@ -212,10 +212,10 @@ def test_publication_rejects_a_receipt_bound_to_another_base(tmp_path):
         m = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
-        receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
+        receipt = Gate.evaluate(fold(first), m, checks, now=at(20))
         with pytest.raises(StoreError, match="different base"):
             store.publish(held, replace(receipt, base_publication_id="wrong"))
-        assert store.read_publication(c) == ([row(1)], first.ledger)
+        assert store.read_publication(c) == ([row(1)], fold(first))
 
 
 @pytest.mark.parametrize("primitive", [False, True])
@@ -237,7 +237,7 @@ def test_same_connection_readers_wait_for_the_whole_publication(tmp_path, monkey
                 return deliver(store, c, [row(2)], m, at(20))
             held = store.hold([row(2)], m, c)
             checks = store.check(held, c, m, Gate.requirements(c, m))
-            receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
+            receipt = Gate.evaluate(fold(first), m, checks, now=at(20))
             store.publish(held, receipt)
             return receipt
 
@@ -257,7 +257,7 @@ def test_same_connection_readers_wait_for_the_whole_publication(tmp_path, monkey
             second = writing.result(timeout=5)
             rows, ledger = reading.result(timeout=5)
         assert rows == [row(2)]
-        assert ledger == second.ledger
+        assert ledger == fold(first, second)
         assert ledger.publication_id != first.publication_id
 
 
@@ -307,7 +307,7 @@ def test_schema_evolution_retains_each_original_publication(tmp_path):
         assert second.accepted
         assert store.read(c.table, first.publication_id) == [row(1)]
         assert store.read(c.table, second.publication_id) == [{**row(2), "extra": "new"}]
-        assert Ledger.from_receipts(changed, store.receipts()) == second.ledger
+        assert Ledger.from_receipts(changed, store.receipts()).identity == second.ledger_identity
 
 
 def test_keyless_replacement_closes_replaced_history_versions(tmp_path):
@@ -365,7 +365,7 @@ def test_row_mappings_publish_without_a_contract_schema_hash(manifest_hash):
         receipt = deliver(store, c, iter(rows), m, at(20))
         assert receipt.accepted, receipt.checks
         assert not any(check.name == "schema_hash" for check in receipt.checks)
-        assert store.read_publication(c) == (rows, receipt.ledger)
+        assert store.read_publication(c) == (rows, fold(receipt))
         assert store.receipts(c.table) == (receipt,)
         assert not store._candidates
 
@@ -378,7 +378,7 @@ def test_explicit_row_columns_preserve_empty_and_all_null_candidate_types(rows):
     with DuckDBStore(":memory:") as store:
         receipt = deliver(store, c, Rows(rows, columns), manifest, at(20))
         assert receipt.accepted, receipt.checks
-        assert store.read_publication(c) == (rows, receipt.ledger)
+        assert store.read_publication(c) == (rows, fold(receipt))
         assert dict(store._description(c.table)) == {"id": "BIGINT", "amount": "DOUBLE"}
 
 
@@ -393,7 +393,7 @@ def test_candidate_payload_renames_and_retypes_fail_the_external_schema_hash(inc
         receipt = deliver(store, c, incoming, c.manifest("full", at(19), rows=1), at(20))
         assert not receipt.accepted
         assert not next(check for check in receipt.checks if check.name == "schema_hash").passed
-        assert store.read_publication(c) == (original, first.ledger)
+        assert store.read_publication(c) == (original, fold(first))
         assert store.receipts(c.table) == (first, receipt)
 
 
@@ -442,7 +442,7 @@ def test_changing_published_columns_refuses_publication_without_losing_history(s
         if after_check:
             candidate = store.hold(incoming, manifest, c)
             checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
-            checked = Gate.evaluate(first.ledger, manifest, checks, now=at(20))
+            checked = Gate.evaluate(fold(first), manifest, checks, now=at(20))
             assert checked.accepted
         statements = {
             "reorder": "CREATE OR REPLACE TABLE pairs AS SELECT amount, id FROM pairs",
@@ -457,7 +457,7 @@ def test_changing_published_columns_refuses_publication_without_losing_history(s
             else:
                 deliver(store, c, incoming, manifest, at(20))
         assert store.read(c.table) == changed_rows
-        assert store.read_publication(c) == (original, first.ledger)
+        assert store.read_publication(c) == (original, fold(first))
         assert store.read(c.table, first.publication_id) == original
         assert store.receipts(c.table) == (first,)
         assert store.publication_stamp(c.table) == first.publication_id
@@ -495,7 +495,7 @@ def test_aborting_an_unknown_candidate_cannot_drop_a_published_table(tmp_path):
     with DuckDBStore(":memory:") as store:
         first = publish(store, tmp_path, [row(1)])
         store.abort(c.table)
-        assert store.read_publication(c) == ([row(1)], first.ledger)
+        assert store.read_publication(c) == ([row(1)], fold(first))
 
 
 def test_evolved_history_cannot_collide_with_another_user_table():
@@ -517,7 +517,8 @@ def test_evolved_history_cannot_collide_with_another_user_table():
         manifest = Manifest(other.table, "full", at(19), rows=1, schema_hash=other.schema_hash)
         foreign = [{"id": 2, "value": "foreign", "extra": "other"}]
         assert deliver(store, other, foreign, manifest, at(20)).accepted
-        assert store.read_publication(evolved) == (expected, second.ledger)
+        rows, ledger = store.read_publication(evolved)
+        assert (rows, ledger.identity) == (expected, second.ledger_identity)
         assert store.read(other.table) == foreign
 
 
@@ -544,7 +545,7 @@ def test_fractional_keys_cannot_be_rounded_into_another_published_key(tmp_path, 
         changed = Manifest(c.table, "since", at(19), since=at(18), rows=1, schema_hash=c.schema_hash)
         receipt = deliver(store, c, source, changed, at(20))
         assert not receipt.accepted
-        assert store.read_publication(c) == (original, published.ledger)
+        assert store.read_publication(c) == (original, fold(published))
 
 
 @pytest.mark.parametrize("after", [False, True])
@@ -555,7 +556,7 @@ def test_a_lost_rollback_response_is_resolved_before_unlocking(tmp_path, after):
         m = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
-        receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
+        receipt = Gate.evaluate(fold(first), m, checks, now=at(20))
         connection = store.connection
 
         def interrupted():
@@ -581,7 +582,7 @@ def test_a_lost_rollback_response_is_resolved_before_unlocking(tmp_path, after):
             store.connection = connection
         assert store._transaction is None
         assert not store._candidates
-        assert store.read_publication(c) == ([row(1)], first.ledger)
+        assert store.read_publication(c) == ([row(1)], fold(first))
 
 
 def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
@@ -591,7 +592,7 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
         m = Manifest(c.table, "full", at(19), rows=1, schema_hash=c.schema_hash)
         held = store.hold([row(2)], m, c)
         checks = store.check(held, c, m, Gate.requirements(c, m))
-        receipt = Gate.evaluate(first.ledger, m, checks, now=at(20))
+        receipt = Gate.evaluate(fold(first), m, checks, now=at(20))
         assert receipt.transition is not None
         store._open((held,))
         store._write_rows(held, receipt.transition.plan)
@@ -613,7 +614,7 @@ def test_an_unresolved_rollback_keeps_uncommitted_rows_unreadable(tmp_path):
         finally:
             store.connection = connection
             store.abort(held)
-        assert store.read_publication(c) == ([row(1)], first.ledger)
+        assert store.read_publication(c) == ([row(1)], fold(first))
 
 
 def test_schema_evolution_removes_replaced_rows_before_converting_survivors():
@@ -634,7 +635,7 @@ def test_schema_evolution_removes_replaced_rows_before_converting_survivors():
         )
         receipt = deliver(store, changed, [{"id": 1, "value": 7}], next_manifest, at(20))
         assert receipt.accepted
-        assert store.read_publication(changed) == ([{"id": 1, "value": 7}], receipt.ledger)
+        assert store.read_publication(changed) == ([{"id": 1, "value": 7}], fold(published, receipt))
         assert store.read(original.table, published.publication_id) == [{"id": 1, "value": "old"}]
 
 
@@ -673,7 +674,7 @@ def test_primitive_checks_publish_typed_csv_without_a_contract_schema_hash(tmp_p
         receipt = Gate.evaluate(store.load_ledger(c), manifest, checks, now=at(20))
         assert receipt.accepted, receipt.checks
         store.publish(candidate, receipt)
-        assert store.read_publication(c) == ([{"id": 1}], receipt.ledger)
+        assert store.read_publication(c) == ([{"id": 1}], fold(receipt))
         assert store.receipts(c.table) == (receipt,)
         assert not store._candidates and store._transaction is None
 
@@ -710,5 +711,5 @@ def test_changed_candidate_types_cannot_recast_surviving_published_rows(hashed):
         manifest = changed.manifest("since", at(19), since=at(18), rows=1)
         receipt = deliver(store, changed, [{"id": 1, "value": 7}], manifest, at(20))
         assert not receipt.accepted
-        assert store.read_publication(original) == (before, first.ledger)
+        assert store.read_publication(original) == (before, fold(first))
         assert store.receipts(original.table) == (first, receipt)

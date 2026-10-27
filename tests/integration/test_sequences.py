@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.support import COLUMNS, at, schema_hash
+from tests.support import COLUMNS, at, fold, schema_hash
 
 pytest.importorskip("duckdb")
 
@@ -160,13 +160,14 @@ def test_every_admitted_shape_publishes_its_declared_row_effect(name, live, dele
     c = sequence_contract()
     with DuckDBStore(":memory:") as store:
         first, previous = baseline(store, c)
-        rows, manifest = attempt(c, first.ledger, 1, name, live, deleted, low, high, "valid")
+        rows, manifest = attempt(c, fold(first), 1, name, live, deleted, low, high, "valid")
         receipt = store.deliver(c, Rows(rows, DELIVERED), manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         expected = expected_rows(previous, rows, manifest, c.shape(name))
         assert store.read(c.table) == [expected[key] for key in sorted(expected)]
-        invariants(first.ledger, receipt.ledger, manifest, c.shape(name))
-        assert Ledger.from_receipts(c, store.receipts(c.table)) == receipt.ledger
+        invariants(fold(first), fold(first, receipt), manifest, c.shape(name))
+        assert Ledger.from_receipts(c, store.receipts(c.table)) == store.load_ledger(c)
+        assert store.load_ledger(c).identity == receipt.ledger_identity
 
 
 @settings(max_examples=25, deadline=None)
@@ -192,7 +193,7 @@ def test_delivery_histories_preserve_rows_evidence_and_old_publications(attempts
                 assert receipt.accepted is (issue == "valid"), receipt.checks
                 assert store.receipts(c.table) == (*retained, receipt)
                 if issue == "valid":
-                    invariants(before, receipt.ledger, manifest, c.shape(name))
+                    invariants(before, before.follow(receipt), manifest, c.shape(name))
                     expected = expected_rows(expected, rows, manifest, c.shape(name))
                     accepted.append((receipt, [expected[key] for key in sorted(expected)]))
                 else:
@@ -313,6 +314,8 @@ def test_replay_rejection_overlapping_windows_and_generation_breaks_interleave_w
                 assert receipt == replace(second, outcome="replayed")
             else:
                 assert not receipt.accepted
-            assert store.load_ledger(c) == second.ledger == Ledger.from_receipts(c, store.receipts(c.table))
+            current = store.load_ledger(c)
+            assert current.identity == second.ledger_identity
+            assert current == Ledger.from_receipts(c, store.receipts(c.table))
             assert store.read(c.table) == [row(1), row(2, value="changed")]
         assert sum(r.accepted for r in store.receipts(c.table)) == 2

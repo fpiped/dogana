@@ -409,7 +409,7 @@ class DuckDBStore:
             or receipt.identity != row[0]
             or receipt.manifest.identity != row[1]
             or receipt.publication_id != row[2]
-            or receipt.ledger.contract.table != table
+            or receipt.contract.table != table
         ):
             raise InconsistentPublication("accepted head receipt differs from its retained publication")
         return receipt
@@ -510,7 +510,7 @@ class DuckDBStore:
             "INSERT INTO __dogana_receipts VALUES (?, ?, ?, ?, ?, ?)",
             [
                 receipt_key,
-                receipt.ledger.contract.table,
+                receipt.contract.table,
                 receipt.manifest.identity,
                 receipt.accepted,
                 receipt.publication_id,
@@ -1111,7 +1111,8 @@ class DuckDBStore:
         self.connection.execute(
             "INSERT OR REPLACE INTO __dogana_publications VALUES (?, ?)", [table, receipt.publication_id]
         )
-        self._store_ledger(receipt.ledger)
+        # Authorization made this receipt from the checked base, so applying its manifest gives its ledger.
+        self._store_ledger(self._checked[candidate].base.apply(receipt.manifest))
 
     @_synchronized
     def check_references(self, group: Group, candidates: Mapping[str, str]) -> Check:
@@ -1209,11 +1210,14 @@ class DuckDBStore:
                 if (
                     held is None
                     or held.manifest != receipt.manifest
-                    or held.contract not in (None, receipt.ledger.contract)
+                    or held.contract not in (None, receipt.contract)
                 ):
                     raise StoreError("receipt belongs to another candidate")
-            current = self._base(receipt.ledger.contract, receipt.manifest)
-            if current != receipt.ledger or current.publication_id != receipt.base_publication_id:
+            current = self._base(receipt.contract, receipt.manifest)
+            if (
+                current.identity != receipt.ledger_identity
+                or current.publication_id != receipt.base_publication_id
+            ):
                 raise StoreError("base publication moved before rejection was recorded")
             self._save_receipt(receipt)
         finally:
@@ -1221,7 +1225,7 @@ class DuckDBStore:
                 self.abort(candidate)
 
     def _record_history(self, candidate: str, receipt: Receipt, sequence: int) -> tuple[str, tuple[str, ...]]:
-        contract, db = receipt.ledger.contract, self.connection
+        contract, db = receipt.contract, self.connection
         target = _quote(contract.table)
         description = self._description(contract.table)
         columns = tuple(name for name, _ in description)

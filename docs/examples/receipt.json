@@ -6,140 +6,93 @@
       "kind":"Check",
       "name":"manifest",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"receiver_time",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"transition",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"row_count",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"schema_hash",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"key_integrity",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"shrink_tolerance",
       "passed":true,
-      "version":2
+      "version":3
     },
     {
       "detail":"one outcome per required row check",
       "kind":"Check",
       "name":"check_set",
       "passed":true,
-      "version":2
+      "version":3
     }
   ],
-  "claims":{
-    "kind":"Claims",
-    "regions":[
-      {
-        "kind":"RegionClaim",
-        "region":{
-          "complete_as_of":{
-            "$datetime":"2026-10-18T00:00:00+00:00"
-          },
-          "deletions_as_of":{
-            "$datetime":"2026-10-18T00:00:00+00:00"
-          },
-          "high":null,
-          "high_open":false,
-          "kind":"Region",
-          "low":null,
-          "low_open":false,
-          "version":2
-        },
-        "state":"complete",
-        "table":"stock",
-        "version":2
-      }
+  "contract":{
+    "cursor_column":null,
+    "deleted_column":null,
+    "freshness":{
+      "$seconds":604800
+    },
+    "key":[
+      "id"
     ],
-    "version":2
+    "kind":"Contract",
+    "max_shrink_fraction":0.5,
+    "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
+    "shapes":{
+      "full":{
+        "checkpoint":"none",
+        "completeness":"complete",
+        "cost":1.0,
+        "coverage":"all",
+        "deletions":"absence",
+        "kind":"Shape",
+        "lookback":null,
+        "version":3,
+        "window_size":null
+      }
+    },
+    "start_at":null,
+    "table":"stock",
+    "types":{
+      "id":"int"
+    },
+    "version":3,
+    "window_column":null
   },
   "kind":"Receipt",
-  "ledger":{
-    "contract":{
-      "cursor_column":null,
-      "deleted_column":null,
-      "freshness":{
-        "$seconds":604800
-      },
-      "key":[
-        "id"
-      ],
-      "kind":"Contract",
-      "max_shrink_fraction":0.5,
-      "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
-      "shapes":{
-        "full":{
-          "checkpoint":"none",
-          "completeness":"complete",
-          "cost":1.0,
-          "coverage":"all",
-          "deletions":"absence",
-          "kind":"Shape",
-          "lookback":null,
-          "version":2,
-          "window_size":null
-        }
-      },
-      "start_at":null,
-      "table":"stock",
-      "types":{
-        "id":"int"
-      },
-      "version":2,
-      "window_column":null
-    },
-    "generation":null,
-    "kind":"Ledger",
-    "publication_id":"e10f4991b1e3c187800944a7d107cf6b2c8f02641ba397ff94db153d7b11e06d",
-    "regions":[
-      {
-        "complete_as_of":{
-          "$datetime":"2026-10-18T00:00:00+00:00"
-        },
-        "deletions_as_of":{
-          "$datetime":"2026-10-18T00:00:00+00:00"
-        },
-        "high":null,
-        "high_open":false,
-        "kind":"Region",
-        "low":null,
-        "low_open":false,
-        "version":2
-      }
-    ],
-    "version":2
-  },
+  "ledger_identity":"a47cab9c2c742ea3839bafb02c581f9342d77433273f4cddd67c238857346cd5",
   "manifest":{
     "content_hash":null,
     "generation":null,
@@ -153,7 +106,7 @@
     "since":null,
     "table":"stock",
     "tombstones":0,
-    "version":2,
+    "version":3,
     "window":null
   },
   "outcome":"accepted",
@@ -163,7 +116,25 @@
   },
   "source":"stock_20261018.csv",
   "transition":{
-    "after":[
+    "kind":"Transition",
+    "plan":{
+      "actions":[
+        {
+          "kind":"Action",
+          "operation":"replace_all",
+          "version":3,
+          "window":null
+        }
+      ],
+      "key":[
+        "id"
+      ],
+      "kind":"ApplyPlan",
+      "table":"stock",
+      "version":3,
+      "window_column":null
+    },
+    "regions":[
       {
         "complete_as_of":{
           "$datetime":"2026-10-18T00:00:00+00:00"
@@ -176,40 +147,10 @@
         "kind":"Region",
         "low":null,
         "low_open":false,
-        "version":2
+        "version":3
       }
     ],
-    "before":[
-      {
-        "complete_as_of":null,
-        "deletions_as_of":null,
-        "high":null,
-        "high_open":false,
-        "kind":"Region",
-        "low":null,
-        "low_open":false,
-        "version":2
-      }
-    ],
-    "kind":"Transition",
-    "plan":{
-      "actions":[
-        {
-          "kind":"Action",
-          "operation":"replace_all",
-          "version":2,
-          "window":null
-        }
-      ],
-      "key":[
-        "id"
-      ],
-      "kind":"ApplyPlan",
-      "table":"stock",
-      "version":2,
-      "window_column":null
-    },
-    "version":2
+    "version":3
   },
-  "version":2
+  "version":3
 }

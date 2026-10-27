@@ -3,14 +3,14 @@
     "contract": "73e7a37939f0583ff390d280f0d621184532643e8067ca6b93d70b0829751737",
     "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
     "ledger": "a47cab9c2c742ea3839bafb02c581f9342d77433273f4cddd67c238857346cd5",
-    "receipt": "209032300378f2ae7e01654d04be75c905a7dc28cac0b2d546ee75757f2c9f80"
+    "receipt": "aa4de7f11795e3e009604d93bec78bb40400415aa4bb6bbf91b40d5d838c52f8"
   },
   "vectors": [
     {
       "name": "shape-defaults",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -26,7 +26,7 @@
       "name": "shape-numbers-and-durations",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "window",
         "completeness": "changed_only",
         "deletions": "tombstone",
@@ -46,7 +46,7 @@
       "name": "minimal-manifest",
       "wire": {
         "kind": "Manifest",
-        "version": 2,
+        "version": 3,
         "table": "stock",
         "shape": "full",
         "produced_at": {
@@ -67,7 +67,7 @@
       "name": "unicode-shape-and-utc",
       "wire": {
         "kind": "Manifest",
-        "version": 2,
+        "version": 3,
         "table": "stock",
         "shape": "r\u00e9cent",
         "produced_at": {
@@ -88,7 +88,7 @@
       "name": "explicit-disabled-shrink",
       "wire": {
         "kind": "Contract",
-        "version": 2,
+        "version": 3,
         "table": "stock",
         "key": [
           "id"
@@ -96,7 +96,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -126,7 +126,7 @@
       "name": "shape-small-cost",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -142,7 +142,7 @@
       "name": "shape-fixed-cost",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -158,7 +158,7 @@
       "name": "shape-exponent-cost",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -174,7 +174,7 @@
       "name": "shape-negative-zero",
       "wire": {
         "kind": "Shape",
-        "version": 2,
+        "version": 3,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -190,7 +190,7 @@
       "name": "utf16-shape-name-order",
       "wire": {
         "kind": "Contract",
-        "version": 2,
+        "version": 3,
         "table": "stock",
         "key": [
           "id"
@@ -198,7 +198,7 @@
         "shapes": {
           "\ufffd": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -209,7 +209,7 @@
           },
           "\ud83d\ude00": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -239,7 +239,7 @@
       "name": "contract-types-and-external-hash",
       "wire": {
         "kind": "Contract",
-        "version": 2,
+        "version": 3,
         "table": "events",
         "key": [
           "id"
@@ -247,7 +247,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -258,7 +258,7 @@
           },
           "daily": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "window",
             "completeness": "complete",
             "deletions": "absence",
@@ -290,13 +290,13 @@
       "name": "unbound-contract-defaults",
       "wire": {
         "kind": "Contract",
-        "version": 2,
+        "version": 3,
         "table": "events",
         "key": [],
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 2,
+            "version": 3,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",

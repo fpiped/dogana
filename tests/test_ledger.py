@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, Shape, State
-from tests.support import FEED, FULL, SINCE, WINDOW, at
+from tests.support import FEED, FULL, SINCE, WINDOW, at, fold
 from tests.support import accounting_contract as contract
 
 
@@ -465,7 +465,7 @@ def accepted_receipt(ledger, manifest):
 def receipt_chain():
     c = contract()
     first = accepted_receipt(Ledger(c), Manifest(c.table, "full", at(18)))
-    second = accepted_receipt(first.ledger, Manifest(c.table, "daily", at(19), window=(1, 9)))
+    second = accepted_receipt(fold(first), Manifest(c.table, "daily", at(19), window=(1, 9)))
     return c, first, second
 
 
@@ -480,10 +480,9 @@ def test_reconciliation_of_a_fresh_store_needs_no_receipts(missing):
 def test_reconciliation_of_matching_evidence_does_not_require_repair():
     c, first, second = receipt_chain()
     for repair in (False, True):
-        assert (
-            Ledger.reconcile(c, iter((first, second)), second.ledger, second.publication_id, repair=repair)
-            == second.ledger
-        )
+        assert Ledger.reconcile(
+            c, iter((first, second)), fold(first, second), second.publication_id, repair=repair
+        ) == fold(first, second)
 
 
 @pytest.mark.parametrize("current_kind", ["missing", "initial", "behind"])
@@ -491,10 +490,10 @@ def test_stamp_ahead_diagnosis_requires_repair_and_reconstructs_exactly_the_stam
     from dogana.errors import StampAhead
 
     c, first, second = receipt_chain()
-    current = {"missing": None, "initial": Ledger(c), "behind": first.ledger}[current_kind]
+    current = {"missing": None, "initial": Ledger(c), "behind": fold(first)}[current_kind]
     with pytest.raises(StampAhead, match="ahead"):
         Ledger.reconcile(c, (first, second), current, second.publication_id, repair=False)
-    assert Ledger.reconcile(c, (first, second), current, second.publication_id) == second.ledger
+    assert Ledger.reconcile(c, (first, second), current, second.publication_id) == fold(first, second)
 
 
 @pytest.mark.parametrize("stamp_kind", ["missing", "behind"])
@@ -507,7 +506,7 @@ def test_reconciliation_never_moves_the_rows_forward_to_a_later_receipt(stamp_ki
     for repair in (False, True):
         with pytest.raises(LedgerAhead):
             Ledger.reconcile(
-                c, (first, second), None if missing_ledger else second.ledger, stamp, repair=repair
+                c, (first, second), None if missing_ledger else fold(first, second), stamp, repair=repair
             )
 
 
@@ -542,9 +541,9 @@ def test_reconciliation_refuses_current_evidence_that_does_not_belong_to_the_cha
 
     c, first, second = receipt_chain()
     current = {
-        "unrelated_head": replace(first.ledger, publication_id="unrelated"),
-        "wrong_evidence": replace(second.ledger, generation="invented"),
-        "initial_with_evidence": replace(first.ledger, publication_id=None),
+        "unrelated_head": replace(fold(first), publication_id="unrelated"),
+        "wrong_evidence": replace(fold(first, second), generation="invented"),
+        "initial_with_evidence": replace(fold(first), publication_id=None),
     }[problem]
     for repair in (False, True):
         with pytest.raises(StampAhead):
@@ -557,14 +556,18 @@ def test_reconstruction_checks_historical_region_spellings_by_evidence():
     from dogana import Receipt, Region
 
     c = contract()
-    first = accepted_receipt(Ledger(c), Manifest(c.table, "daily", at(18), window=(1, 9)))
-    historical = (Region(high=1, high_open=True), Region(1, 9, at(18), at(18)), Region(low=9, low_open=True))
-    first = replace(first, transition=replace(first.transition, after=historical))
-    second = accepted_receipt(first.ledger, Manifest(c.table, "daily", at(19), window=(5, 12)))
-    second = replace(second, transition=replace(second.transition, before=historical))
+    manifests = (
+        Manifest(c.table, "daily", at(18), window=(1, 9)),
+        Manifest(c.table, "daily", at(19), window=(5, 12)),
+    )
+    first = accepted_receipt(Ledger(c), manifests[0])
+    historical = (Region(1, 9, at(18), at(18)),)
+    first = replace(first, transition=replace(first.transition, regions=historical))
+    second = accepted_receipt(fold(first), manifests[1])
     receipts = tuple(Receipt.from_json(receipt.to_json()) for receipt in (first, second))
-    assert Ledger.from_receipts(c, receipts) == second.ledger
-    assert Ledger.reconcile(c, receipts, None, second.publication_id) == second.ledger
+    expected = Ledger(c).apply(manifests[0]).apply(manifests[1])
+    assert Ledger.from_receipts(c, receipts) == expected
+    assert Ledger.reconcile(c, receipts, None, second.publication_id) == expected
 
 
 def test_a_store_verified_retained_head_certifies_a_consistent_read_without_loading_history():
@@ -574,17 +577,14 @@ def test_a_store_verified_retained_head_certifies_a_consistent_read_without_load
         raise AssertionError("consistent reads must not load the receipt prefix")
         yield first
 
-    assert (
-        Ledger.reconcile(
-            c,
-            unavailable_history(),
-            second.ledger,
-            second.publication_id,
-            repair=False,
-            retained_head=second,
-        )
-        == second.ledger
-    )
+    assert Ledger.reconcile(
+        c,
+        unavailable_history(),
+        fold(first, second),
+        second.publication_id,
+        repair=False,
+        retained_head=second,
+    ) == fold(first, second)
 
 
 def test_a_lone_retained_head_cannot_replace_full_history_during_repair():
@@ -592,11 +592,9 @@ def test_a_lone_retained_head_cannot_replace_full_history_during_repair():
 
     c, first, second = receipt_chain()
     with pytest.raises(StampAhead, match="receipt chain"):
-        Ledger.reconcile(c, (second,), second.ledger, second.publication_id, retained_head=second)
+        Ledger.reconcile(c, (second,), fold(first, second), second.publication_id, retained_head=second)
     with pytest.raises(StampAhead, match="receipt chain"):
-        Ledger.reconcile(
-            c, (second,), first.ledger, second.publication_id, repair=False, retained_head=second
-        )
+        Ledger.reconcile(c, (second,), fold(first), second.publication_id, repair=False, retained_head=second)
 
 
 @pytest.mark.parametrize("problem", ["stale", "parent", "manifest", "evidence", "rejected"])
@@ -611,11 +609,13 @@ def test_a_retained_head_must_match_the_rows_cached_ledger_and_its_own_hash(prob
         "stale": first,
         "parent": replace(second, base_publication_id="unrelated"),
         "manifest": replace(second, manifest=replace(second.manifest, produced_at=at(20))),
-        "evidence": replace(second, ledger=replace(second.ledger, generation="invented")),
-        "rejected": Gate.evaluate(second.ledger, Manifest(c.table, "full", at(17)), now=at(25)),
+        "evidence": replace(
+            second, ledger_identity=replace(fold(first, second), generation="invented").identity
+        ),
+        "rejected": Gate.evaluate(fold(first, second), Manifest(c.table, "full", at(17)), now=at(25)),
     }[problem]
     with pytest.raises(StampAhead, match="retained accepted head"):
-        Ledger.reconcile(c, (), second.ledger, second.publication_id, repair=False, retained_head=head)
+        Ledger.reconcile(c, (), fold(first, second), second.publication_id, repair=False, retained_head=head)
 
 
 def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash():
@@ -623,7 +623,7 @@ def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash()
 
     c, first, second = receipt_chain()
     evolved = replace(c, freshness=timedelta(days=1))
-    current = second.ledger.with_contract(evolved)
+    current = fold(first, second).with_contract(evolved)
     assert (
         Ledger.reconcile(
             evolved,

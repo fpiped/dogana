@@ -95,9 +95,9 @@ def test_supplied_receiver_time_controls_admission_and_receipt_freshness(
         assert receipt.received_at == now
         assert receipt.accepted == (age >= timedelta())
         if age > c.freshness:
-            assert receipt.claims.state is State.EXPIRED
+            assert store.load_ledger(c).claims(receipt.received_at).state is State.EXPIRED
         elif receipt.accepted:
-            assert receipt.claims.state is State.COMPLETE
+            assert store.load_ledger(c).claims(receipt.received_at).state is State.COMPLETE
         else:
             assert store.load_ledger(c).publication_id is None
         assert store.receipts()[-1] == receipt

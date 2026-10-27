@@ -98,7 +98,7 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
     assert passed.passed and passed.detail.startswith(
         "order_lines, orders as of 2026-10-18T00:00:00+00:00, delivery "
     )
-    assert passed == Gate.delivered(tuple((r.ledger.contract.table, r.manifest) for r in reversed(both)))
+    assert passed == Gate.delivered(tuple((r.contract.table, r.manifest) for r in reversed(both)))
     assert passed != Gate.together(both, (LINE,))
     later = Manifest("orders", "full", at(18), rows=1, schema_hash=ORDERS.schema_hash)
     assert passed != Gate.delivered((("orders", later), ("order_lines", both[1].manifest)))

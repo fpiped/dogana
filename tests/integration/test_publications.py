@@ -7,7 +7,7 @@ from dogana.errors import LedgerAhead, StampAhead
 from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from tests.integration.support import csv_file, row, sidecar
-from tests.support import COLUMNS, at, contract
+from tests.support import COLUMNS, at, contract, fold
 
 
 class InterruptedWrite(BaseException):
@@ -43,7 +43,7 @@ def test_rows_and_stamp_ahead_of_the_ledger_refuse_until_receipts_restore_eviden
         repaired = store.repair(c)
         receipt = store.deliver(c, _FileSource(path, COLUMNS), manifest, now=at(30))
         assert receipt.accepted
-        assert repaired == receipt.ledger == Ledger.from_receipts(c, store.receipts(c.table))
+        assert repaired == fold(receipt) == Ledger.from_receipts(c, store.receipts(c.table))
         assert store.load_ledger(c) == repaired
         assert store.read(c.table) == [row(1)]
         assert len(store.receipts()) == 1
@@ -91,7 +91,7 @@ def test_repair_cannot_rewind_a_ledger_with_an_unrecorded_advancement(tmp_path):
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1)])
         first = store.deliver(c, _FileSource(path, COLUMNS), sidecar(path, c, "full", 18, 1), now=at(30))
-        ahead = first.ledger.apply(Manifest(c.table, "full", at(19)))
+        ahead = fold(first).apply(Manifest(c.table, "full", at(19)))
         store.connection.execute(
             "UPDATE __dogana_ledgers SET document=? WHERE table_name=?", [ahead.to_json(), c.table]
         )

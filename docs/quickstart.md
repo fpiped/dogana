@@ -96,8 +96,9 @@ def show(label, claims):
     )
 
 
-show("Sep 20 to Oct 19", monday.ledger.claims(monday.received_at, window=window))
-show("before Sep 20", monday.ledger.claims(monday.received_at, window=(date.min, date(2026, 9, 19))))
+ledger = store.load_ledger(orders)
+show("Sep 20 to Oct 19", ledger.claims(monday.received_at, window=window))
+show("before Sep 20", ledger.claims(monday.received_at, window=(date.min, date(2026, 9, 19))))
 ```
 
 ```text
@@ -133,9 +134,10 @@ the rows it covers.
 ```python
 send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
 again = send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
-claims = again.ledger.claims(again.received_at)
+ledger = store.load_ledger(orders)
+claims = ledger.claims(again.received_at)
 print(f"whole table: complete as of {claims.complete_as_of.date()}, {claims.state.value}")
-print(f"eight days later: {again.ledger.claims(again.received_at + timedelta(days=8)).state.value}")
+print(f"eight days later: {ledger.claims(again.received_at + timedelta(days=8)).state.value}")
 ```
 
 ```text
@@ -155,12 +157,12 @@ days by default, the table is expired until a new file arrives.
 until = datetime(2026, 10, 26, tzinfo=UTC)
 needed = (date(2026, 10, 1), date(2026, 10, 26))
 request = plan_delivery(
-    again.ledger, Requirement("orders", complete_as_of=until, deletions_as_of=until, window=needed)
+    ledger, Requirement("orders", complete_as_of=until, deletions_as_of=until, window=needed)
 )
 print(
     f"to prove {needed[0]} to {needed[1]}: a {request.shape} file for {request.window[0]} to {request.window[1]}"
 )
-rolling = next_extraction(again.ledger, "daily", until)
+rolling = next_extraction(ledger, "daily", until)
 print(f"the next daily file: {rolling.window[0]} to {rolling.window[1]}")
 ```
 
@@ -191,7 +193,7 @@ assert deliver(store, stock, [{"id": 1, "qty": 5}, {"id": 2, "qty": 7}], full, n
 changes = [{"id": 2, "qty": 9, "deleted": False}, {"id": 1, "qty": None, "deleted": True}]
 feed = stock.manifest("feed", monday, since="g1", generation="g2", rows=1, tombstones=1)
 receipt = deliver(store, stock, changes, feed, now=monday)
-claims = receipt.claims
+claims = store.load_ledger(stock).claims(receipt.received_at)
 print(f"feed: {receipt.outcome.value}, stock {store.read('stock')}")
 print(f"stock: {claims.state.value}, both dates {claims.complete_as_of:%A}")
 ```

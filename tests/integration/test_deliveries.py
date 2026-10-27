@@ -77,7 +77,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 publication_ids[c.table, day] = receipt.publication_id
                 assert store.read(c.table) == sorted(expected[c.table].values(), key=lambda r: r["id"])
                 ledger = store.load_ledger(c)
-                assert ledger == receipt.ledger
+                assert ledger.identity == receipt.ledger_identity
                 replayed = Ledger(c)
                 for previous_receipt in store.receipts(c.table):
                     if previous_receipt.accepted:
@@ -200,7 +200,7 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
         accepted = FileDrop(store, c, columns=MARKED).ingest(path, now=at(30))
         assert accepted.accepted
         assert store.read(c.table) == [row(3), row(4)]
-        assert accepted.claims.deletions_as_of == at(21)
+        assert store.load_ledger(c).claims(accepted.received_at).deletions_as_of == at(21)
 
 
 def test_parquet_and_csv_use_the_same_gate_and_deletions_by_absence(tmp_path):
@@ -277,7 +277,7 @@ def test_a_failure_after_row_changes_rolls_back_rows_ledger_and_receipt_together
         with pytest.raises(StoreError, match="publication storage failed"):
             store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
         assert store.read(c.table) == [row(1)]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
         assert [r.accepted for r in store.receipts()] == [True]
         assert store.read(c.table, first.publication_id) == [row(1)]
 
@@ -402,7 +402,7 @@ def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path
         assert not receipt.accepted
         assert [x.name for x in receipt.checks if not x.passed] == ["rows_in_window"]
         assert store.read(c.table) == [row(1, 18), row(2, 19)]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
 
 
 def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
@@ -417,7 +417,7 @@ def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
         refused = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
         assert not refused.accepted
         assert store.read(c.table) == [row(1, 19, value="new")]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity
 
 
 def test_marked_rows_must_match_the_declared_counts_and_never_name_a_live_key(tmp_path):
@@ -510,10 +510,11 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         receipt = store.deliver(c, source_file, manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
-        assert receipt.claims.complete_as_of == at(19)
-        assert receipt.claims.deletions_as_of == at(18)
-        assert receipt.claims.state is State.EXPIRED
-        assert receipt.ledger.claims(at(19)).state is State.PATCHED
+        claims = store.load_ledger(c).claims(receipt.received_at)
+        assert claims.complete_as_of == at(19)
+        assert claims.deletions_as_of == at(18)
+        assert claims.state is State.EXPIRED
+        assert store.load_ledger(c).claims(at(19)).state is State.PATCHED
 
 
 def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_path):
@@ -536,4 +537,4 @@ def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_p
         with pytest.raises(InvalidContract, match="letter case"):
             store.read(alias.table)
         assert store.read(c.table) == [row(1)]
-        assert store.load_ledger(c) == first.ledger
+        assert store.load_ledger(c).identity == first.ledger_identity

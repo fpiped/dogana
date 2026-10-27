@@ -19,7 +19,7 @@
       "deletions":"absence",
       "kind":"Shape",
       "lookback":null,
-      "version":2,
+      "version":3,
       "window_size":null
     }
   },
@@ -28,6 +28,6 @@
   "types":{
     "id":"int"
   },
-  "version":2,
+  "version":3,
   "window_column":null
 }

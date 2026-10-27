@@ -1,6 +1,6 @@
 # The dogana protocol
 
-Version 2 of the wire format, the `version: 2` every document carries; the package is versioned
+Version 3 of the wire format, the `version: 3` every document carries; the package is versioned
 separately. This page defines the wire values, transitions and publication obligations.
 [Concepts](concepts.md) explains the same ideas from the beginning, with examples.
 
@@ -273,13 +273,16 @@ Business row rules from quality tools run outside this fixed check set; the call
 validate structure, source time, base coverage, timestamp/generation continuity and monotonic time.
 `Gate.preflight(ledger, manifest, now=now)` returns those core checks without row outcomes;
 `Gate.reject(ledger, manifest, checks, now=now, source=None)` records a declared failure.
-The `Receipt` contains manifest, checks, `outcome` (`accepted`, `rejected` or `replayed`), `received_at`, optional `source`,
-`base_publication_id`, transition, resulting ledger, claims at receipt time, and publication identity.
-Acceptance and replay have a transition; rejection retains the previous ledger and publication.
+A `Receipt` records one decision: the manifest, the contract in force, the checks, `outcome`
+(`accepted`, `rejected` or `replayed`), `received_at`, optional `source`, `base_publication_id`, the
+publication identity and `ledger_identity`, the identity of the ledger the decision leaves. Acceptance
+and replay carry a `Transition`: the plan, and the ledger's regions over the delivery's coverage
+afterwards. A rejection leaves the previous ledger and publication. The ledger itself is never in a
+receipt: it is the fold of the accepted receipts, and `ledger_identity` lets the fold check each step.
 `accepted` and `replayed` are read from `outcome`. Receipts
 are indexed by the receiver contract's table even if the rejected manifest names another table.
-Their identity also covers check outcomes. A receipt grows with the ledger's region count, never
-with the number of delivered rows or deleted keys.
+Their identity also covers check outcomes. A receipt grows with the regions its delivery covers, never
+with the table's history, the delivered rows or the deleted keys.
 
 `DoganaError` is the error root; `InvalidContract`, `RejectedDelivery`, `PlanningError`,
 `SerializationError` and `StoreError` distinguish configuration, delivery, planning, wire and storage
@@ -481,8 +484,9 @@ finds a ledger behind rows or external publication that changed the stamp. It ca
 row edits preserving the stamp, lost rejected receipts or joint loss of all evidence. Surviving
 receipts or stamps disprove a fresh start when a ledger is missing. Stores must fail closed.
 
-`Ledger.from_receipts(contract, receipts)` folds accepted receipts in publication order and checks
-their ledgers and chain, ignoring rejections. Missing, reordered or foreign acceptances refuse
+`Ledger.follow(receipt)` applies one accepted receipt's manifest and checks the result against the
+receipt's publication and ledger identities; `Ledger.from_receipts(contract, receipts)` folds accepted
+receipts in publication order this way, ignoring rejections. Missing, reordered or foreign acceptances refuse
 reconstruction. `repair` restores the ledger only when the reconstructed head equals the stamp;
 it never relabels rows from ledger evidence. Rows require retained store versions to reconstruct.
 `Ledger.reconcile(contract, receipts, current, stamp, repair=False)` diagnoses disagreement;
@@ -515,8 +519,9 @@ Reconstruction uses each accepted receipt's historical contract, then the reques
 
 ## Versioned JSON
 
-Structured wire values have `version: 2` and `kind` equal to the public class name. Version 1
-documents, written by dogana 0.1, are refused: their manifests listed keys. Field names match
+Structured wire values have `version: 3` and `kind` equal to the public class name. Earlier versions
+are refused: version 1 manifests (dogana 0.1) listed keys, and version 2 receipts (dogana 0.2 and
+0.3) carried whole ledgers. Field names match
 constructor arguments; every field, including defaults, is present. Tuples encode as arrays, enums
 as strings, mappings as objects. Missing or unknown fields, unsupported versions/kinds, invalid
 wire types, overflowing tags and naive datetimes raise `SerializationError` before normalization.

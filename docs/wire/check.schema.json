@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:2:Check",
+  "$id": "urn:dogana:wire:3:Check",
   "title": "Check",
   "type": "object",
   "properties": {
@@ -9,16 +9,16 @@
     },
     "version": {
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "name": {
-      "$ref": "urn:dogana:wire:2:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
     },
     "passed": {
       "type": "boolean"
     },
     "detail": {
-      "$ref": "urn:dogana:wire:2:types#/$defs/text"
+      "$ref": "urn:dogana:wire:3:types#/$defs/text"
     }
   },
   "required": [

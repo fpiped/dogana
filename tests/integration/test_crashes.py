@@ -1,6 +1,6 @@
 import pytest
 
-from tests.support import COLUMNS, at, schema_hash
+from tests.support import COLUMNS, at, fold, schema_hash
 
 pytest.importorskip("duckdb")
 
@@ -72,7 +72,7 @@ def test_every_duckdb_statement_boundary_is_atomic_and_resubmission_converges(tm
                 receipts = store.receipts(c.table)
                 committed = next((r for r in receipts if r.accepted and r.manifest == manifest), None)
                 current = store.load_ledger(c)
-                assert current == (committed.ledger if committed else first.ledger), (index, sql)
+                assert current.identity == (committed or first).ledger_identity, (index, sql)
                 assert store.read(c.table) == ([row(2, value="changed")] if committed else [row(1), row(2)])
                 if result is not None and committed:
                     assert result == committed, (index, sql)
@@ -109,13 +109,13 @@ def test_reopening_after_an_interrupted_append_retains_one_publication_and_retry
             with pytest.raises(KeyboardInterrupt if error_type is KeyboardInterrupt else StoreError):
                 store.deliver(c, rows * 2, manifest, now=at(30))
     with DuckDBStore(path) as reopened:
-        assert reopened.read_publication(c) == (rows, first.ledger)
+        assert reopened.read_publication(c) == (rows, fold(first))
         assert reopened.publication_stamp(c.table) == first.publication_id
         assert reopened.receipts(c.table) == (first,)
         assert reopened.accepted_receipt(manifest.identity) is None
         retried = reopened.deliver(c, rows * 2, manifest, now=at(30))
         assert retried.accepted
-        assert reopened.read_publication(c) == (rows * 3, retried.ledger)
+        assert reopened.read_publication(c) == (rows * 3, fold(first, retried))
         assert reopened.read(c.table, first.publication_id) == rows
         replayed = reopened.deliver(c, object(), manifest, now=at(30))
         assert replayed.replayed and replayed.identity == retried.identity

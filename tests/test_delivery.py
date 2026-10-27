@@ -55,7 +55,7 @@ def test_an_operational_failure_aborts_without_recording_a_refused_delivery(monk
     with pytest.raises(StoreError):
         deliver(store, c, [row(2)], replace(first.manifest, produced_at=at(19)), at(20))
     assert store.receipts(c.table) == (first,)
-    assert store.load_ledger(c) == first.ledger
+    assert store.load_ledger(c).identity == first.ledger_identity
     assert store.read(c.table) == [row(1)]
     assert not store.candidates
 

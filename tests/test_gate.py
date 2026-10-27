@@ -17,7 +17,7 @@ from dogana import (
     Region,
     Transition,
 )
-from tests.support import FULL, SINCE, WINDOW, at
+from tests.support import FULL, SINCE, WINDOW, at, fold
 from tests.support import accounting_contract as contract
 
 
@@ -32,7 +32,8 @@ def test_a_failed_required_check_never_changes_the_published_ledger(failure):
     manifest = Manifest(c.table, "daily", at(18), window=(1, 30), rows=10, schema_hash=c.schema_hash)
     receipt = Gate.evaluate(ledger, manifest, outcomes(c, manifest, failure), now=at(25))
     assert not receipt.accepted
-    assert receipt.ledger is ledger
+    assert receipt.ledger_identity == ledger.identity
+    assert ledger.follow(receipt) is ledger
     assert receipt.publication_id is None
     assert receipt.transition is None
     assert Receipt.from_json(receipt.to_json()) == receipt
@@ -60,10 +61,10 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
     assert receipt.accepted
     assert receipt.manifest == m
     assert all(c.passed for c in receipt.checks)
-    assert receipt.transition.before == Ledger(c).regions
-    assert receipt.transition.after == receipt.ledger.regions
-    assert receipt.publication_id == receipt.ledger.publication_id
-    assert receipt.claims.deletions_as_of == at(18)
+    assert receipt.transition.regions == fold(receipt).regions == (Region(None, None, at(18), at(18)),)
+    assert receipt.ledger_identity == Ledger(c).apply(m).identity
+    assert receipt.publication_id == receipt.publication_id
+    assert fold(receipt).claims(receipt.received_at).deletions_as_of == at(18)
     assert Receipt.from_json(receipt.to_json()) == receipt
     changed = replace(m, rows=3)
     assert changed.identity != m.identity
@@ -115,10 +116,10 @@ def test_a_repeated_full_delivery_requires_the_store_receipt_lookup_before_gate_
     m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
     first = Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(25))
     newer = Manifest(c.table, "full", at(19), rows=3, schema_hash=c.schema_hash)
-    second = Gate.evaluate(first.ledger, newer, outcomes(c, newer), now=at(25))
-    replay = Gate.evaluate(second.ledger, m, now=at(25))
+    second = Gate.evaluate(fold(first), newer, outcomes(c, newer), now=at(25))
+    replay = Gate.evaluate(fold(first, second), m, now=at(25))
     assert not replay.accepted
-    assert replay.ledger is second.ledger
+    assert replay.ledger_identity == second.ledger_identity
     assert replay.transition is None
     assert replay.publication_id == second.publication_id
 
@@ -131,7 +132,7 @@ def test_future_dated_full_delivery_is_refused_without_blocking_the_next_honest_
     assert any(check.name == "receiver_time" and not check.passed for check in refused.checks)
     assert refused.received_at == at(25)
     honest = Manifest(c.table, "full", at(25))
-    accepted = Gate.evaluate(refused.ledger, honest, outcomes(c, honest), now=at(25))
+    accepted = Gate.evaluate(Ledger(c).follow(refused), honest, outcomes(c, honest), now=at(25))
     assert accepted.accepted
 
 
@@ -142,7 +143,7 @@ def test_delayed_full_delivery_receipt_records_expiry_at_receiver_time_and_sourc
     manifest = Manifest(c.table, "full", at(17))
     receipt = Gate.evaluate(Ledger(c), manifest, outcomes(c, manifest), now=at(25), source="stock.csv")
     assert receipt.accepted
-    assert receipt.claims.state is State.EXPIRED
+    assert fold(receipt).claims(receipt.received_at).state is State.EXPIRED
     assert receipt.received_at == at(25)
     assert receipt.source == "stock.csv"
     assert not receipt.replayed
@@ -194,7 +195,8 @@ def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
     receipt = Gate.reject(base, Manifest(c.table, "full", at(19)), (Check("row_count", False),), now=at(20))
     assert not receipt.accepted
     assert receipt.base_publication_id == receipt.publication_id == base.publication_id
-    assert receipt.ledger is base
+    assert receipt.ledger_identity == base.identity
+    assert base.follow(receipt) is base
     with pytest.raises(InvalidContract, match="failed check"):
         Gate.reject(base, receipt.manifest, (Check("row_count", True),), now=at(20))
 
@@ -206,7 +208,7 @@ def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
         lambda: Check("row_count", 1),
         lambda: CheckRequirement(1),
         lambda: Action("upsert", window=(1, 2)),
-        lambda: Transition("regions", (), None),
+        lambda: Transition("plan", (Region(),)),
         lambda: Region(low_open=1),
     ],
 )
@@ -220,7 +222,7 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
 
     c = contract()
     plan = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
-    transition = Transition([Region()], [Region(complete_as_of=at(18), deletions_as_of=at(18))], plan)
+    transition = Transition(plan, [Region(complete_as_of=at(18), deletions_as_of=at(18))])
     assert Transition.from_json(transition.to_json()) == transition
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
 

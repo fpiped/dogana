@@ -17,7 +17,7 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
         for value in (c, m, ledger):
             assert type(value).from_dict(value.to_dict()) == value
             assert type(value).from_json(value.to_json()) == value
-            assert json.loads(value.to_json())["version"] == 2
+            assert json.loads(value.to_json())["version"] == 3
 
 
 @pytest.mark.parametrize(
@@ -124,8 +124,9 @@ m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=
 checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
-assert receipt.claims.state is State.COMPLETE
-assert Ledger.from_json(receipt.ledger.to_json()) == receipt.ledger
+ledger = Ledger(c).follow(receipt)
+assert ledger.claims(receipt.received_at).state is State.COMPLETE
+assert Ledger.from_json(ledger.to_json()) == ledger
 assert 'dogana.reference' not in sys.modules
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
@@ -175,14 +176,16 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
     m = Manifest(c.table, "full", at(18))
     checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
+    ledger = Ledger(c).follow(receipt)
+    claims = ledger.claims(receipt.received_at)
     values = (
         FULL,
         c,
         m,
         Region(),
-        receipt.ledger,
-        receipt.claims.regions[0],
-        receipt.claims,
+        ledger,
+        claims.regions[0],
+        claims,
         receipt.transition.plan.actions[0],
         receipt.transition.plan,
         CheckRequirement("row_count"),
@@ -199,7 +202,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         Region,
         Ledger,
         RegionClaim,
-        type(receipt.claims),
+        type(claims),
         Action,
         ApplyPlan,
         CheckRequirement,
@@ -230,7 +233,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
     assert type(ProtocolShape.from_json(FULL.to_json())) is ProtocolShape
     for kind in ("PrivateValue", "Wire"):
         with pytest.raises(SerializationError, match="unknown wire kind"):
-            Wire.from_dict({"version": 2, "kind": kind})
+            Wire.from_dict({"version": 3, "kind": kind})
     with pytest.raises(SerializationError, match="unknown wire kind"):
         Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
@@ -261,9 +264,9 @@ def test_identity_excludes_versions_recursively(monkeypatch):
 
     value = Ledger(contract())
     identity = value.identity
-    monkeypatch.setattr(Wire, "version", 3)
-    assert value._document(identity=False)["version"] == 3
-    assert value._document(identity=False)["contract"]["version"] == 3
+    monkeypatch.setattr(Wire, "version", 4)
+    assert value._document(identity=False)["version"] == 4
+    assert value._document(identity=False)["contract"]["version"] == 4
     assert value.identity == identity
 
 
@@ -375,4 +378,4 @@ def test_removed_schema_and_column_wire_kind_are_refused():
     with pytest.raises(SerializationError, match="unknown fields"):
         Contract.from_dict(contract().to_dict() | {"schema": []})
     with pytest.raises(SerializationError, match="unknown wire kind"):
-        Wire.from_dict({"kind": "Column", "version": 2, "name": "id", "type": "int"})
+        Wire.from_dict({"kind": "Column", "version": 3, "name": "id", "type": "int"})

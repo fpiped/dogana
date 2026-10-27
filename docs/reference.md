@@ -137,8 +137,8 @@ Evolved schemas use layout tables named by a hash of the table and physical colu
 History stores changed row versions instead of copying the whole table on every publication.
 Keyed updates compare rows with null-safe equality; unchanged rows keep their version. Equal
 keyless events retain their multiplicity. History grows with changes and has no automatic retention
-policy; comparison still scans published rows. Accepted-receipt lookup carries replay history outside
-the ledger, so embedded ledger size depends on regions rather than the number of deliveries.
+policy; comparison still scans published rows. A receipt names the ledger it leaves by identity,
+so its size follows its delivery's coverage, not the table's history.
 
 ## Recovery and contract changes
 
