@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.0 (2026-10-27)
+
+Deletions travel in the delivered file, not in the manifest. This changes the wire format to
+version 2; version 1 documents and stores written by 0.1.0 are refused, and a table moves to 0.2.0
+with a new full delivery into a new store.
+
+- A contract with a tombstone shape names a boolean `deleted_column`. A delivered row whose deleted
+  column is true is a tombstone: its key is deleted, its other values are ignored, and the column is
+  never published nor part of the column hash.
+- `Manifest.tombstones` is now the count of tombstone rows, and `Manifest.keys` is gone: a manifest
+  no longer grows with the number of changed or deleted keys, and neither does its receipt.
+- Key coverage is gone, since without the key list it proved the same as whole-table coverage:
+  ten shapes remain, and `Shape.feed()` covers the whole table.
+- The `named_keys` check is gone. `row_count` compares live rows and tombstones, `key_integrity`
+  refuses a key that is both live and deleted, and `rows_in_window` also covers the published rows
+  a window's tombstones delete. `Action` carries no keys.
+- `dogana manifest` and the file drop count tombstones from the deleted column; `--tombstones N`
+  declares the count for files dogana cannot read, and a filename may carry a `tombstones` group.
+- The documentation explains the model from the beginning, the window column rule (a value that
+  never changes for a row, never an update time) and soft deletes.
+
 ## 0.1.0 (2026-10-26)
 
 First public release, in beta: the manifest and ledger format may change before 1.0.

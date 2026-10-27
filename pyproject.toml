@@ -1,6 +1,6 @@
 [project]
 name = "dogana"
-version = "0.1.0"
+version = "0.2.0"
 description = "A ledger of what each data delivery proves about a table: two dates per region, a gate that refuses contradictions, auditable receipts"
 readme = "README.md"
 license = "Apache-2.0"
