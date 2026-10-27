@@ -12,7 +12,7 @@
 <a href="https://github.com/fpiped/dogana/blob/main/LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-355eaa" alt="Licence Apache-2.0"></a>
 </p>
 
-# Know which rows you can trust
+# Make messy data integration trustworthy
 
 Not every source has change data capture, a log of every insert, update and delete. Most data still arrives as exports: a full dump on
 Sunday, the orders of the last 30 days by order date every night, the rows changed since yesterday.
@@ -37,6 +37,10 @@ A delivery never raises a date above what it proves.
    table can ask it how far to trust the rows.
 5. Tables that depend on each other, such as orders and their lines, are delivered **together**:
    one read instant, one decision, one publication, so a join never sees lines without their order.
+
+*Dogana* (doh-GAH-nah) is Italian for customs: goods cross a border with a declaration, an officer
+checks them against it, and they enter stamped or are held at the border. Here the goods are rows,
+the declaration is the manifest, the officer is the gate and the stamp is the receipt.
 
 ## In thirty seconds
 
