@@ -8,6 +8,8 @@ copyright: Licensed under Apache-2.0
 
 theme:
   name: material
+  # Zensical's classic variant keeps the Material look the colours were chosen for.
+  variant: classic
   logo: assets/icon.svg
   favicon: assets/icon.svg
   features:
