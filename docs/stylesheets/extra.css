@@ -1,0 +1,20 @@
+/* The wordmark's colours: navy outline for the header, blue for links. */
+:root {
+  --md-primary-fg-color: #172238;
+  --md-primary-fg-color--light: #355eaa;
+  --md-primary-fg-color--dark: #0e1626;
+  --md-accent-fg-color: #355eaa;
+}
+
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color: #355eaa;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #7aa6e8;
+  --md-accent-fg-color: #7aa6e8;
+}
+
+.md-header__button.md-logo img {
+  height: 1.6rem;
+}
