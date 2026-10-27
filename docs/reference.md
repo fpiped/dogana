@@ -20,14 +20,15 @@ property's `logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`,
 with that type. Resolve physical or nested types explicitly in the receiver. Hash these ordered
 `[name, type]` pairs with SHA-256 over
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`.
-This excludes document metadata and preserves the previous column-hash recipe, so existing hashes
-remain valid. DuckDB and file drop use this recipe; other stores must agree with their receivers
+This excludes document metadata. DuckDB and file drop use this recipe; other stores must agree with their receivers
 on the opaque hash. The [quick start](quickstart.md) uses a hand-written ordered column mapping.
 
 ## DuckDB store
 
 `DuckDBStore(path, adopt=False)` accepts a CSV or Parquet path, an iterable of row dictionaries,
-or an Arrow table when PyArrow is installed.
+or an Arrow table when PyArrow is installed. A path is opened once, without following a final
+symbolic link, and copied into the store's private temporary folder while it is hashed; every read
+uses that copy, so a file changed or replaced afterwards is never read.
 `hold(source, manifest, contract)` stages the candidate and inspects its column names and types.
 Bare CSV paths and row dictionaries use inferred types; `Contract.types` is not a full input schema.
 Row mappings cannot infer types from an empty input or an all-null column. For typed CSV,
@@ -39,9 +40,12 @@ deleted column, its tombstone rows move to a separate staging table holding only
 the deleted column is dropped: every later check and the published table see live rows only, and
 the plan's `tombstone` action deletes the published rows with those keys. Tombstone rows usually
 leave their other columns empty; a CSV read without `columns` infers an all-empty column as text, so
-deliver tombstones through `FileDrop(..., columns=...)` or another typed source. In CSV, a quoted empty field is the empty string and an unquoted empty field is null. CSV datetime values without an offset
-are interpreted as UTC by the store session; include offsets when the source uses another timezone.
-This CSV convention does not relax the requirement for aware datetimes in core values and manifests.
+deliver tombstones through `FileDrop(..., columns=...)` or another typed source. CSV is read with one pinned grammar, the protocol's: comma, double quote, UTF-8, header row, no
+comment lines and no dialect detection, so a `'` or a leading `#` is data. A quoted empty field is
+the empty string and an unquoted empty field is null. A `datetime` value needs its offset (`Z` or
+`+02:00`); without one the candidate fails `schema_hash`, as does a Parquet `TIMESTAMP` without a
+time zone. A file DuckDB cannot read (not UTF-8, compressed, a value out of range) is a rejection
+with a failed `execution` check, recorded like any other.
 
 Call `dogana.deliver(store, contract, source, manifest, now)` with the actual receiver time.
 The store's `deliver` convenience uses the same core sequence. Rows, ledger, stamp and receipt commit
@@ -179,14 +183,17 @@ is refused. The duration is not a restriction on explicitly declared push window
 Without a `rows` group, the file is counted: its live rows and its tombstones, the rows whose
 deleted column is true. CSV records are counted including quoted newlines; Parquet counting needs
 the DuckDB extra. With a `rows` group the filename declares the counts, `rows` and `tombstones`
-(zero when the group is absent), and the file is not read for them. Path-based receipts identify the source. A derived manifest carries the file's SHA-256, so a changed
-file under the same name is a new delivery, not a replay. The DuckDB store hashes every path whose
-manifest declares a digest, before and after reading it, and refuses a file that changed in between.
-Count and hash describe the received file, not whether it contains all source rows.
+(zero when the group is absent), and the file is not read for them. Path-based receipts identify
+the source. A manifest without a digest, derived or from a sidecar, gets the SHA-256 of the received
+file, so a changed file under the same manifest is a new delivery, not a replay.
+Count and hash describe the received file, not whether it contains all source rows. A file counted
+while its sender is still writing it describes half a file: senders write under another name, or
+outside the folder, and rename the finished file into place.
 Literal regular files are required; glob characters are refused. Resolved files and sidecars must
-remain inside the drop root, including through symlinks. With no root, the submitted file's parent
-is the boundary. These checks are not a sandbox or a resource quota: limit input size and memory
-at the caller. Compressed Parquet can expand far beyond its file size. There is no watcher or mover.
+remain inside the drop root, including through symlinks, and the store opens the file it checked.
+With no root, the submitted file's parent is the boundary. These checks are not a sandbox or a
+resource quota: limit input size and memory at the caller. Compressed Parquet can expand far beyond
+its file size. There is no watcher or mover.
 
 `ingest_together(group, files, *, now=None)` delivers one file per table of a group through
 `deliver_together`. `files` pairs each table's `FileDrop` with its path; every drop must use the same
@@ -216,11 +223,12 @@ whose window ends at `--produced-at`; `--since` as a time, an integer position o
 token by the shape's checkpoint; `--generation` by the table's kind of position.
 Times need a UTC offset. `--produced-at` is the source read boundary, never the time the command
 runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
-never reads half a manifest; `-o -` writes to standard output instead.
+never reads half a manifest; it is readable by the receiver's account under the usual umask; `-o -` writes to standard output instead.
 
 `check` validates FILE's manifest against the contract and FILE against the manifest: the counts of
-rows and tombstones, and the SHA-256 of the bytes. A sender runs it before handing a file over; a hand-written manifest
-gets the same checks the gate applies.
+rows and tombstones, and the SHA-256 of the bytes. A sender runs it before handing a file over. It
+does not check keys, windows or column types, which need the receiver's store, and it refuses a file
+it could compare in no way (a format it cannot count, under a manifest without a hash).
 
 Exit status is 0 on success, 1 when dogana refuses (an invalid contract or manifest, a mismatch, an
 unreadable file, an existing manifest) and 2 when the command cannot describe the delivery as called.
@@ -269,5 +277,5 @@ and rejected bases, atomic failures, malformed receipt persistence and reconstru
 whose receipt cannot round-trip raises `SerializationError` before the log changes. The DuckDB
 reference also refuses a destination with unexpected column order or types before publication.
 Passing provides evidence for these cases, not a proof under every storage failure or of source truth.
-The core port requires seven storage primitives, not a `deliver` or `read` method; factories adapt
+The core port requires eight storage primitives, not a `deliver` or `read` method; factories adapt
 transport and read APIs to the suite. Ordered writes are not a conforming alternative.

@@ -26,9 +26,10 @@ from dogana.reference._sources import (
     _count_rows,
     _file_digest,
     _FileSource,
+    _open,
     _published,
 )
-from dogana.reference._text import _checkpoint, _instant, _position, _scalar
+from dogana.reference._text import _checkpoint, _instant, _integer, _position, _scalar
 
 _DECLARED = ", or a declared timezone"
 
@@ -110,7 +111,7 @@ class FilePattern:
         generation = groups.get("generation")
         declared = groups.get("rows")
         live, tombstones = (
-            (int(declared), int(groups.get("tombstones") or 0))
+            (_integer(declared), _integer(groups.get("tombstones") or "0"))
             if declared is not None
             else _count_rows(path, contract.deleted_column)
         )
@@ -163,25 +164,23 @@ class FileDrop:
     def _delivery(self, path: Path) -> tuple[_FileSource, Manifest]:
         root = self.root if self.root is not None else _resolved_path(path.parent)
         resolved = _within_root(path, root)
-        sidecar = path.with_suffix(path.suffix + ".json")
-        resolved_sidecar = _within_root(sidecar, root)
+        resolved_sidecar = _within_root(path.with_suffix(path.suffix + ".json"), root)
         if not resolved.is_file():
             raise InvalidContract("delivery needs a regular file")
         if resolved_sidecar.exists():
-            if not resolved_sidecar.is_file():
-                raise InvalidContract("delivery sidecar must be a regular file")
-            try:
-                document = sidecar.read_text(encoding="utf-8")
-            except UnicodeDecodeError as exc:
-                raise SerializationError("sidecar manifest must be UTF-8") from exc
-            manifest = Manifest.from_json(document)
+            with _open(resolved_sidecar, root) as stream:
+                try:
+                    manifest = Manifest.from_json(stream.read().decode("utf-8"))
+                except UnicodeDecodeError as exc:
+                    raise SerializationError("sidecar manifest must be UTF-8") from exc
         elif self.pattern is not None:
-            # The receiver hashes what it derives, so a changed file under the same name is not a replay.
-            derived = self.pattern.manifest(path, self.contract)
-            manifest = replace(derived, content_hash=_file_digest(resolved))
+            manifest = self.pattern.manifest(path, self.contract)
         else:
             raise InvalidContract("delivery needs a sidecar manifest or a declared filename pattern")
-        return _FileSource(path, self.columns), manifest
+        if manifest.content_hash is None:
+            # The receiver hashes what it was given, so a changed file under one manifest is not a replay.
+            manifest = replace(manifest, content_hash=_file_digest(resolved))
+        return _FileSource(path, self.columns, root), manifest
 
 
 def ingest_together(

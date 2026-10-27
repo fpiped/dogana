@@ -11,6 +11,7 @@ from .planner import ExtractionRequest
 
 
 class Store(Protocol):
+    def digest(self, source: object) -> str | None: ...
     def hold(self, source: object, manifest: Manifest, contract: Contract) -> str: ...
     def check(
         self,

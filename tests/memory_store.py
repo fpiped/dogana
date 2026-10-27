@@ -102,7 +102,7 @@ def check_rows(contract, manifest, rows, previous):
         and all(None not in k for k in deleted)
         and len(set(live + deleted)) == len(live) + len(deleted),
         "rows_in_window": all(inside(r) for r in rows)
-        and all(k not in published or inside(published[k]) for k in deleted),
+        and all(k not in published or inside(published[k]) for k in live + deleted),
         "window_stability": col is None or all(typed(row, col) for row in rows),
         "shrink_tolerance": not covered
         or shrink is None
@@ -200,6 +200,9 @@ class MemoryStore:
             )
             self.state[1][contract.table] = ledger
             return ledger
+
+    def digest(self, source):
+        return None
 
     def hold(self, source, manifest, contract):
         rows = RowSource(source, getattr(source, "columns", None))

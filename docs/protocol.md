@@ -27,6 +27,13 @@ store checks: a delivery never raises an evidence date above what those premises
 checks region partitioning, date order, continuity and unchanged evidence outside coverage. It does
 not authenticate senders, verify business values or certify a query's answer.
 
+A store reads a delivered file once, into a copy only it can reach, and hashes those bytes while it
+copies them, so the rows it checks and publishes are the bytes `content_hash` names. A CSV file is
+RFC 4180: comma separators, double quotes escaped by doubling, UTF-8, a header row, no comments and
+no other dialect; a sender counting rows must parse that grammar. A `datetime` value carries its UTC
+offset, in the file as in the manifest: a time without one names no instant and is refused. A file
+that does not parse is the sender's failure, recorded as a rejection, never a storage error.
+
 `produced_at` is the source snapshot or read boundary. The extractor guarantees all changes through
 that boundary, including its endpoint. Download completion, arrival time and a scheduler's logical
 date are not that boundary. Required receiver time `now` rejects `produced_at > now`. A late commit
@@ -44,7 +51,7 @@ cursor uses `datetime` or `int`; the deleted column uses `bool`.
 
 The data contract defines the columns. The delivery contract references it by an opaque
 `schema_hash`, keeping column ownership in one place. The receiver obtains this string from its
-ODCS document, dbt model or hand-written column list. When present, the manifest must carry the
+ODCS (Open Data Contract Standard) document, dbt model or hand-written column list. When present, the manifest must carry the
 same hash and the store checks its candidate against it. When absent, no schema check is required,
 including for accounting-only contracts, where `schema_hash` is not applicable.
 
@@ -52,18 +59,18 @@ For an ODCS schema object, traverse its properties in declared column order, map
 name and logical type to an ordered `[name, type]` pair, then compute SHA-256 of
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`. Use dogana's six
 logical type names, resolving physical or nested types explicitly in the receiver. Hash only
-these pairs, not the ODCS document, metadata or wire JSON. This compact ASCII JSON recipe is the
-one previously used by the library, so existing column hashes remain valid. The reference store
-and file drop use this recipe; another store must agree with its receiver on the opaque hash.
+these pairs, not the ODCS document, metadata or wire JSON. The reference store and file drop use
+this recipe; another store must agree with its receiver on the opaque hash.
 
 `freshness` defaults to seven days; choose cadence plus arrival slack. `max_shrink_fraction` defaults
 to 0.5, lies between zero and one, and is disabled only by explicit `None`.
 
 A window column exists exactly when a window shape exists. Regions divide this one column's ordered
-domain, not the key space. Its value must never change for a row: a creation, order, document or
-event date, never an update timestamp. A row whose window value moves from one region to another
-can be missing from both, when the two were proven at different instants; a full delivery resets
-the table. "Rows updated in the last 30 days" is therefore not a window: it is a changes delivery
+domain, not the key space. Its value must never change for a key, deletion and reinsertion
+included: a creation, order, document or event date, never an update timestamp. A row whose window
+value moves from one region to another can be missing from both, when the two were proven at
+different instants. A window delivery therefore refuses a key published outside its window, and only
+a delivery covering the whole table moves one. "Rows updated in the last 30 days" is therefore not a window: it is a changes delivery
 whose `since` is 30 days back.
 Keys are unique and non-null. Key and window values are strings, integers, dates or UTC datetimes;
 `types` and manifest bounds must agree on type. Normalize aware datetimes to UTC before key
@@ -75,8 +82,8 @@ plant codes does not close the rest of the string domain; whole-table evidence r
 An empty `key` means rows have no identity. Complete shapes replace their coverage wholesale.
 Keyless rows form a multiset: equal events retain separate occurrences.
 Keyless changed-only shapes must be whole-domain timestamp appends with no deletion signal and a
-`start_at` bounding retained history. This declares that the source only appends and never deletes
-or revises retained events. Tombstones, generations and sequences require keys.
+`start_at` bounding retained history: the events after it, never one at it. This declares that the
+source only appends and never deletes or revises retained events. Tombstones, generations and sequences require keys.
 An optional `cursor_column` names a column declared as `datetime` or `int` in `types`. A `datetime`
 cursor checks timestamp reads against `(since, produced_at]`; an `int` cursor checks sequence reads
 against `(since, generation]`; a cursor column must check one of the contract's changed-only shapes. Without it,
@@ -94,7 +101,9 @@ manifest identify which keys a file deletes: without it, a second file with the 
 replay of the first and is never read. Declare it for tombstone shapes; `dogana manifest` and the
 file drop always do. A source that soft-deletes (it keeps the row and sets a
 flag) can deliver that flag here, as long as the soft delete also moves the row's update time and
-the source never removes rows physically; otherwise the honest shape has deletions `none`.
+the source never removes rows physically; otherwise the honest shape has deletions `none`. Every
+date then speaks about the source's live rows, those whose flag is false, not about its physical
+table.
 
 A `Shape` has four semantic properties:
 
@@ -155,7 +164,7 @@ Sequence reads carry integer `since` and `generation` and cover the positions `(
 follow commit order. An auto-increment id is assigned at insert: a transaction can commit a lower id
 after a read has seen a higher one, and the next read starts past it. Read such ids only up to a
 position below every open transaction, or reread with overlap, which keyed sequence reads admit.
-`produced_at` must not be later than the commit of the first change after `generation`: a consumer
+`produced_at` must be earlier than the commit of the first change after `generation`: a consumer
 behind the head uses the commit time of the last change it read, never the time it runs. Sequence
 positions need a key; keyless tables append by timestamp. A delivery that issues a position issues
 the table's kind: an integer when the contract has sequence shapes, else a string.
@@ -172,7 +181,8 @@ Without that column, keyed extraction may include `since`; overlapping keyed rea
 Keyless appends always use `(since, produced_at]`, without overlap. `content_hash` is an optional
 lowercase hex SHA-256 of the delivered bytes, supplied by sender or receiver. It participates in
 identity, and the store verifies it against the bytes it read; a source without bytes cannot carry
-one. Without a digest, manifest identity does not identify the content.
+one. Without a digest, manifest identity does not identify the content, so the file drop fills in
+the digest of what it received.
 
 ## Corrections
 
@@ -244,15 +254,16 @@ matching. Keyless replacement does not match keys. The core describes operations
 |---|---|
 | row_count | The candidate's live rows equal `manifest.rows`, its tombstone rows equal `manifest.tombstones`, and no deleted column is null. |
 | schema_hash | Candidate column hash and manifest hash equal `contract.schema_hash`; omitted when the contract hash is absent. |
-| rows_in_window | Every live window value is non-null and inside the declared closed window, and so is the window value of every published row a tombstone deletes. |
+| rows_in_window | Every live window value is non-null and inside the declared closed window, and so is the window value of every published row that shares a key with a delivered row, live or tombstone. |
 | window_stability | Every live window-column value is non-null. |
 | key_integrity | Every key, live or tombstoned, is non-null and appears once: a key cannot be both live and deleted. |
 | shrink_tolerance | Complete delivery removes no more than the allowed fraction of previously published rows in coverage. |
 | rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes the store read equals it. |
 
-Moving a key into a window is safe: replacement removes its old copy. Moving out can leave a hole
-that no candidate check sees, hence source immutability remains necessary. Checks blocked by an
+A key published in another region is refused rather than moved, since that region keeps its claim.
+A row that leaves a window in the source can still leave a hole no candidate check sees, hence
+source immutability remains necessary. Checks blocked by an
 earlier failure return `passed=False, detail="not evaluated"`, not an unevaluated predicate's result.
 Business row rules from quality tools run outside this fixed check set; the caller retains their outcomes.
 
@@ -327,7 +338,8 @@ region.
 
 If every region a query reads, in every table it reads, equals the source at the same instant `p`,
 the query answers as the source would have at `p`: filters, joins, unions, negation and exact
-aggregates alike, and every rule the source keeps between its tables, such as each line naming an
+aggregates alike, provided both sides compare and compute the same way (collation, null handling;
+a floating-point sum depends on the order of its terms), and every rule the source keeps between its tables, such as each line naming an
 order, holds between the published tables. The premise, which dogana cannot verify, is that every
 file comes from one consistent read of the source at `p`, stamped with that read's instant. One read
 means one snapshot covering every table. A transaction at READ COMMITTED, the default of Postgres,
@@ -430,7 +442,8 @@ the store. `dogana.deliver(store, contract, source, manifest, now)` owns the sha
 
 1. `load_ledger(contract)` obtains the current evidence. `accepted_receipt(manifest.identity)`
    returns a stored acceptance on replay, with `outcome="replayed"`, original identity and receiver time.
-   A manifest with `content_hash` replays only after the store checks the bytes; different bytes are refused.
+   A manifest with `content_hash` replays only once `digest(source)` equals it; different bytes are
+   refused. A replay compares bytes, never the rows against today's contract.
 2. Preflight the declaration and transition. `publish(None, receipt)` records a rejection against
    its expected parent without changing published rows or evidence.
 3. `hold(source, manifest, contract)` stages a candidate; `check(candidate, contract, manifest,
@@ -438,7 +451,8 @@ the store. `dogana.deliver(store, contract, source, manifest, now)` owns the sha
 4. `publish(candidate, receipt)` compares that base and atomically executes an accepted plan with
    its rows and evidence, or records rejection; `abort(candidate)` releases staged work after failure.
 
-`receipts(table=None)` returns persistence order. These seven methods are the required `Store` port.
+`receipts(table=None)` returns persistence order; `digest(source)` returns the SHA-256 of the bytes a
+source holds, or `None` for rows without bytes. These eight methods are the required `Store` port.
 An accepted publication requires a held and checked candidate. Rejected publication also compares
 and sets the expected parent, and refuses a receipt that cannot decode before writing the log.
 `publication_stamp(table)` and `repair(contract)` form the optional stamped-ledger tier;

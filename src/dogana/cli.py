@@ -34,7 +34,8 @@ example:
   dogana check orders.csv --contract orders.contract.json
 
 Reads FILE.json unless --manifest names it, then checks the manifest against the contract and
-FILE against the manifest: the counts of rows and tombstones, and the SHA-256 of the bytes."""
+FILE against the manifest: the counts of rows and tombstones, and the SHA-256 of the bytes. Keys,
+windows and column types are checked by the receiver's store, not here."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -136,29 +137,33 @@ def _check(args: argparse.Namespace) -> int:
     path = args.manifest if args.manifest is not None else _sidecar(args.file)
     manifest = Manifest.from_json(path.read_text(encoding="utf-8"))
     manifest.check(contract)
-    problems = []
-    live: int | None
+    digest = _file_digest(args.file)
+    compared, problems = [], []
     try:
         live, deleted = _counted(args.file, contract)
+        compared += ["rows", "tombstones"]
+        if manifest.rows is not None and live != manifest.rows:
+            problems.append(f"rows: the manifest declares {manifest.rows}, {args.file} has {live}")
+        if deleted != manifest.tombstones:
+            problems.append(
+                f"tombstones: the manifest declares {manifest.tombstones}, {args.file} has {deleted}"
+            )
     except _UsageError:
-        print(
-            f"dogana check: note: {args.file}: counts not compared, dogana counts CSV and Parquet",
-            file=sys.stderr,
-        )
-        live, deleted = manifest.rows, manifest.tombstones
-    if manifest.rows is not None and live != manifest.rows:
-        problems.append(f"rows: the manifest declares {manifest.rows}, {args.file} has {live}")
-    if deleted != manifest.tombstones:
-        problems.append(f"tombstones: the manifest declares {manifest.tombstones}, {args.file} has {deleted}")
-    if manifest.content_hash is not None and (digest := _file_digest(args.file)) != manifest.content_hash:
-        problems.append(
-            f"content_hash: the manifest declares {manifest.content_hash}, {args.file} hashes to {digest}"
-        )
+        pass
+    if manifest.content_hash is not None:
+        compared.append("SHA-256")
+        if digest != manifest.content_hash:
+            problems.append(
+                f"content_hash: the manifest declares {manifest.content_hash}, {args.file} hashes to {digest}"
+            )
+    if not compared:
+        problems.append("nothing compared: dogana counts CSV and Parquet, and the manifest declares no hash")
     for problem in problems:
         print(f"dogana check: {problem}", file=sys.stderr)
     if problems:
         return 1
-    print(f"{args.file}: a valid {manifest.shape!r} delivery for {contract.table!r}")
+    matched = ", ".join(compared[:-1]) + " and " + compared[-1] if len(compared) > 1 else compared[0]
+    print(f"{args.file}: {matched} match the manifest; keys, windows and types are checked on delivery")
     return 0
 
 
@@ -200,18 +205,25 @@ def _sidecar(path: Path) -> Path:
 
 def _replace(target: Path, document: str, *, force: bool) -> None:
     """Write the whole manifest or nothing: a receiver polling the folder never reads half a file."""
-    if target.exists() and not force:
-        raise FileExistsError(f"{target} exists; pass --force to replace it")
     handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
+        umask = os.umask(0)
+        os.umask(umask)
+        # mkstemp creates the file for its owner only; a receiver under another account must read it.
+        os.fchmod(handle, 0o666 & ~umask)
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(document)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    except BaseException:
+        if force:
+            os.replace(temporary, target)
+        else:
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                raise FileExistsError(f"{target} exists; pass --force to replace it") from None
+    finally:
         Path(temporary).unlink(missing_ok=True)
-        raise
 
 
 def _reason(exc: BaseException) -> str:

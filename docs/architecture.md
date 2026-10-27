@@ -55,9 +55,9 @@ order wrong:
 (one read boundary, every table accepted on its own, references), and publishes every table in one
 `publish_together` step or refuses them all.
 
-`Store` is a `typing.Protocol` of seven methods (`hold`, `check`, `publish`, `abort`,
+`Store` is a `typing.Protocol` of eight methods (`digest`, `hold`, `check`, `publish`, `abort`,
 `load_ledger`, `accepted_receipt`, `receipts`). Any class with those methods is a store; the
-conformance suite proves that it behaves.
+conformance suite exercises its obligations.
 
 ## Receipts are the history
 

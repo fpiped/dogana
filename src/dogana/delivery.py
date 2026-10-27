@@ -42,23 +42,25 @@ def _description(source: object) -> str | None:
     return fsdecode(source) if isinstance(source, (str, bytes, PathLike)) else None
 
 
-def _replay(
-    store: Store, contract: Contract, source: object, previous: Receipt, ledger: Ledger, now: datetime
-) -> Receipt:
-    """A stored acceptance answers for a declared digest only once the store has hashed these bytes."""
-    manifest, description = previous.manifest, _description(source)
-    candidate: str | None = None
-    try:
-        candidate = _call(store.hold, source, manifest, contract)
-        checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
-    except (InvalidContract, RejectedDelivery) as exc:
-        checks = (Check("content_hash", False, f"the delivered bytes no longer read: {exc}"),)
-    finally:
-        if candidate is not None:
-            _call(store.abort, candidate)
-    if all(check.passed for check in checks if check.name == "content_hash"):
+def _replay(store: Store, contract: Contract, source: object, previous: Receipt, now: datetime) -> Receipt:
+    """A stored acceptance answers its manifest again, once any declared digest matches these bytes."""
+    manifest = previous.manifest
+    if manifest.content_hash is None:
         return replace(previous, outcome=Outcome.REPLAYED)
-    refused = Gate.reject(ledger, manifest, checks, now=now, source=description)
+    try:
+        digest = _call(store.digest, source)
+        detail = f"declared={manifest.content_hash}, actual={digest}"
+    except InvalidContract as exc:
+        digest, detail = None, f"the delivered bytes no longer read: {exc}"
+    if digest == manifest.content_hash:
+        return replace(previous, outcome=Outcome.REPLAYED)
+    refused = Gate.reject(
+        _base(store, contract, manifest),
+        manifest,
+        (Check("content_hash", False, detail),),
+        now=now,
+        source=_description(source),
+    )
     _call(store.publish, None, refused)
     return refused
 
@@ -69,10 +71,8 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
     description = _description(source)
     ledger = _base(store, contract, manifest)
     previous = _call(store.accepted_receipt, manifest.identity)
-    if previous is not None and manifest.content_hash is not None:
-        return _replay(store, contract, source, previous, ledger, now)
     if previous is not None:
-        return replace(previous, outcome=Outcome.REPLAYED)
+        return _replay(store, contract, source, previous, now)
     if not all(check.passed for check in Gate.preflight(ledger, manifest, now=now)):
         refused = Gate.evaluate(ledger, manifest, now=now, source=description)
         _call(store.publish, None, refused)
@@ -80,16 +80,19 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
 
     candidate: str | None = None
     checks: tuple[Check, ...] = ()
+    attempted: dict[str, Receipt] = {}
     try:
         candidate = _call(store.hold, source, manifest, contract)
         checks = _call(store.check, candidate, contract, manifest, Gate.requirements(contract, manifest))
-        receipt = Gate.evaluate(ledger, manifest, checks, now=now, source=description)
-        _call(store.publish, candidate, receipt)
-        return receipt
+        attempted[contract.table] = Gate.evaluate(ledger, manifest, checks, now=now, source=description)
+        _call(store.publish, candidate, attempted[contract.table])
+        return attempted[contract.table]
     except BaseException as error:
         held = {} if candidate is None else {contract.table: candidate}
         members = [(contract, source, manifest)]
-        return _recover(store, members, held, {contract.table: checks}, error, now)[contract.table]
+        return _recover(store, members, held, {contract.table: checks}, error, now, attempted=attempted)[
+            contract.table
+        ]
 
 
 def _recover(
@@ -110,9 +113,14 @@ def _recover(
     if group is not None and any(receipt is not None for receipt in committed.values()):
         return _settle(store, group, members, committed, attempted, error, cleanup_error, now)
     if all(receipt is not None for receipt in committed.values()):
-        for contract, _, _ in members:
+        # What this call published is its answer; another call's acceptance is decided as a replay.
+        answers: dict[str, Receipt] = {}
+        for contract, source, _ in members:
             _call(store.load_ledger, contract)
-        return cast(dict[str, Receipt], committed)
+            receipt = cast(Receipt, committed[contract.table])
+            mine = receipt == (attempted or {}).get(contract.table)
+            answers[contract.table] = receipt if mine else _replay(store, contract, source, receipt, now)
+        return answers
     if cleanup_error is not None:
         raise StoreError("candidate cleanup failed") from cleanup_error
     if not isinstance(error, (InvalidContract, RejectedDelivery)):
@@ -254,12 +262,8 @@ def _replay_together(
     detail = f"a group replays whole, and {accepted} was not accepted together with this group"
     if len(earlier) == len(members) and all(expected in receipt.checks for receipt in earlier.values()):
         replays = {
-            contract.table: _replay(
-                store, contract, source, earlier[contract.table], ledgers[contract.table], now
-            )
-            if manifest.content_hash is not None
-            else replace(earlier[contract.table], outcome=Outcome.REPLAYED)
-            for contract, source, manifest in members
+            contract.table: _replay(store, contract, source, earlier[contract.table], now)
+            for contract, source, _ in members
         }
         refused: dict[str, Receipt] = {table: r for table, r in replays.items() if not r.accepted}
         if not refused:

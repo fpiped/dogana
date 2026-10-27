@@ -101,9 +101,13 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                         at(day),
                         at(18),
                     )
-                assert store.deliver(c, tmp_path / "already_removed.csv", manifest, now=at(30)) == replace(
+                assert store.deliver(c, path, receipt.manifest, now=at(30)) == replace(
                     receipt, outcome="replayed"
                 )
+                assert store.deliver(c, tmp_path / "already_removed.csv", manifest, now=at(30)).outcome == (
+                    "rejected"
+                )
+                receipt_count += 1
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             assert len(store.receipts()) == receipt_count
             surface = Claims.combine(*(store.load_ledger(c).claims(at(day)) for c in contracts))
@@ -362,7 +366,8 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
         assert store.load_ledger(c).claims(at(19), window=("B", "B")).deletions_as_of == at(18)
 
 
-def test_a_window_that_moves_a_published_key_into_coverage_removes_its_old_copy(tmp_path):
+def test_a_window_cannot_move_a_key_whose_old_region_it_does_not_cover(tmp_path):
+    """Day 18 stays claimed exact at the full's boundary, so taking key 1 out of it would be false."""
     c = contract()
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(1, 18)])
@@ -370,10 +375,9 @@ def test_a_window_that_moves_a_published_key_into_coverage_removes_its_old_copy(
         assert store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
         path = csv_file(tmp_path, "moved.csv", [row(1, 19)])
         m = sidecar(path, c, "daily", 19, 1, window=(at(19).date(), at(19).date()))
-        accepted = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        assert accepted.accepted
-        assert any(x.name == "window_stability" and x.passed for x in accepted.checks)
-        assert store.read(c.table) == [row(1, 19)]
+        refused = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
+        assert any(x.name == "rows_in_window" and not x.passed for x in refused.checks)
+        assert store.read(c.table) == [row(1, 18)]
 
 
 def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):

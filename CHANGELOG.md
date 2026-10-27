@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+The store publishes exactly the bytes the sender hashed and counted, and every delivery it cannot
+read is a recorded rejection. Some files 0.3.0 accepted are now refused; the wire format is
+unchanged.
+
+- A delivered file is opened once and copied into the store's private folder while it is hashed;
+  every read uses the copy. A symbolic link swapped after the drop's root check, or a file changed
+  while it was read, can no longer put other bytes behind a receipt.
+- CSV has one grammar, RFC 4180: comma, double quote, UTF-8, header row. DuckDB no longer guesses a
+  dialect, so a `'` or a leading `#` is data, and `dogana manifest` counts exactly what the store
+  reads.
+- A `datetime` value needs its UTC offset, in CSV as in Parquet; a time without one is refused
+  instead of read as UTC.
+- A file the store cannot read (not UTF-8, compressed, a value out of range) is a rejection with an
+  `execution` check, not a `StoreError` that a retrying receiver would repeat forever.
+- A window delivery refuses a key published outside its window. Moving it used to leave the region
+  it came from claiming exactness without it; only a delivery covering the whole table moves a key.
+- A replay compares the bytes with the accepted digest and nothing else, through the new `Store`
+  method `digest(source)`, so a contract that changed since is no reason to refuse it. A writer
+  that loses a race to publish the same manifest is answered for its own bytes: a replay, or a
+  refusal when they differ, never the winner's acceptance.
+- The file drop gives a manifest without `content_hash` the digest of the received file, so a changed
+  file under the same sidecar is a new delivery, not a silent replay. Filename counts must be integers.
+- `dogana check` names the comparisons it made, says that keys, windows and types are checked on
+  delivery, and refuses a file it could compare in no way. `dogana manifest`
+  explains a file it cannot read instead of printing a traceback, writes a sidecar other accounts can
+  read, and never replaces one without `--force`, even in a race.
+- The protocol states that `produced_at` of a sequence read is earlier than the first unread commit,
+  that `start_at` excludes its own instant, what a soft-deleting source's dates speak about, and that
+  the query theorem assumes both sides compare and compute alike.
+- `StoreConformance` checks that a store publishes only what its own checks accepted, and, through an
+  optional factory `reopen`, that a publication survives reopening and that two stores on one
+  storage publish only one candidate.
+
 ## 0.3.0 (2026-10-27)
 
 Tables that depend on each other can be delivered and read together. The wire format is unchanged,

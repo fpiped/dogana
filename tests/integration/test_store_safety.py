@@ -22,17 +22,15 @@ def publish(store, tmp_path, rows, *, c=None, columns=COLUMNS, day=18, shape="fu
     return deliver(store, c, _FileSource(path, columns), manifest, at(30))
 
 
-@pytest.mark.parametrize("name", ["*.csv", "?.csv", "[ab].csv", "{one,two}.csv", "*.parquet"])
+@pytest.mark.parametrize("name", ["*.csv", "?.csv", "[ab].csv", "{one,two}.csv"])
 def test_a_delivered_path_never_expands_to_other_files(tmp_path, name):
     c = contract()
     supplied = csv_file(tmp_path, name, [row(1)])
     csv_file(tmp_path, "other.csv", [row(2)])
     with DuckDBStore(":memory:") as store:
         manifest = sidecar(supplied, c, "full", 18, 1)
-        receipt = deliver(store, c, _FileSource(supplied, COLUMNS), manifest, at(20))
-        assert not receipt.accepted
-        assert "glob" in receipt.checks[-1].detail
-        assert store.load_ledger(c) == Ledger(c)
+        assert deliver(store, c, _FileSource(supplied, COLUMNS), manifest, at(20)).accepted
+        assert [r["id"] for r in store.read(c.table)] == [1]
         assert not store._candidates
 
 
@@ -466,15 +464,18 @@ def test_changing_published_columns_refuses_publication_without_losing_history(s
         assert not store._candidates and store._transaction is None
 
 
-def test_timezone_less_csv_datetime_values_use_utc(tmp_path):
+@pytest.mark.parametrize(
+    ("value", "accepted"), [("2026-10-18 00:00:00", False), ("2026-10-18 02:00:00+02", True)]
+)
+def test_a_csv_time_names_an_instant_only_with_its_offset(tmp_path, value, accepted):
     columns = {"id": "int", "updated": "datetime"}
     c = Contract("updates", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
     path = tmp_path / "updates.csv"
-    path.write_text("id,updated\n1,2026-10-18 00:00:00\n")
+    path.write_text(f"id,updated\n1,{value}\n")
     manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
     with DuckDBStore(":memory:") as store:
-        assert deliver(store, c, _FileSource(path, columns), manifest, at(20)).accepted
-        assert store.read(c.table) == [{"id": 1, "updated": at(18)}]
+        assert deliver(store, c, _FileSource(path, columns), manifest, at(20)).accepted is accepted
+        assert not accepted or store.read(c.table) == [{"id": 1, "updated": at(18)}]
 
 
 @pytest.mark.parametrize("metadata", ["ledgers", "receipts"])

@@ -82,12 +82,20 @@ class MinimalMemoryFactory(MemoryFactory):
 
 class DuckDBFactory:
     def __init__(self, folder, monkeypatch):
-        self.folder, self.monkeypatch = folder, monkeypatch
+        self.folder, self.monkeypatch, self.paths = folder, monkeypatch, {}
 
     def make_store(self):
         from dogana.reference.duckdb import DuckDBStore
 
-        return DuckDBStore(self.folder / f"{uuid4().hex}.duckdb")
+        path = self.folder / f"{uuid4().hex}.duckdb"
+        store = DuckDBStore(path)
+        self.paths[id(store)] = path
+        return store
+
+    def reopen(self, store):
+        from dogana.reference.duckdb import DuckDBStore
+
+        return DuckDBStore(self.paths[id(store)])
 
     def write_source(self, rows, columns):
         from dogana.reference._sources import _FileSource

@@ -15,13 +15,14 @@ from dogana import (
     Contract,
     Coverage,
     Deletions,
+    Gate,
     InvalidContract,
     Manifest,
     SerializationError,
     Shape,
     State,
-    StoreError,
 )
+from dogana.reference._sources import _FileSource
 from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern
 from tests.support import schema_hash
@@ -165,8 +166,7 @@ def test_an_internal_symlink_preserves_the_submitted_filename_and_manifest(
     if use_sidecar:
         path.with_suffix(".csv.json").symlink_to(data.with_suffix(".csv.json"))
     pattern = FilePattern(r"(?P<produced_at>.*)\.csv", shape="full")
-    if not use_sidecar:
-        expected = replace(expected, content_hash=sha256(data.read_bytes()).hexdigest())
+    expected = replace(expected, content_hash=sha256(data.read_bytes()).hexdigest())
     with DuckDBStore(":memory:") as store:
         receipt = FileDrop(store, c, pattern, root=tmp_path, columns=COLUMNS).ingest(path)
         assert receipt.accepted, receipt.checks
@@ -407,11 +407,7 @@ def test_a_derived_manifest_replays_the_same_bytes_and_refuses_changed_bytes_at_
         assert store.read(c.table) == [{"id": 1}]
 
 
-def test_a_file_that_changes_while_it_is_read_is_a_store_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from dogana.reference.duckdb import store as module
-
+def test_a_file_changed_after_it_is_held_is_never_read(tmp_path: Path) -> None:
     path = tmp_path / "data.csv"
     c = _contract()
     path.write_text("id\n1\n")
@@ -423,9 +419,9 @@ def test_a_file_that_changes_while_it_is_read_is_a_store_error(
         schema_hash=c.schema_hash,
         content_hash=sha256(path.read_bytes()).hexdigest(),
     )
-    digests = iter((manifest.content_hash, "f" * 64))
-    monkeypatch.setattr(module, "_file_digest", lambda _: next(digests))
     with DuckDBStore(":memory:") as store:
-        with pytest.raises(StoreError, match="changed while it was read"):
-            store.hold(path, manifest, c)
-        assert store.load_ledger(c).publication_id is None
+        candidate = store.hold(_FileSource(path, COLUMNS), manifest, c)
+        path.write_text("id\n7\n8\n")
+        checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+        assert all(check.passed for check in checks), checks
+        store.abort(candidate)

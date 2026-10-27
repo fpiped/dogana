@@ -21,6 +21,7 @@ from dogana import (
     Gate,
     Group,
     InconsistentPublication,
+    InvalidContract,
     Ledger,
     Manifest,
     Outcome,
@@ -91,6 +92,18 @@ class StoreFactory(Protocol):
     def fail_after_rows(self, store: Store) -> AbstractContextManager[None]: ...
     def read_publication(self, store: Store, contract: Contract) -> tuple[list[dict[str, Any]], Ledger]: ...
     def pause_after_rows(self, store: Store) -> AbstractContextManager[tuple[Event, Event]]: ...
+
+
+class DurableStoreFactory(StoreFactory, Protocol):
+    def reopen(self, store: Store) -> Store:
+        """Another store on `store`'s storage, opened while it is open or after it is closed."""
+        ...
+
+
+def _durable(factory: StoreFactory) -> DurableStoreFactory:
+    if not callable(getattr(factory, "reopen", None)):
+        pytest.skip("the factory cannot open a store's storage again")
+    return cast(DurableStoreFactory, factory)
 
 
 class StampedStore(Store, Protocol):
@@ -641,15 +654,20 @@ class StoreConformance(_StoreScenarios):
         assert receipt.ledger.claims(until).state is State.PATCHED
         self._fold(store, c)
 
-    def test_a_keyed_row_moving_into_a_window_replaces_its_earlier_copy(
+    def test_a_window_delivery_cannot_move_a_key_out_of_another_window(
         self, factory: StoreFactory, store: Store
     ) -> None:
         c = _contract()
-        self._deliver(factory, store, c, [_row(1)])
-        accepted = self._deliver(
+        first = self._deliver(factory, store, c, [_row(1)])
+        refused = self._deliver(
             factory, store, c, [_row(1, 19)], "daily", 19, window=(_at(19).date(), _at(19).date())
         )
-        assert accepted.accepted
+        assert not refused.accepted
+        assert not next(check for check in refused.checks if check.name == "rows_in_window").passed
+        assert store.load_ledger(c) == first.ledger
+        assert self._rows(factory, store, c.table) == [_row(1)]
+        moved = self._deliver(factory, store, c, [_row(1, 19)], day=20)
+        assert moved.accepted
         assert self._rows(factory, store, c.table) == [_row(1, 19)]
 
     def test_a_window_tombstone_cannot_delete_a_key_outside_its_coverage(
@@ -884,6 +902,71 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c) == receipt.ledger
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, receipt)
+
+    def test_a_store_publishes_only_what_its_own_checks_accepted(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        from dogana import Check, Gate
+
+        c = _contract()
+        manifest = Manifest(c.table, "full", _at(18), rows=2, schema_hash=c.schema_hash)
+        candidate = store.hold(factory.write_source([_row(1)], COLUMNS), manifest, c)
+        try:
+            requirements = Gate.requirements(c, manifest)
+            assert not all(check.passed for check in store.check(candidate, c, manifest, requirements))
+            forged = tuple(Check(requirement.name, True, "forged") for requirement in requirements)
+            receipt = Gate.evaluate(store.load_ledger(c), manifest, forged, now=_at(30))
+            with pytest.raises((StoreError, InvalidContract)):
+                store.publish(candidate, receipt)
+        finally:
+            store.abort(candidate)
+        assert store.receipts(c.table) == ()
+        assert store.load_ledger(c).publication_id is None
+
+    def test_a_publication_survives_reopening_its_storage(self, factory: StoreFactory, store: Store) -> None:
+        durable = _durable(factory)
+        c = _contract()
+        receipt = self._deliver(factory, store, c, [_row(1)])
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+        reopened = durable.reopen(store)
+        try:
+            assert reopened.receipts(c.table) == (receipt,)
+            assert reopened.load_ledger(c) == receipt.ledger
+            assert self._rows(factory, reopened, c.table) == [_row(1)]
+        finally:
+            close = getattr(reopened, "close", None)
+            if close is not None:
+                close()
+
+    def test_two_stores_on_one_storage_publish_only_one_candidate(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        from dogana import Gate
+
+        durable = _durable(factory)
+        c = _contract()
+        other = durable.reopen(store)
+        prepared = []
+        try:
+            for writer, key in ((store, 1), (other, 2)):
+                manifest = Manifest(c.table, "full", _at(17 + key), rows=1, schema_hash=c.schema_hash)
+                candidate = writer.hold(factory.write_source([_row(key)], COLUMNS), manifest, c)
+                checks = writer.check(candidate, c, manifest, Gate.requirements(c, manifest))
+                prepared.append((writer, candidate, Gate.evaluate(Ledger(c), manifest, checks, now=_at(30))))
+            (first, winner, receipt), (second, loser, stale) = prepared
+            first.publish(winner, receipt)
+            with pytest.raises(StoreError):
+                second.publish(loser, stale)
+        finally:
+            for writer, candidate, _ in prepared:
+                writer.abort(candidate)
+            close = getattr(other, "close", None)
+            if close is not None:
+                close()
+        assert store.receipts(c.table) == (receipt,)
+        assert self._rows(factory, store, c.table) == [_row(1)]
 
     def test_a_declared_content_hash_that_differs_from_the_delivered_bytes_is_refused(
         self, factory: StoreFactory, store: Store

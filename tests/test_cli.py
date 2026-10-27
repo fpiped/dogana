@@ -174,7 +174,10 @@ def test_check_accepts_a_matching_file_and_names_what_changed(files, capsys):
     assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
     capsys.readouterr()
     assert run(tmp_path, "check", str(data)) == 0
-    assert capsys.readouterr().out == f"{data}: a valid 'full' delivery for 'orders'\n"
+    assert capsys.readouterr().out == (
+        f"{data}: rows, tombstones and SHA-256 match the manifest; "
+        "keys, windows and types are checked on delivery\n"
+    )
     data.write_text("id,day,value\n1,2026-10-25,x\n")
     assert run(tmp_path, "check", str(data)) == 1
     error = capsys.readouterr().err
@@ -227,4 +230,39 @@ def test_check_compares_only_the_hash_of_a_file_it_cannot_count(tmp_path, capsys
         run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY, "--rows", "1") == 0
     )
     assert run(tmp_path, "check", str(data)) == 0
-    assert "counts not compared" in capsys.readouterr().err
+    assert ": SHA-256 match the manifest" in capsys.readouterr().out
+
+
+def test_check_refuses_a_file_it_could_not_compare(tmp_path, capsys):
+    (tmp_path / "orders.contract.json").write_text(contract().to_json())
+    data = tmp_path / "orders.jsonl"
+    data.write_text('{"id": 1}\n')
+    manifest = contract().manifest("full", datetime(2026, 10, 26, 6, tzinfo=UTC), rows=1)
+    (tmp_path / "orders.jsonl.json").write_text(manifest.to_json())
+    assert run(tmp_path, "check", str(data)) == 1
+    assert "nothing compared" in capsys.readouterr().err
+    data.unlink()
+    assert run(tmp_path, "check", str(data)) == 1
+
+
+@pytest.mark.parametrize(
+    "data", [b"id\n1\ncaf\xe9\n", b"id\n" + b"x" * 200_000 + b"\n"], ids=["latin-1", "200 KB field"]
+)
+def test_manifest_explains_a_file_it_cannot_read(tmp_path, capsys, data):
+    (tmp_path / "orders.contract.json").write_text(contract().to_json())
+    path = tmp_path / "orders.csv"
+    path.write_bytes(data)
+    status = run(tmp_path, "manifest", str(path), "--shape", "full", "--produced-at", BOUNDARY, "-o", "-")
+    assert status == (1 if b"\xe9" in data else 0)
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_written_manifest_is_readable_by_others_and_never_replaces_one_silently(tmp_path):
+    (tmp_path / "orders.contract.json").write_text(contract().to_json())
+    data = tmp_path / "orders.csv"
+    data.write_text("id\n1\n")
+    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 0
+    sidecar = tmp_path / "orders.csv.json"
+    assert sidecar.stat().st_mode & 0o044 == 0o044
+    assert run(tmp_path, "manifest", str(data), "--shape", "full", "--produced-at", BOUNDARY) == 1
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]

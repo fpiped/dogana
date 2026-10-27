@@ -9,6 +9,7 @@ from functools import cached_property, wraps
 from hashlib import sha256
 from os import PathLike, stat
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Lock, RLock
 from types import TracebackType
 from typing import Any, Concatenate, ParamSpec, TypeVar
@@ -53,6 +54,7 @@ from dogana.reference._sources import (
     _FileSource,
     _published,
     _RowSource,
+    _snapshot,
 )
 
 _TYPES = {
@@ -63,6 +65,11 @@ _TYPES = {
     "date": "DATE",
     "datetime": "TIMESTAMP WITH TIME ZONE",
 }
+# The one CSV grammar dogana reads (RFC 4180, UTF-8), pinned so DuckDB never guesses a dialect.
+_CSV = (
+    "delim=',', quote='\"', escape='\"', comment='', strict_mode=true, sample_size=-1, "
+    "allow_quoted_nulls=false"
+)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 _FILES_GUARD = Lock()
@@ -115,6 +122,11 @@ def _inside(column: str, window: Window) -> tuple[str, list[object]]:
     return " AND ".join(side for side, _ in sides) or "TRUE", [bound for _, bound in sides]
 
 
+def _brief(error: Exception) -> str:
+    """The first line of a reader's error, short: it may quote the producer's data."""
+    return str(error).splitlines()[0][:200] if str(error) else type(error).__name__
+
+
 def _logical(value: str) -> str:
     if value.endswith("]") or value.startswith(("STRUCT(", "MAP(", "UNION(", "LIST(")):
         return "unsupported"
@@ -133,7 +145,7 @@ def _logical(value: str) -> str:
         return "int"
     if value in ("DOUBLE", "FLOAT", "REAL") or value.startswith("DECIMAL"):
         return "float"
-    if value.startswith("TIMESTAMP"):
+    if value == "TIMESTAMP WITH TIME ZONE":
         return "datetime"
     return {"VARCHAR": "str", "BOOLEAN": "bool", "DATE": "date"}.get(value, "unsupported")
 
@@ -212,6 +224,8 @@ class DuckDBStore:
         self._checked: dict[str, _Checked] = {}
         self._references: dict[tuple[tuple[Reference, ...], frozenset[str]], Check] = {}
         self._transaction: tuple[str, ...] | None = None
+        # Delivered files are read from private copies here, never from where the sender can change them.
+        self._scratch = TemporaryDirectory(prefix="dogana-")
         try:
             self.connection = duckdb.connect(str(path))
             self._file = self._register(str(path) == ":memory:")
@@ -278,6 +292,7 @@ class DuckDBStore:
                 self.abort(candidate)
         finally:
             self.connection.close()
+            self._scratch.cleanup()
             # A closed connection discards an unresolved transaction, so nothing is left to lock for.
             self._end_transaction()
 
@@ -468,7 +483,12 @@ class DuckDBStore:
         ).fetchone()
         if committed and (row is None or row[0] != committed[0]):
             raise InconsistentPublication("accepted receipt missing for a retained publication")
-        return self._receipt(row[1]) if row else None
+        if row is None:
+            return None
+        receipt = self._receipt(row[1])
+        if receipt.manifest.identity != identity or receipt.identity != row[0]:
+            raise InconsistentPublication("a stored receipt answers for another delivery")
+        return receipt
 
     def _save_receipt(self, receipt: Receipt) -> None:
         if receipt.accepted and self._transaction is None:
@@ -490,6 +510,13 @@ class DuckDBStore:
         )
 
     @_synchronized
+    def digest(self, source: object) -> str | None:
+        """The SHA-256 of the bytes a delivered file holds now; None for rows, which have no bytes."""
+        if not isinstance(source, (str, PathLike)):
+            return None
+        return _file_digest(source, source.root if isinstance(source, _FileSource) else None)
+
+    @_synchronized
     def hold(self, source: object, manifest: Manifest, contract: Contract | None = None) -> str:
         if self._transaction is not None:
             raise StoreError("publish or abort the existing candidate first")
@@ -498,46 +525,40 @@ class DuckDBStore:
         self._candidates[candidate] = _Candidate(manifest, contract, columns=columns)
         try:
             if isinstance(source, (str, PathLike)):
-                path = Path(source)
-                if any(char in str(path) for char in "*?[]{}"):
-                    raise InvalidContract("delivered paths must be literal and contain no glob characters")
-                path = path.resolve(strict=True)
-                if any(char in str(path) for char in "*?[]{}"):
-                    raise InvalidContract("delivered paths must be literal and contain no glob characters")
-                if not path.is_file():
-                    raise StoreError("the delivered path must be a regular file")
-                digest = _file_digest(path) if manifest.content_hash is not None else None
-                self._candidates[candidate] = _Candidate(manifest, contract, columns=columns, digest=digest)
-                suffix = path.suffix.lower()
-                if suffix == ".csv":
-                    header = self.connection.execute(
-                        "SELECT * FROM read_csv(?, header=false, all_varchar=true, sample_size=-1, "
-                        "allow_quoted_nulls=false) LIMIT 1",
-                        [[str(path)]],
-                    ).fetchone()
-                    self._candidates[candidate] = _Candidate(
-                        manifest,
-                        contract,
-                        csv=columns is not None,
-                        columns=columns,
-                        header=tuple(value if value is not None else "" for value in header or ()),
-                        digest=digest,
-                    )
-                    self.connection.execute(
-                        f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
-                        "FROM read_csv(?, header=true, all_varchar=?, sample_size=-1, "
-                        "allow_quoted_nulls=false)",
-                        [[str(path)], columns is not None],
-                    )
-                elif suffix == ".parquet":
-                    self.connection.execute(
-                        f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM read_parquet(?)",
-                        [[str(path)]],
-                    )
-                else:
+                suffix = Path(source).suffix.lower()
+                if suffix not in (".csv", ".parquet"):
                     raise InvalidContract("only CSV and Parquet paths are supported")
-                if digest is not None and _file_digest(path) != digest:
-                    raise StoreError("the delivered file changed while it was read")
+                copy = self._copy(candidate)
+                root = source.root if isinstance(source, _FileSource) else None
+                digest = _snapshot(source, copy, root)
+                header: tuple[str, ...] | None = None
+                try:
+                    if suffix == ".csv":
+                        first = self.connection.execute(
+                            f"SELECT * FROM read_csv(?, header=false, all_varchar=true, {_CSV}) LIMIT 1",
+                            [str(copy)],
+                        ).fetchone()
+                        header = tuple(value if value is not None else "" for value in first or ())
+                        self.connection.execute(
+                            f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * "
+                            f"FROM read_csv(?, header=true, all_varchar=?, {_CSV})",
+                            [str(copy), columns is not None],
+                        )
+                    else:
+                        self.connection.execute(
+                            f"CREATE TEMP TABLE {_quote(candidate)} AS SELECT * FROM read_parquet(?)",
+                            [str(copy)],
+                        )
+                except (duckdb.InvalidInputException, duckdb.ConversionException) as exc:
+                    raise InvalidContract(f"the delivered file does not read: {_brief(exc)}") from exc
+                self._candidates[candidate] = _Candidate(
+                    manifest,
+                    contract,
+                    csv=header is not None and columns is not None,
+                    columns=columns,
+                    header=header,
+                    digest=digest,
+                )
             elif type(source).__module__.startswith("pyarrow"):
                 relation = candidate + "_input"
                 try:
@@ -625,6 +646,13 @@ class DuckDBStore:
             for name, kind in columns.items()
             if kind == "int"
         )
+        # A time without its offset names no instant; reading it as UTC would guess.
+        predicates.extend(
+            f"({_quote(name)} IS NOT NULL "
+            f"AND NOT regexp_matches(trim({_quote(name)}), '([zZ]|[+-][0-9:]+)$'))"
+            for name, kind in columns.items()
+            if kind == "datetime"
+        )
         invalid = " OR ".join(predicates)
         if self._one(f"SELECT count(*) FROM {source} WHERE {invalid}")[0]:
             return False
@@ -693,7 +721,10 @@ class DuckDBStore:
             if name != contract.deleted_column or name in columns
         ):
             return columns, "source columns differ from the contract's bound column types"
-        self._recast(candidate, validated)
+        try:
+            self._recast(candidate, validated)
+        except duckdb.ConversionException as exc:
+            return columns, f"values cannot be converted to their column types: {_brief(exc)}"
         return validated, None
 
     def _split(self, candidate: str, contract: Contract, columns: Mapping[str, str]) -> tuple[int, int]:
@@ -840,18 +871,21 @@ class DuckDBStore:
         invalid = self._one(
             f"SELECT count(*) FROM {audit.staging} WHERE {column} IS NULL OR NOT ({inside})", bounds
         )[0]
-        if audit.tombstones and self._exists(audit.contract.table):
+        if audit.contract.key and self._exists(audit.contract.table):
+            # A key keeps its window value: a copy published outside the window would stay claimed there.
+            keys = ", ".join(_quote(key) for key in audit.contract.key)
             match = _key_match(audit.contract.key, "p", "d")
             published, bounds = _inside("p." + column, audit.window)
             invalid += self._one(
-                f"SELECT count(*) FROM {_quote(audit.contract.table)} p JOIN {audit.deleted} d ON {match} "
-                f"WHERE p.{column} IS NULL OR NOT ({published})",
+                f"SELECT count(*) FROM {_quote(audit.contract.table)} p "
+                f"JOIN (SELECT {keys} FROM {audit.staging} UNION ALL SELECT {keys} FROM {audit.deleted}) d "
+                f"ON {match} WHERE p.{column} IS NULL OR NOT ({published})",
                 bounds,
             )[0]
         return Check(
             "rows_in_window",
             invalid == 0,
-            "live rows and the published rows of deleted keys must be inside it",
+            "delivered rows and the published copies of their keys must be inside it",
         )
 
     def _check_window_stability(self, audit: _Audit) -> Check:
@@ -1230,9 +1264,13 @@ class DuckDBStore:
     def _forget_references(self, candidate: str) -> None:
         self._references = {key: check for key, check in self._references.items() if candidate not in key[1]}
 
+    def _copy(self, candidate: str) -> Path:
+        return Path(self._scratch.name) / candidate
+
     def _release(self, candidate: str) -> None:
         if candidate not in self._candidates:
             return
+        self._copy(candidate).unlink(missing_ok=True)
         self._forget_references(candidate)
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(candidate)}")
         self.connection.execute(f"DROP TABLE IF EXISTS {_quote(_deleted(candidate))}")
