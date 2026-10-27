@@ -380,7 +380,7 @@ regions, generation and publication head; a receipt embeds its decision and resu
 [Contract](examples/contract.json), [manifest](examples/manifest.json), [ledger](examples/ledger.json)
 and [receipt](examples/receipt.json) are executable wire examples.
 [Identity vectors](examples/identity-vectors.json) specify exact canonical forms and hashes for independent implementations.
-[JSON Schema 2020-12 documents](wire/) cover all fifteen wire kinds; semantic rules remain in this protocol.
+[JSON Schema 2020-12 documents](wire/README.md) cover all fifteen wire kinds; semantic rules remain in this protocol.
 
 ## Boundaries
 

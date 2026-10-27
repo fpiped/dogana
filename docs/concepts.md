@@ -49,7 +49,7 @@ details what each pattern cannot prove.
 
 For "items with no movement", retained deleted movements hide true answers. Negation reverses
 which input guarantee matters; exact aggregates and mixed-date joins need more than minimum dates.
-The [protocol](protocol.md) defines the semantics and [wire schemas](wire/) describe JSON.
+The [protocol](protocol.md) defines the semantics and [wire schemas](wire/README.md) describe JSON.
 
 Store authors can run `dogana.conformance.StoreConformance`; stamped recovery is optional.
 See [reference implementations](reference.md), [integrations](integrations.md) and

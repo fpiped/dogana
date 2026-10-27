@@ -1,0 +1,58 @@
+site_name: dogana
+site_description: Know which rows you can trust
+site_url: https://fpiped.github.io/dogana/
+repo_url: https://github.com/fpiped/dogana
+repo_name: fpiped/dogana
+edit_uri: edit/main/docs/
+copyright: Licensed under Apache-2.0
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.sections
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+nav:
+  - Home: index.md
+  - Quick start: quickstart.md
+  - Concepts: concepts.md
+  - Protocol: protocol.md
+  - Reference: reference.md
+  - Integrations: integrations.md
+  - Architecture: architecture.md
+  - Wire schemas: wire/README.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+validation:
+  links:
+    absolute_links: relative_to_docs
+    anchors: warn
+    unrecognized_links: warn

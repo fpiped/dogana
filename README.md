@@ -82,9 +82,9 @@ dogana is for everything else.
 
 ## Learn more
 
-- [Quick start](https://github.com/fpiped/dogana/blob/main/docs/quickstart.md): a store, a refused file, a replay.
-- [Concepts](https://github.com/fpiped/dogana/blob/main/docs/concepts.md): every term, and what dogana is not.
-- [Protocol](https://github.com/fpiped/dogana/blob/main/docs/protocol.md): the specification.
-- [Integrations](https://github.com/fpiped/dogana/blob/main/docs/integrations.md): dlt, dbt, Iceberg, Spark, orchestrators.
+- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a refused file, a replay.
+- [Concepts](https://fpiped.github.io/dogana/concepts/): every term, and what dogana is not.
+- [Protocol](https://fpiped.github.io/dogana/protocol/): the specification.
+- [Integrations](https://fpiped.github.io/dogana/integrations/): dlt, dbt, Iceberg, Spark, orchestrators.
 
 Licensed under [Apache-2.0](https://github.com/fpiped/dogana/blob/main/LICENSE).
