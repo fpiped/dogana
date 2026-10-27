@@ -8,6 +8,8 @@ copyright: Licensed under Apache-2.0
 
 theme:
   name: material
+  logo: assets/icon.svg
+  favicon: assets/icon.svg
   features:
     - content.code.copy
     - navigation.footer
