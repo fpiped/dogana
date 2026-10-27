@@ -220,7 +220,14 @@ def plan_together(
         return {}
     # Past every table's evidence, so each read raises every region it covers to the shared boundary.
     dates = [r.complete_as_of for ledger in ledgers.values() for r in ledger.regions if r.complete_as_of]
-    dates += [ledger.contract.start_at for ledger in ledgers.values() if ledger.contract.start_at]
+    # start_at bounds only the first keyless append, read on a ledger nothing has proven yet.
+    dates += [
+        ledger.contract.start_at
+        for ledger in ledgers.values()
+        if ledger.contract.start_at
+        and ledger.publication_id is None
+        and not any(r.complete_as_of for r in ledger.regions)
+    ]
     try:
         boundary = max([at_least, *(d + timedelta(microseconds=1) for d in dates)])
     except OverflowError as exc:

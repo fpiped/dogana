@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from functools import cached_property, wraps
 from hashlib import sha256
-from os import PathLike
+from os import PathLike, stat
 from pathlib import Path
 from threading import Lock, RLock
 from types import TracebackType
@@ -65,7 +65,7 @@ _TYPES = {
 }
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+_LOCKS: WeakValueDictionary[object, Any] = WeakValueDictionary()
 _LOCKS_GUARD = Lock()
 
 
@@ -77,8 +77,21 @@ def _key_match(keys: tuple[str, ...], left: str, right: str) -> str:
     return " AND ".join(f"{left}.{_quote(k)}={right}.{_quote(k)}" for k in keys)
 
 
-def _outside_window(column: str) -> str:
-    return f"{column} IS NULL OR {column} < ? OR {column} > ?"
+def _domain_end(value: object, *, high: bool) -> bool:
+    if isinstance(value, datetime):
+        return value == (datetime.max if high else datetime.min).replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return value == (date.max if high else date.min)
+    return not high and value == ""
+
+
+def _inside(column: str, window: Window) -> tuple[str, list[object]]:
+    """A closed window as SQL. A bound at the end of its domain leaves that side open, as the ledger does,
+    since DuckDB holds dates and timestamps past the ones Python can name."""
+    low, high = window
+    sides = [(f"{column} >= ?", low)] if not _domain_end(low, high=False) else []
+    sides += [(f"{column} <= ?", high)] if not _domain_end(high, high=True) else []
+    return " AND ".join(side for side, _ in sides) or "TRUE", [bound for _, bound in sides]
 
 
 def _logical(value: str) -> str:
@@ -173,17 +186,22 @@ def _deleted(candidate: str) -> str:
 
 class DuckDBStore:
     def __init__(self, path: str | Path, *, adopt: bool = False) -> None:
-        key = str(Path(path).resolve()) if str(path) != ":memory:" else uuid4().hex
-        with _LOCKS_GUARD:
-            self._lock = _LOCKS.setdefault(key, RLock())
         self._adopt = adopt
         self._candidates: dict[str, _Candidate] = {}
         self._checked: dict[str, _Checked] = {}
         self._references: dict[tuple[tuple[Reference, ...], frozenset[str]], Check] = {}
         self._transaction: tuple[str, ...] | None = None
+        try:
+            self.connection = duckdb.connect(str(path))
+            # The file's identity, not its spelling: case-insensitive file systems name one file many ways.
+            identity = stat(path) if str(path) != ":memory:" else None
+        except (duckdb.Error, OSError) as exc:
+            raise StoreError(str(exc)) from exc
+        key: object = (identity.st_dev, identity.st_ino) if identity is not None else uuid4().hex
+        with _LOCKS_GUARD:
+            self._lock = _LOCKS.setdefault(key, RLock())
         with self._lock:
             try:
-                self.connection = duckdb.connect(str(path))
                 self._initialize()
             except (duckdb.Error, OSError) as exc:
                 raise StoreError(str(exc)) from exc
@@ -220,6 +238,8 @@ class DuckDBStore:
                 self.abort(candidate)
         finally:
             self.connection.close()
+            # A closed connection discards an unresolved transaction, so nothing is left to lock for.
+            self._end_transaction()
 
     def _one(self, sql: str, params: object = None) -> tuple[Any, ...]:
         row = self.connection.execute(sql, params).fetchone()
@@ -663,6 +683,8 @@ class DuckDBStore:
         held = self._candidates.get(candidate)
         if held is None or held.manifest != manifest or held.contract not in (None, contract):
             raise StoreError("candidate belongs to a different manifest")
+        # Preparation rewrites the staged rows for this contract, so the candidate stays bound to it.
+        self._candidates[candidate] = replace(held, contract=contract)
         if requirements != Gate.requirements(contract, manifest):
             raise StoreError("row checks must come from the gate")
         base, stamp = self._base(contract, manifest), self._stamp(contract.table)
@@ -766,16 +788,17 @@ class DuckDBStore:
     def _check_rows_in_window(self, audit: _Audit) -> Check:
         assert audit.contract.window_column is not None and audit.window is not None
         column = _quote(audit.contract.window_column)
+        inside, bounds = _inside(column, audit.window)
         invalid = self._one(
-            f"SELECT count(*) FROM {audit.staging} WHERE {_outside_window(column)}",
-            list(audit.window),
+            f"SELECT count(*) FROM {audit.staging} WHERE {column} IS NULL OR NOT ({inside})", bounds
         )[0]
         if audit.tombstones and self._exists(audit.contract.table):
             match = _key_match(audit.contract.key, "p", "d")
+            published, bounds = _inside("p." + column, audit.window)
             invalid += self._one(
                 f"SELECT count(*) FROM {_quote(audit.contract.table)} p JOIN {audit.deleted} d ON {match} "
-                f"WHERE {_outside_window('p.' + column)}",
-                list(audit.window),
+                f"WHERE p.{column} IS NULL OR NOT ({published})",
+                bounds,
             )[0]
         return Check(
             "rows_in_window",
@@ -808,8 +831,8 @@ class DuckDBStore:
             params: list[object] = []
             if audit.window is not None:
                 assert contract.window_column is not None
-                sql += f" WHERE {_quote(contract.window_column)} BETWEEN ? AND ?"
-                params.extend(audit.window)
+                inside, params = _inside(_quote(contract.window_column), audit.window)
+                sql += f" WHERE {inside}"
             previous = self._one(sql, params)[0]
         limit = contract.max_shrink_fraction
         assert limit is not None
@@ -847,10 +870,8 @@ class DuckDBStore:
                 db.execute(f"DELETE FROM {target}")
             elif action.operation is Operation.REPLACE_WINDOW:
                 assert action.window is not None and plan.window_column is not None
-                db.execute(
-                    f"DELETE FROM {target} WHERE {_quote(plan.window_column)} BETWEEN ? AND ?",
-                    list(action.window),
-                )
+                inside, bounds = _inside(_quote(plan.window_column), action.window)
+                db.execute(f"DELETE FROM {target} WHERE {inside}", bounds)
             if plan.key and action.operation in (Operation.UPSERT, Operation.REPLACE_WINDOW):
                 match = _key_match(plan.key, "t", "c")
                 db.execute(f"DELETE FROM {target} AS t USING {source} AS c WHERE {match}")
@@ -930,7 +951,7 @@ class DuckDBStore:
             )
             for candidate, receipt in entries
         )
-        joint: tuple[Check, ...] = (Gate.together(alone),)
+        joint: tuple[Check, ...] = (Gate.together(alone, group.references),)
         self._publish_accepted(entries, (*joint, self._references[key]) if group.references else joint)
 
     def _publish_accepted(self, entries: tuple[tuple[str, Receipt], ...], joint: tuple[Check, ...]) -> None:
@@ -1042,25 +1063,30 @@ class DuckDBStore:
         missing = [name for name in reference.columns if name not in columns]
         if missing:
             return False, f"{child.table} has no column {', '.join(missing)}"
-        for name, key in zip(reference.columns, parent.key, strict=True):
-            if _logical(columns[name]) != _logical(keys[key]):
-                return False, f"{name} and {parent.table}.{key} have different types"
         named = ", ".join(f"c.{_quote(name)}" for name in reference.columns)
         present = " AND ".join(f"c.{_quote(name)} IS NOT NULL" for name in reference.columns)
-        match = " AND ".join(
-            f"p.{_quote(key)}=c.{_quote(name)}"
-            for name, key in zip(reference.columns, parent.key, strict=True)
-        )
-        where = (
-            f"FROM {_quote(child.table)} c WHERE {present} "
-            f"AND NOT EXISTS (SELECT 1 FROM {_quote(parent.table)} p WHERE {match})"
-        )
+        scope = f"FROM {_quote(child.table)} c WHERE {present}"
         window = coverage_window(manifest.check(child))
         params: list[object] = []
         if window is not None:
             assert child.window_column is not None
-            where += f" AND c.{_quote(child.window_column)} BETWEEN ? AND ?"
-            params.extend(window)
+            inside, params = _inside(f"c.{_quote(child.window_column)}", window)
+            scope += f" AND {inside}"
+        # Numbers compare across int and float; another mismatch is a declaration error when a row names one.
+        pairs = list(zip(reference.columns, parent.key, strict=True))
+        mismatched = [
+            (name, key)
+            for name, key in pairs
+            if len(kinds := {_logical(columns[name]), _logical(keys[key])}) > 1 and kinds != {"int", "float"}
+        ]
+        if mismatched and self._one(f"SELECT count(*) {scope}", params)[0]:
+            name, key = mismatched[0]
+            return False, f"{name} and {parent.table}.{key} have different types"
+        match = " AND ".join(
+            f"p.{_quote(key)}=c.{_quote(name)}"
+            for name, key in zip(reference.columns, parent.key, strict=True)
+        )
+        where = f"{scope} AND NOT EXISTS (SELECT 1 FROM {_quote(parent.table)} p WHERE {match})"
         orphans = int(self._one(f"SELECT count(*) {where}", params)[0])
         if not orphans:
             if window is None:
@@ -1128,10 +1154,10 @@ class DuckDBStore:
                     )
                 elif action.operation is Operation.REPLACE_WINDOW:
                     assert contract.window_column is not None and action.window is not None
+                    inside, bounds = _inside(_quote(contract.window_column), action.window)
                     db.execute(
-                        f"UPDATE {history} SET __dogana_until=? WHERE __dogana_until IS NULL "
-                        f"AND {_quote(contract.window_column)} BETWEEN ? AND ?",
-                        [sequence, *action.window],
+                        f"UPDATE {history} SET __dogana_until=? WHERE __dogana_until IS NULL AND {inside}",
+                        [sequence, *bounds],
                     )
             inserted = target if switched else _quote(candidate)
             db.execute(f"INSERT INTO {history} SELECT *, ?, NULL FROM {inserted}", [sequence])

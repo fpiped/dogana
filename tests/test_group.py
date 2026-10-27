@@ -93,9 +93,15 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
         outcomes = tuple(Check(r.name, passed) for r in Gate.requirements(c, manifest))
         return Gate.evaluate(Ledger(c), manifest, outcomes, now=at(30))
 
-    assert Gate.together((alone(ORDERS, 18), alone(LINES, 18))) == Check(
-        "together", True, "order_lines, orders as of 2026-10-18T00:00:00+00:00"
+    both = (alone(ORDERS, 18), alone(LINES, 18))
+    passed = Gate.together(both)
+    assert passed.passed and passed.detail.startswith(
+        "order_lines, orders as of 2026-10-18T00:00:00+00:00, delivery "
     )
+    assert passed == Gate.delivered(tuple((r.ledger.contract.table, r.manifest) for r in reversed(both)))
+    assert passed != Gate.together(both, (LINE,))
+    later = Manifest("orders", "full", at(18), rows=1, schema_hash=ORDERS.schema_hash)
+    assert passed != Gate.delivered((("orders", later), ("order_lines", both[1].manifest)))
     assert Gate.together((alone(ORDERS, 18), alone(LINES, 19))) == Check(
         "together",
         False,
@@ -175,3 +181,11 @@ def test_a_reference_is_checked_only_where_an_orphan_would_disprove_the_shared_b
     parent_changes = Manifest("orders", "since", at(19), since=at(18), schema_hash=ORDERS.schema_hash)
     complete = {**exact, "orders": full(ORDERS, 18).apply(parent_changes)}
     assert group.unchecked(LINE, complete, lines) is None
+
+
+def test_planning_together_ignores_start_at_once_a_keyless_table_has_evidence():
+    shapes = {"full": Shape.full(cost=100), "append": Shape.append(cost=1)}
+    events = Contract("events", (), shapes, start_at=at(25))
+    proven = Ledger(events).apply(Manifest("events", "full", at(18), rows=0))
+    requests = plan_together(Group((ORDERS, events)), {"orders": full(ORDERS, 18), "events": proven}, at(19))
+    assert {r.until for r in requests.values()} == {at(19)}

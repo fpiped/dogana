@@ -85,7 +85,7 @@ def deliver(store: Store, contract: Contract, source: object, manifest: Manifest
     except BaseException as error:
         held = {} if candidate is None else {contract.table: candidate}
         members = [(contract, source, manifest)]
-        return _recover(store, members, held, {contract.table: checks}, {}, error, now)[contract.table]
+        return _recover(store, members, held, {contract.table: checks}, error, now)[contract.table]
 
 
 def _recover(
@@ -93,29 +93,22 @@ def _recover(
     members: list[tuple[Contract, object, Manifest]],
     candidates: Mapping[str, str],
     checks: Mapping[str, tuple[Check, ...]],
-    attempted: Mapping[str, Receipt],
     error: BaseException,
     now: datetime,
+    group: Group | None = None,
+    attempted: Mapping[str, Receipt] | None = None,
 ) -> dict[str, Receipt]:
     """After a failure: return what committed, raise what no protocol rule decides, refuse the rest."""
-    cleanup_error: Exception | None = None
-    for candidate in candidates.values():
-        try:
-            _call(store.abort, candidate)
-        except Exception as exc:
-            cleanup_error = exc
+    cleanup_error = _abort_all(store, candidates)
     if not isinstance(error, Exception):
         raise error
     committed = _accepted(store, members)
+    if group is not None and any(receipt is not None for receipt in committed.values()):
+        return _settle(store, group, members, committed, attempted, error, now)
     if all(receipt is not None for receipt in committed.values()):
         for contract, _, _ in members:
             _call(store.load_ledger, contract)
         return cast(dict[str, Receipt], committed)
-    accepted = [table for table, receipt in committed.items() if receipt is not None]
-    if any(committed[table] == attempted.get(table) for table in accepted):
-        raise InconsistentPublication("a group publication committed only some of its tables") from error
-    if accepted:
-        raise StoreError(f"another delivery accepted {', '.join(accepted)} meanwhile") from error
     if cleanup_error is not None:
         raise StoreError("candidate cleanup failed") from cleanup_error
     if not isinstance(error, (InvalidContract, RejectedDelivery)):
@@ -131,6 +124,41 @@ def _recover(
         )
         _call(store.publish, None, refused[contract.table])
     return refused
+
+
+def _abort_all(store: Store, candidates: Mapping[str, str]) -> Exception | None:
+    """Try every abort, returning the last failure."""
+    failure: Exception | None = None
+    for candidate in candidates.values():
+        try:
+            _call(store.abort, candidate)
+        except Exception as exc:
+            failure = exc
+    return failure
+
+
+def _settle(
+    store: Store,
+    group: Group,
+    members: list[tuple[Contract, object, Manifest]],
+    committed: Mapping[str, Receipt | None],
+    attempted: Mapping[str, Receipt] | None,
+    error: Exception,
+    now: datetime,
+) -> dict[str, Receipt]:
+    """A failed group delivery whose tables were accepted anyway is decided as a replay, whoever committed."""
+    expected = Gate.delivered(tuple((c.table, m) for c, _, m in members), group.references)
+    accepted = {table: receipt for table, receipt in committed.items() if receipt is not None}
+    if len(accepted) < len(members) and any(expected in receipt.checks for receipt in accepted.values()):
+        raise InconsistentPublication("a group publication committed only some of its tables") from error
+    if len(accepted) == len(members) and all(
+        receipt == (attempted or {}).get(t) for t, receipt in accepted.items()
+    ):
+        for contract, _, _ in members:
+            _call(store.load_ledger, contract)
+        return accepted
+    ledgers = {contract.table: _base(store, contract, manifest) for contract, _, manifest in members}
+    return _replay_together(store, group, members, committed, ledgers, now)
 
 
 def _together(store: Store) -> TogetherStore:
@@ -167,7 +195,7 @@ def deliver_together(
                 checks[table] = _call(store.check, candidates[table], contract, manifest, requirements)
             outcomes = checks.get(table, ())
             alone.append(Gate.evaluate(ledgers[table], manifest, outcomes, now=now, source=described[table]))
-        joint: tuple[Check, ...] = (Gate.together(tuple(alone)),)
+        joint: tuple[Check, ...] = (Gate.together(tuple(alone), group.references),)
         if joint[0].passed and group.references:
             joint += (_call(together.check_references, group, candidates),)
         for contract, _, manifest in members:
@@ -179,13 +207,14 @@ def deliver_together(
             _call(together.publish_together, group, tuple((candidates[t], receipts[t]) for t in group.tables))
             return receipts
     except BaseException as error:
-        return _recover(store, members, candidates, checks, receipts, error, now)
+        return _recover(store, members, candidates, checks, error, now, group, receipts)
     try:
-        for table, receipt in receipts.items():
-            _call(store.publish, candidates.pop(table, None), receipt)
+        for receipt in receipts.values():
+            _call(store.publish, None, receipt)
     finally:
-        for candidate in candidates.values():
-            _call(store.abort, candidate)
+        failure = _abort_all(store, candidates)
+    if failure is not None:
+        raise StoreError("candidate cleanup failed") from failure
     return receipts
 
 
@@ -201,28 +230,29 @@ def _replay_together(
     ledgers: Mapping[str, Ledger],
     now: datetime,
 ) -> dict[str, Receipt]:
-    """A group replays only what one publication of this group accepted; otherwise every table is refused."""
-    earlier = [receipt for receipt in previous.values() if receipt is not None]
-    # Accepted together, each receipt carries the joint check naming exactly these tables at one boundary.
-    expected = Gate.together(tuple(earlier))
-    references = {next((c for c in receipt.checks if c.name == "references"), None) for receipt in earlier}
-    whole = (
-        len(earlier) == len(members)
-        and expected.passed
-        and all(expected in receipt.checks for receipt in earlier)
-        and (not group.references or (len(references) == 1 and None not in references))
-    )
-    if whole:
-        return {
-            contract.table: _replay(store, contract, source, receipt, ledgers[contract.table], now)
+    """A group replays only one delivery of these files under these references; otherwise all are refused."""
+    expected = Gate.delivered(tuple((c.table, m) for c, _, m in members), group.references)
+    earlier = {table: receipt for table, receipt in previous.items() if receipt is not None}
+    accepted = ", ".join(sorted(earlier))
+    detail = f"a group replays whole, and {accepted} was not accepted together with this group"
+    if len(earlier) == len(members) and all(expected in receipt.checks for receipt in earlier.values()):
+        replays = {
+            contract.table: _replay(
+                store, contract, source, earlier[contract.table], ledgers[contract.table], now
+            )
             if manifest.content_hash is not None
-            else replace(receipt, outcome=Outcome.REPLAYED)
-            for (contract, source, manifest), receipt in zip(members, earlier, strict=True)
+            else replace(earlier[contract.table], outcome=Outcome.REPLAYED)
+            for contract, source, manifest in members
         }
-    accepted = ", ".join(sorted(table for table, receipt in previous.items() if receipt is not None))
-    refused: dict[str, Receipt] = {}
+        refused: dict[str, Receipt] = {table: r for table, r in replays.items() if not r.accepted}
+        if not refused:
+            return replays
+        detail = f"a group replays whole, and {', '.join(sorted(refused))} differs from what was accepted"
+    else:
+        refused = {}
     for contract, source, manifest in members:
-        detail = f"a group replays whole, and {accepted} was not accepted together with this group"
+        if contract.table in refused:
+            continue
         refused[contract.table] = Gate.reject(
             ledgers[contract.table],
             manifest,
@@ -231,4 +261,4 @@ def _replay_together(
             source=_description(source),
         )
         _call(store.publish, None, refused[contract.table])
-    return refused
+    return {contract.table: refused[contract.table] for contract, _, _ in members}

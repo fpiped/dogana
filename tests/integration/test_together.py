@@ -1,11 +1,10 @@
-from datetime import UTC
+from datetime import UTC, date
 
 import pytest
 
 from dogana import (
     Gate,
     Group,
-    InconsistentPublication,
     InvalidContract,
     Manifest,
     Reference,
@@ -17,7 +16,7 @@ from dogana.reference.duckdb import DuckDBStore
 from dogana.reference.files import FileDrop, FilePattern, ingest_together
 from tests.integration.support import csv_file
 from tests.memory_store import MemoryStore
-from tests.support import COLUMNS, FULL, SINCE, at, contract
+from tests.support import COLUMNS, FULL, SINCE, WINDOW, at, contract
 
 LINE_COLUMNS = {"id": "int", "order_id": "int", "day": "date", "value": "str"}
 ORDERS = contract("orders", shapes={"full": FULL, "since": SINCE})
@@ -175,19 +174,174 @@ def test_the_files_of_a_group_are_ingested_together(tmp_path):
             ingest_together(GROUP, [files[0], files[0]], now=at(20))
 
 
-def test_a_table_another_delivery_accepts_meanwhile_is_a_store_error_not_an_inconsistency(monkeypatch):
+@pytest.mark.parametrize("meanwhile", ["alone", "together"])
+def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypatch, meanwhile):
     with DuckDBStore(":memory:") as store:
         deliveries = {"orders": full(ORDERS, [order(1)]), "order_lines": full(LINES, [line(10, 1)])}
         answer = store.check_references
 
-        def meanwhile(group, candidates):
+        def race(group, candidates):
             result = answer(group, candidates)
-            assert deliver(store, ORDERS, *deliveries["orders"], at(20)).accepted
+            monkeypatch.setattr(store, "check_references", answer)
+            if meanwhile == "alone":
+                assert deliver(store, ORDERS, *deliveries["orders"], at(21)).accepted
+            else:
+                assert all(r.accepted for r in deliver_together(store, GROUP, deliveries, at(21)).values())
             return result
 
-        monkeypatch.setattr(store, "check_references", meanwhile)
-        with pytest.raises(StoreError, match="another delivery accepted orders meanwhile") as raised:
-            deliver_together(store, GROUP, deliveries, at(20))
-        assert not isinstance(raised.value, InconsistentPublication)
-        assert not store._candidates and store.read("orders") == [order(1)]
-        assert not store._exists("order_lines")
+        monkeypatch.setattr(store, "check_references", race)
+        receipts = deliver_together(store, GROUP, deliveries, at(20))
+        assert not store._candidates
+        if meanwhile == "alone":
+            assert not any(r.accepted for r in receipts.values())
+            assert receipts["order_lines"].checks[-1].detail == (
+                "a group replays whole, and orders was not accepted together with this group"
+            )
+            assert not store._exists("order_lines")
+        else:
+            assert all(r.replayed and r.received_at == at(21) for r in receipts.values())
+
+
+def test_a_replay_is_one_delivery_of_these_files_under_these_references():
+    from dogana.reference._sources import _RowSource
+
+    shapes = {"full": FULL, "daily": WINDOW}
+    # Each window delivery empties its day, so shrink tolerance stays out of the way.
+    orders = contract("orders", shapes=shapes, max_shrink_fraction=None)
+    lines = contract("order_lines", shapes=shapes, columns=LINE_COLUMNS, max_shrink_fraction=None)
+    group = Group((orders, lines), (Reference("order_lines", ("order_id",), "orders"),))
+
+    def daily(c, columns, day):
+        window = (at(day).date(), at(day).date())
+        manifest = Manifest(c.table, "daily", at(19), window=window, rows=0, schema_hash=c.schema_hash)
+        return _RowSource([], columns), manifest
+
+    with DuckDBStore(":memory:") as store:
+        baseline = {"orders": full(orders, [order(1)]), "order_lines": full(lines, [line(10, 1)])}
+        assert all(r.accepted for r in deliver_together(store, group, baseline, at(20)).values())
+        first = {"orders": daily(orders, COLUMNS, 19), "order_lines": daily(lines, LINE_COLUMNS, 19)}
+        second = {"orders": daily(orders, COLUMNS, 18), "order_lines": daily(lines, LINE_COLUMNS, 18)}
+        for deliveries in (first, second):
+            assert all(r.accepted for r in deliver_together(store, group, deliveries, at(20)).values())
+        mixed = {"orders": first["orders"], "order_lines": second["order_lines"]}
+        assert not any(r.accepted for r in deliver_together(store, group, mixed, at(20)).values())
+        assert not any(
+            r.accepted for r in deliver_together(store, Group((orders, lines)), first, at(20)).values()
+        )
+        assert all(r.replayed for r in deliver_together(store, group, first, at(20)).values())
+
+
+def test_a_group_replay_with_one_file_changed_refuses_every_table(tmp_path):
+    from dogana.reference._sources import _file_digest, _FileSource
+
+    with DuckDBStore(":memory:") as store:
+        files, deliveries = {}, {}
+        for c, columns, rows in ((ORDERS, COLUMNS, [order(1)]), (LINES, LINE_COLUMNS, [line(10, 1)])):
+            files[c.table] = csv_file(tmp_path, f"{c.table}.csv", rows, columns)
+            manifest = Manifest(
+                c.table,
+                "full",
+                at(18),
+                rows=1,
+                schema_hash=c.schema_hash,
+                content_hash=_file_digest(files[c.table]),
+            )
+            deliveries[c.table] = (_FileSource(files[c.table], columns), manifest)
+        assert all(r.accepted for r in deliver_together(store, GROUP, deliveries, at(20)).values())
+        csv_file(tmp_path, "order_lines.csv", [line(10, 1), line(11, 1)], LINE_COLUMNS)
+        receipts = deliver_together(store, GROUP, deliveries, at(20))
+        assert not any(r.accepted for r in receipts.values())
+        assert receipts["orders"].checks[-1].detail == (
+            "a group replays whole, and order_lines differs from what was accepted"
+        )
+
+
+def test_a_candidate_stays_bound_to_the_contract_it_was_first_checked_under():
+    with DuckDBStore(":memory:") as store:
+        rows, manifest = full(ORDERS, [order(1)])
+        held = store.hold(rows, manifest)
+        store.check(held, ORDERS, manifest, Gate.requirements(ORDERS, manifest))
+        other = contract("orders", shapes={"full": FULL})
+        with pytest.raises(StoreError, match="different manifest"):
+            store.check(held, other, manifest, Gate.requirements(other, manifest))
+
+
+def test_stores_on_one_file_share_its_lock_whatever_spelling_names_it(tmp_path):
+    import os
+
+    lower, upper = tmp_path / "group.duckdb", tmp_path / "GROUP.duckdb"
+    with DuckDBStore(lower) as first:
+        if not os.path.exists(upper) or not os.path.samefile(lower, upper):
+            pytest.skip("the file system tells letter case apart")
+        with DuckDBStore(upper) as second:
+            assert first._lock is second._lock
+
+
+def test_closing_a_store_whose_rollback_failed_releases_the_file_for_other_threads(tmp_path):
+    from threading import Thread
+
+    path = tmp_path / "group.duckdb"
+    store, other = DuckDBStore(path), DuckDBStore(path)
+    rows, manifest = full(ORDERS, [order(1)])
+    held = store.hold(rows, manifest, ORDERS)
+    store.check(held, ORDERS, manifest, Gate.requirements(ORDERS, manifest))
+    store._open((held,))
+    connection = store.connection
+
+    class RollbackFault:
+        def execute(self, sql, *args):
+            if sql == "ROLLBACK":
+                raise OSError("rollback unavailable")
+            return connection.execute(sql, *args)
+
+        def close(self):
+            connection.close()
+
+    store.connection = RollbackFault()
+    with pytest.raises(StoreError, match="rollback unavailable"):
+        store.close()
+    answered = []
+    reader = Thread(target=lambda: answered.append(other.receipts()))
+    reader.start()
+    reader.join(5)
+    assert answered == [()]
+    other.close()
+
+
+def test_a_window_to_the_end_of_the_dates_covers_values_past_what_python_can_name(tmp_path):
+    shapes = {"full": FULL, "daily": WINDOW}
+    moves = contract("moves", shapes=shapes, max_shrink_fraction=None)
+    path = tmp_path / "far.csv"
+    path.write_text("id,day,value\n1,infinity,far\n2,2026-10-18,near\n")
+    with DuckDBStore(":memory:") as store:
+        from dogana.reference._sources import _FileSource
+
+        first = Manifest("moves", "full", at(18), rows=2, schema_hash=moves.schema_hash)
+        assert deliver(store, moves, _FileSource(path, COLUMNS), first, at(20)).accepted
+        window = (date(2026, 1, 1), date.max)
+        empty = Manifest("moves", "daily", at(19), window=window, rows=0, schema_hash=moves.schema_hash)
+        assert deliver(
+            store, moves, _FileSource(csv_file(tmp_path, "none.csv", []), COLUMNS), empty, at(20)
+        ).accepted
+        assert store.connection.execute("SELECT count(*) FROM moves").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("values", "kind"),
+    [([None, None], "str"), ([1.0, None], "float")],
+)
+def test_a_reference_compares_values_not_type_names(values, kind):
+    from dogana.reference._sources import _RowSource
+
+    columns = {**LINE_COLUMNS, "order_id": kind}
+    lines = contract("order_lines", shapes={"full": FULL, "since": SINCE}, columns=columns)
+    rows = [{**line(10 + i, None), "order_id": value} for i, value in enumerate(values)]
+    with DuckDBStore(":memory:") as store:
+        deliveries = {
+            "orders": full(ORDERS, [order(1)]),
+            "order_lines": (_RowSource(rows, columns), full(lines, rows)[1]),
+        }
+        receipts = deliver_together(store, Group((ORDERS, lines), GROUP.references), deliveries, at(20))
+        assert all(r.accepted for r in receipts.values()), [
+            c for c in receipts["orders"].checks if not c.passed
+        ]

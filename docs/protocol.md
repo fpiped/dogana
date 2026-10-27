@@ -355,7 +355,8 @@ group and decides them as one delivery:
 1. Each table runs the steps of a single delivery up to its own decision: replay lookup, preflight,
    `hold` and `check`.
 2. The `together` check passes when every manifest has the same `produced_at` and every table is
-   accepted on its own.
+   accepted on its own. Its detail names the delivery: a digest of every table's manifest identity
+   and the group's references, so a receipt carrying it was accepted with exactly those files.
 3. With references and a passed `together` check, the store answers one `references` check on the
    rows that would result from every table's plan. `Group.unchecked` names the references the
    delivery cannot test: a reference is tested only when the child's delivered coverage ends exact
@@ -363,18 +364,21 @@ group and decides them as one delivery:
    coverage was live at `p` and every row it can name is present, so a row whose reference columns
    are all non-null and name no parent row proves the premise false: the files were not one read at
    `p`, or the source does not keep the rule. An untested reference passes, and the check's detail
-   says why, so an honest delivery is never refused for a reference.
+   says why, so an honest delivery is never refused for a reference. Values compare as values, int
+   and float alike; a reference column of another type than its parent key column is a declaration
+   error, and fails the check as soon as one row names a parent.
 4. Both checks join every table's receipt, through `Gate.evaluate(..., joint=checks)`. If any
    receipt is a rejection, every table is rejected and records its refusal; otherwise
    `publish_together` publishes every table's rows, ledger and receipt in one atomic step.
 
 Each table keeps its own receipts, publication chain and reconstruction, and a group adds no wire
-kind. A group replays whole or is refused whole: when every manifest was accepted in one publication
-of this group, every receipt replays; when any was accepted otherwise, alone or in another group,
-every table is refused, and the group needs a new read. A failure after the commit returns the
-committed receipts. When only some tables are accepted after a failure, a commit of this delivery
-that published part of the group raises `InconsistentPublication`, and a table that another delivery
-accepted meanwhile raises `StoreError`.
+kind. A group replays whole or is refused whole: when every manifest was accepted in one delivery of
+these files under these references, every receipt replays, provided every declared content hash
+still matches the bytes; otherwise, when any was accepted alone, in another delivery or under other
+references, every table is refused, and the group needs a new read. A failure after its own commit
+returns the committed receipts. A failed delivery whose tables another delivery accepted meanwhile is
+decided the same way, as a replay or a refusal, so the outcome does not depend on timing. Only a
+group publication that committed some of its tables and not others raises `InconsistentPublication`.
 
 The `together` check does not require the result to be exact; the shapes decide that, over what
 each delivery covers: a full delivery everywhere, a window delivery inside its window, so pass the
@@ -408,9 +412,10 @@ stamps every manifest with that snapshot's instant.
 1. answer the references check on the rows the candidates would produce, without changing published
    rows, only for candidates that passed their own checks, and only for the references
    `Group.unchecked` leaves to test;
-2. verify every receipt against its own checks, the `together` check recomputed from them, and,
-   when the group has references, the references check it answered for that group's references on
-   exactly those candidates after their last check; without that answer, refuse to publish;
+2. verify every receipt against its own checks, the `together` check recomputed from them and the
+   group's references, and, when the group has references, the references check it answered for
+   those references on exactly those candidates after their last check; without that answer, refuse
+   to publish;
 3. publish every entry, or none, in one atomic step, under the six obligations of a single
    publication.
 

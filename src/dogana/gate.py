@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from .contract import (
     AppendInterval,
@@ -22,6 +25,9 @@ from .contract import (
 from .errors import InvalidContract, RejectedDelivery
 from .ledger import Claims, Ledger, Region
 from .wire import Wire, utc
+
+if TYPE_CHECKING:
+    from .group import Reference
 
 
 class Operation(StrEnum):
@@ -208,7 +214,7 @@ class Gate:
         return (Check("manifest", True), Check("receiver_time", True), Check("transition", True))
 
     @staticmethod
-    def together(alone: tuple[Receipt, ...]) -> Check:
+    def together(alone: tuple[Receipt, ...], references: tuple[Reference, ...] = ()) -> Check:
         """The joint check of a group: one read boundary, and every table accepted on its own."""
         reads = sorted((receipt.ledger.contract.table, receipt.manifest.produced_at) for receipt in alone)
         refused = sorted(receipt.ledger.contract.table for receipt in alone if not receipt.accepted)
@@ -217,8 +223,22 @@ class Gate:
             return Check("together", False, f"read boundaries differ: {boundaries}")
         if refused:
             return Check("together", False, f"refused with {', '.join(refused)}")
-        tables = ", ".join(table for table, _ in reads)
-        return Check("together", True, f"{tables} as of {reads[0][1].isoformat()}")
+        return Gate.delivered(tuple((r.ledger.contract.table, r.manifest) for r in alone), references)
+
+    @staticmethod
+    def delivered(reads: tuple[tuple[str, Manifest], ...], references: tuple[Reference, ...] = ()) -> Check:
+        """The passed joint check of these manifests decided together under these references.
+
+        Its digest names the delivery, so a receipt carrying it was accepted with exactly these files.
+        """
+        tables = ", ".join(sorted(table for table, _ in reads))
+        boundary = min(manifest.produced_at for _, manifest in reads)
+        named = {
+            "manifests": sorted([table, manifest.identity] for table, manifest in reads),
+            "references": sorted(str(reference) for reference in references),
+        }
+        digest = sha256(json.dumps(named, separators=(",", ":")).encode()).hexdigest()
+        return Check("together", True, f"{tables} as of {boundary.isoformat()}, delivery {digest}")
 
     @staticmethod
     def reject(
