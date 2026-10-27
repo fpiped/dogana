@@ -1,20 +1,23 @@
-/* The wordmark's colours: navy outline for the header, blue for links. */
+/* The brand kit's palette. Navy carries the header and text, deep blue the links on light pages
+   (9.6:1 on white), pale blue the links on dark ones (8.9:1 on slate). Blue reaches only 4.2:1 on
+   white, below the 4.5:1 body text needs, so it is kept for hover and focus. */
 :root {
-  --md-primary-fg-color: #172238;
-  --md-primary-fg-color--light: #355eaa;
-  --md-primary-fg-color--dark: #0e1626;
-  --md-accent-fg-color: #355eaa;
+  --md-primary-fg-color: #092849;
+  --md-primary-fg-color--light: #2f80c9;
+  --md-primary-fg-color--dark: #061c33;
+  --md-accent-fg-color: #2f80c9;
 }
 
 [data-md-color-scheme="default"] {
-  --md-typeset-a-color: #355eaa;
+  --md-typeset-a-color: #064778;
 }
 
 [data-md-color-scheme="slate"] {
-  --md-typeset-a-color: #7aa6e8;
-  --md-accent-fg-color: #7aa6e8;
+  --md-hue: 210;
+  --md-typeset-a-color: #91c7ed;
+  --md-accent-fg-color: #eaf5fd;
 }
 
 .md-header__button.md-logo img {
-  height: 1.6rem;
+  height: 1.8rem;
 }
