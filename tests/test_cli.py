@@ -237,7 +237,8 @@ def test_claims_prints_each_region_and_the_instant_the_table_is_exact_at(tmp_pat
     assert main(["claims", str(path), "--at", "2026-10-28T06:00:01Z", "--limit-days", "2", *window]) == 0
     assert capsys.readouterr().out.endswith("orders: expired; exact as of 2026-10-26T06:00:00+00:00\n")
     for days in ("-1", "-1e-12", "inf", "nan", "1e308"):
-        assert main(["claims", str(path), "--limit-days", days]) == 2
+        # Joined with "=", so that argparse on every supported Python reads "-1e-12" as the value.
+        assert main(["claims", str(path), f"--limit-days={days}"]) == 2
     assert main(["claims", str(path), "--at", "2030-01-01T00:00:00Z", *window]) == 0
     assert capsys.readouterr().out.endswith("orders: complete; exact as of 2026-10-26T06:00:00+00:00\n")
 
