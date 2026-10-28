@@ -48,7 +48,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dogana = ["py.typed"]
+dogana = ["py.typed", ".agents/skills/dogana/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "examples/duckdb"]

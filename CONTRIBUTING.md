@@ -14,3 +14,4 @@ also validates every public Wire.to_dict() result, through to_json() too; subpro
 calls, direct encode() or _document() calls and identity forms bypass it.
 A release is a GitHub release whose tag, vX.Y.Z, names the version in pyproject.toml; the release
 workflow builds the package and publishes it to PyPI.
+A change to the public API or to a rule updates src/dogana/.agents/skills/dogana/SKILL.md too.

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The package ships a skill for coding agents, `dogana/.agents/skills/dogana/SKILL.md`: the rules no
+  check can enforce (the instant to declare, a window column that never changes, honest shapes,
+  counts from the export, one snapshot for tables read together), a contract, the shapes and the
+  calls. Its code runs in the tests.
+- The documentation site serves `llms.txt`, `llms-full.txt` and every page as Markdown.
+
 ## 0.5.0 (2026-10-27)
 
 The package never parses a data file. The DuckDB store and the file drop leave it for the

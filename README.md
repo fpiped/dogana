@@ -95,6 +95,10 @@ manifest as JSON in any language, or with `dogana manifest`.
 dogana is in beta: the manifest and ledger format may still change before 1.0. If all your sources
 have change data capture with deletes, you already know which rows to trust; dogana is for
 everything else.
+
+Coding agents find dogana's rules in the installed package, at
+`dogana/.agents/skills/dogana/SKILL.md`, and the documentation as Markdown at
+[llms.txt](https://fpiped.github.io/dogana/llms.txt).
 <!-- --8<-- [end:body] -->
 
 ## Learn more
