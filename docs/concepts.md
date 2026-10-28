@@ -1,65 +1,51 @@
 # Concepts
 
-dogana from the beginning, one idea at a time, each with an example. The [protocol](protocol.md)
-specifies the same ideas precisely.
+dogana from the beginning, each idea with an example. The [protocol](protocol.md) states the same
+rules precisely.
 
 ## The problem
 
-A source system (an ERP, a SaaS API, a database you do not own) has a table that changes over
-time. Each file it sends is a photograph of part of that table at one instant, the **read
-boundary** `produced_at`. What the photograph proves depends on how it was taken:
+A source (an ERP, a SaaS API, a database you do not own) has a table that changes. Each file it
+sends shows part of that table at one instant, its **read boundary** `produced_at`, and proves what
+its kind of read proves:
 
-- a full dump: every row is present, and every row missing from it was deleted;
-- every order dated in the last 30 days: the same, for those 30 days of orders only;
+- a full dump: every row is here, and every row missing was deleted;
+- every order dated in the last 30 days: the same, for those days only;
 - every row changed since yesterday: nothing new or updated is missing; nothing about deletions.
 
-Once loaded into one table, a row is just a row: nobody remembers which file proved what. dogana
-keeps that record beside the rows, and rejects any file that would make it lie.
-
-"Proves" means: proves if the sender read the source as its manifest declares. dogana checks each
-file against its declaration (rows, counts, window, bytes), never against the source. A full dump
-that silently left out rows, with a count to match, passes.
+Once loaded, a row is just a row, and nobody remembers which file proved what. dogana keeps that
+record beside the rows and refuses any file that would make it lie. "Proves" always means: if the
+sender read the source as its manifest declares. dogana checks files against declarations, never
+against the source.
 
 ## Two dates
 
-For every part of the table, dogana keeps two instants:
+For every part of a table dogana keeps two instants:
 
 - **complete as of** (`c`): every row the source had at `c` is here;
-- **deletions as of** (`d`): no row the source deleted before `d` is still here; one deleted after
-  `d` may be.
+- **deletions as of** (`d`): no row the source deleted before `d` is still here.
 
-`d` is never later than `c`. When they are equal, that part is exactly the source at that instant.
-When `c` is later, the part is **patched**: every row is here, plus possibly some the source has
-deleted since `d`.
-
-A full dump on Sunday gives (Sunday, Sunday). Monday's changes, without deletions, move `c` to
-Monday and leave `d` on Sunday. The rule behind every decision: **a delivery never raises a date
-above what it proves**.
+`d` is never later than `c`. When they are equal, that part is exactly the source at that instant;
+when `c` is later, it is **patched**: rows deleted since `d` may remain. A full dump on Sunday gives
+(Sunday, Sunday); Monday's changes without deletions give (Monday, Sunday). The rule behind every
+decision: **a delivery never raises a date above what it proves**.
 
 ## Which instant to declare
 
-`produced_at` is the instant of the source the file shows, never when the file was written, sent
-or received. A nightly job scheduled for midnight queries the source at 02:00 and finishes the file
-at 02:40:
+`produced_at` is the instant of the source the file shows. A nightly job scheduled at midnight
+queries at 02:00 and finishes the file at 02:40. It declares 02:00, the instant of its snapshot, or
+for a changes read the bound it selects, `updated_at <= 02:00`. Midnight would claim a row deleted
+at 01:00 is here; 02:40 would claim a row created at 02:10 is here.
 
-- it declares 02:00 when the query reads one snapshot taken then, and a changes read declares the
-  upper bound it selects, `updated_at <= 02:00`;
-- midnight, the scheduler's date, claims too much: a row deleted at 01:00 is not in the file, yet
-  "complete as of midnight" says it is here;
-- 02:40 claims too much too: a row created at 02:10 is not in the file either.
+A read that is not one snapshot, such as an API paged for forty minutes, shows no single instant.
+A transaction that stamps `updated_at = 01:59:58` and commits at 02:00:03 is invisible at 02:00; a
+keyed shape's `lookback` overlaps the next read to narrow that gap, without proving it closed.
 
-A read that is not one snapshot, such as an API paged for forty minutes, shows no single instant:
-declaring its start is wrong by the rows created or deleted while it ran. Read one snapshot when
-the source has one ([the settings](protocol.md#tables-together)). In a changes read, a transaction
-that stamps `updated_at = 01:59:58` and commits at 02:00:03 is invisible at 02:00; in a keyed
-contract a shape's `lookback` makes the planned next read overlap it, which narrows the gap without
-proving it closed. Every time carries its UTC offset.
+## The window column
 
-## Where the dates live: the window column
-
-The dates are kept per range of one column, the **window column**, not per row. Take `orders` with
-`order_date` as its window column, a full dump on Sunday (Oct 25), and on Tuesday (Oct 27) a file
-of every order dated Oct 25 to Oct 27:
+Dates are kept per range of one column, the **window column**, not per row. With `order_date` as
+window column, a full dump on Sunday (Oct 25) and on Tuesday a file of the orders dated Oct 25 to
+27:
 
 | Order dates | Complete as of | Deletions as of |
 |---|---|---|
@@ -67,56 +53,38 @@ of every order dated Oct 25 to Oct 27:
 | Oct 25 to Oct 27 | Tuesday | Tuesday |
 | from Oct 28 | Sunday | Sunday |
 
-Each piece is a **region**, and every possible `order_date` falls in exactly one. Before any
-delivery there is one region, **unknown**: not "there are no orders" but "nothing is proven here".
-A table without a window column has one region, the whole table.
+Each range is a **region**. Before any delivery there is one, **unknown**: nothing is proven there,
+which is not the same as empty. A table without a window column is one region.
 
-**The window column's value must never change for a row.** A creation, order, invoice or event
-date works; an update timestamp never does. Suppose `order_date` were `updated_at`:
+**A row's window value must never change**: an order, invoice or event date, never an update time.
+With `updated_at`, an order edited on Oct 20 leaves the September region, and a later file of
+September deletes it while no file carries it into October. No file can show this, so the rule is
+the receiver's to keep.
 
-1. Oct 1, full dump: order 7 has `updated_at = Sep 15`.
-2. Oct 20: order 7 is edited, and its `updated_at` becomes Oct 20.
-3. Oct 25, a file of the rows dated Sep 1 to Sep 30: order 7 is no longer in that range, so
-   replacing the range deletes it.
+## Shapes
 
-The table still claims "complete as of Oct 1", yet order 7 existed on Oct 1 and is gone: it moved
-between two regions proven at different instants, and neither file carried it. No single file
-shows that a value changed, so this rule is the receiver's to keep. "Rows updated in the last 30
-days" is a changes read, not a window.
-
-## What a file can prove: shapes
-
-A **shape** is a kind of file the receiver accepts, described by four answers:
-
-| Question | Answers |
-|---|---|
-| Which part of the table? (coverage) | the whole table (`all`), or a range of the window column, both ends included (`window`) |
-| Every current row, or only what changed? (completeness) | `complete`, or `changed_only` since a checkpoint |
-| How are deletions told? (deletions) | a missing row is deleted (`absence`, complete files only), the file marks deleted keys (`tombstone`), or nothing is said (`none`) |
-| Changed since what? (checkpoint) | nothing (`none`, complete files), a source time (`timestamp`), a token the source hands out with each read (`generation`), or an ordered integer such as a log position (`sequence`) |
+A **shape** is a kind of file the receiver accepts: the whole table or a window, every current row
+or only changes, deletions told by absence, by tombstones or not at all, and changes since a time, a
+token the source hands out, or a log position.
 
 | Source behavior | Shape | What it proves |
 |---|---|---|
 | A full export | `Shape.full()` | both dates, everywhere |
 | Every order dated in the last 30 days | `Shape.window(size=timedelta(days=30))` | both dates, for those dates |
-| One complete file per plant or per day | a window whose two ends are equal | both dates for that value; values never delivered stay unknown |
-| Rows with `updated_at` after the last read | `Shape.changes()` | complete as of this read; the deletions date does not move |
-| The same, plus the keys deleted since | `Shape.changes(deletions="tombstone")` | both dates, when the read starts no later than the current deletions date |
-| A change feed with a sync token | `Shape.feed()` | both dates, when each read starts from the token the previous one handed out |
-| CDC batches by log position or offset | `Shape.feed(checkpoint="sequence")` after a full snapshot | the same, each batch starting where the last one ended |
-| Immutable events with no key | `Shape.append()`, with `start_at` the instant history starts | both dates, when each read starts exactly where the last one ended |
+| One complete file per day or plant | a window with equal ends | both dates for that value |
+| Rows with `updated_at` after the last read | `Shape.changes()` | complete as of this read; deletions do not move |
+| The same, with the keys deleted since | `Shape.changes(deletions="tombstone")` | both dates, when the read starts no later than the deletions date |
+| A change feed with a sync token | `Shape.feed()` | both dates, when each read starts from the previous token |
+| CDC batches by log position | `Shape.feed(checkpoint="sequence")` after a full snapshot | the same, by position |
+| Immutable events without a key | `Shape.append()` from `start_at` | both dates, when each read starts where the last ended |
 
-A shape's **cost** says how expensive that file is to ask for, relative to the others (a full dump
-at 10 costs ten changes reads at 1). Only the planner uses it.
+A shape's **cost** tells the planner how expensive that file is to ask for.
 
 ## Deletions
 
-The hard part is **physical** deletions: the row disappears from the source, so no later export
-can contain it. A **soft delete** keeps the row and sets a flag: it is an update, carried like any
-other.
-
-A tombstone shape tells deletions in its own rows. The contract names a boolean **deleted column**;
-a row where it is true is a **tombstone**, which deletes its key and leaves its other values empty:
+Only **physical** deletions are hard: the row is gone, so no later export can show it. A
+**tombstone** shape names them in the file: a row whose boolean **deleted column** is true deletes
+its key, and its other values may be empty.
 
 ```text
 id,order_date,amount,deleted
@@ -124,30 +92,20 @@ id,order_date,amount,deleted
 9,,,true
 ```
 
-This file updates order 7 and deletes order 9. Its manifest declares `rows=1` and `tombstones=1`,
-never the keys, so it stays small whatever the volume. The deleted column is never published, and
-a file that deletes nothing may leave it out.
-
-A soft-deleting source may declare a tombstone shape, delivering its flag as the deleted column
-or keeping flagged rows as data, only when the soft delete also moves `updated_at` (or the changes
-read never selects the flagged row), nothing ever deletes physically (archiving, retention purges,
-legal erasure, cascades) and the flag lives on the table being loaded. Otherwise the honest shape says
-`deletions="none"`, and a periodic full dump heals the gap. Debezium's new-record-state transform
-rewrites deletes as rows with a boolean `__deleted`: that is a deleted column.
+Its manifest declares `rows=1` and `tombstones=1`, never the keys. A **soft delete**, a flag on a
+kept row, may serve as the deleted column only if it moves `updated_at` (or the changes read never
+selects the flagged row), nothing deletes physically (archiving, retention purges, legal erasure,
+cascades) and the flag is on this table; otherwise the shape says `deletions="none"` and a periodic
+full dump heals the gap. Debezium's new-record-state transform writes deletes as rows with a boolean
+`__deleted`: that is a deleted column.
 
 ## Writing a contract
 
-The receiver answers six questions per table:
-
-1. **Key**: the columns that identify a row; none for immutable events.
-2. **Window column**: a date that never changes for a row, when the source exports ranges of it;
-   otherwise none, and the table is one region.
-3. **Shapes**: one per kind of file the source can really produce, with its cost.
-4. **Deleted column**: the boolean that marks tombstones, when a shape has them.
-5. **Cursor column**: the `updated_at` or position a changes read selects on, so every row is
-   checked to lie in the declared interval.
-6. **Column hash**: the `schema_hash` of the columns, from the data contract that owns them (an
-   ODCS document, a dbt model, a column list), so a file with other columns is rejected.
+The receiver answers, per table: the **key**; the **window column**, if the source exports ranges of
+a date fixed per row; the **shapes** the source can really produce, with their costs; the **deleted
+column**, if a shape has tombstones; the **cursor column** a changes read selects on, so each row is
+checked against the declared interval; and the **column hash** from the data contract that owns the
+columns.
 
 ```python
 orders = Contract(
@@ -165,114 +123,87 @@ orders = Contract(
 )
 ```
 
-`types` lists only the columns dogana reads. `freshness` is the export cadence plus arrival slack,
-seven days by default; `max_shrink_fraction` rejects a complete file that removes more than half
-the rows it covers.
+`types` names only the columns dogana reads. `freshness`, seven days by default, is the cadence plus
+arrival slack; a complete file that removes more than half the rows it covers is refused.
 
-## A week, step by step
+With this contract, a `changes` file since Sunday, after Sunday's `full` and Tuesday's `last3`,
+proves the whole table as of its read. The same file since Monday is refused: an order dated Oct 10
+and changed on Sunday evening is in neither Sunday's file nor Monday's.
 
-With the contract above:
+## Delivering and reading
 
-- **Sunday, Oct 25, `full`**: the whole table is proven as of Sunday.
-- **Tuesday, Oct 27, `last3` for Oct 25 to Oct 27**: those days move to Tuesday, the rest stays at
-  Sunday (the table in the window column section).
-- **Wednesday, Oct 28, `changes` since Sunday**: it covers every order date and every deletion
-  since Sunday, so the whole table is proven as of Wednesday and the regions merge back into one.
-- **The same file, but since Monday: rejected.** Orders dated up to Oct 24 were proven only as of
-  Sunday. One that changed on Sunday evening is in neither file: Sunday's was taken before the
-  change, Wednesday's starts after it.
+The **gate** checks a file's **manifest** against the contract and the ledger (a changes file needs
+a proven base, a checkpoint leaves no gap), the **store** checks the rows (counts, keys, values,
+column hash, bytes, shrinkage), then publishes rows, dates and a **receipt** in one transaction, or
+records a refusal. The same manifest again is a **replay**, answered by its receipt. The **ledger**
+of regions is rebuilt from the receipts.
 
-## What happens to a file
-
-1. The sender writes a **manifest**: shape, read boundary, window or checkpoint, live rows,
-   tombstones and the SHA-256 of the bytes (`dogana manifest` or `Contract.manifest`).
-2. The **gate** checks the manifest against the contract and the ledger (a changes file needs a
-   proven base, a checkpoint must leave no gap), then has the **store** check the rows: counts,
-   keys, windows, cursor values, column hash, bytes, and how much a complete file shrinks the table.
-3. The store publishes the rows, the new dates and a **receipt** in one transaction, or records a
-   rejection and changes nothing. The same manifest again is a **replay**: it returns the original
-   receipt and publishes nothing.
-
-Receipts are the history; the **ledger**, the current regions and their dates, is rebuilt from
-them.
-
-## Reading the dates
-
-A reader asks the ledger for **claims** at its current time. Each region gets a **state**:
-
-| State | Meaning |
-|---|---|
-| unknown | nothing is proven there |
-| complete | both dates equal: the region is the source at that instant |
-| patched | complete as of a later date than deletions: deleted rows may remain |
-| expired | complete as of longer ago than the contract's freshness |
-
-A table's state is the worst of its regions (unknown, expired, patched, complete) and its dates
-the earliest. `Claims.combine` does the same across tables: a report joining them trusts its inputs
-no further than those dates, and the join itself is not certified. Questions with a "not" reverse
-which date matters: "items with no movement" over a patched movements table can miss an item,
-because a movement deleted at the source may still be here.
-
-The planner works the other way round: `plan_delivery` names the cheapest read that would establish
-the dates a reader needs, and `next_extraction` the next read of a shape.
+A reader asks the ledger for **claims** at its current time: each region is unknown, **complete**,
+patched or **expired** (older than the freshness), and a table takes its worst state and earliest
+dates. Questions with a "not" need the deletions date: "items
+with no movement" over patched movements can miss an item whose deleted movement remains.
+`plan_delivery` names the cheapest read that gives the dates a reader needs.
 
 ## Tables read together
 
-Orders and their lines are two tables, each proven on its own, and they can still disagree:
+A table is **exact at p** when every region has both dates at p: it holds exactly the rows the
+source had at p. If every table a query reads is exact at the same p, the query answers as the
+source would have at p, whatever it computes (a join, a `NOT EXISTS`, a total), because its inputs
+are the source's tables at p. `Claims.exact_as_of` names that instant, or none.
+
+Tables exact each on its own are not enough:
 
 | Time | Source | Delivery |
 |---|---|---|
-| 10:00 | | `orders` read |
-| 10:03 | order 42 created, with its line | |
-| 10:05 | | `order_lines` read, with order 42's line |
+| 10:00 | | `invoices` read: invoice 1 |
+| 10:03 | invoice 2 created, with its line 11 | |
+| 10:05 | | `invoice_lines` read: lines 10 and 11 |
 
-Both deliveries are correct, yet a join finds a line whose order is missing. `Claims.combine` gives
-10:00, an evidence date, not a picture of the source at 10:00: the 10:05 read holds rows created
-after 10:00.
+Invoices are exact at 10:00 and lines at 10:05, so the join finds line 11 without its invoice, and
+`exact_as_of` is none: the reader knows not to trust the join.
 
-A set of tables is the source at one instant when every region of every table has both dates at
-that instant. Then any query over them, a join, a `NOT EXISTS`, a total, answers as the source
-would have. Equal table dates are not enough, since a table's dates are its earliest region's.
-`Claims.exact_as_of` checks every region and names that instant, or none: here the tables are
-exact at 10:00 and 10:05, so there is no common instant, and the reader knows not to trust the
-join.
-
-To have one, read every table from one snapshot of the source, so every file carries its instant.
+One instant takes one read: every table from one snapshot, every manifest stamped with its instant.
 One transaction is not always one snapshot: at the default isolation level of most databases each
 statement sees the data as of its own start [5]; the [protocol](protocol.md#tables-together) lists
-the settings that give one. Then deliver the files together: a `Group` names the tables and the
-references between them, and `deliver_together` decides them as one delivery. If one file fails,
-no table changes; if all pass, every table is published in one step. `plan_together` names one
-read per table at one shared boundary.
+the settings that give one. The snapshot is the sender's word, like every declaration.
 
-A reference is checked only when a failure would prove something: when the lines file makes its
-coverage exact, deletions included, and the orders are complete over the whole table. Then a line
-naming a missing order proves the files were not one snapshot, or that the source does not keep
-the rule, and the whole delivery is refused. Otherwise the receipt says why it was not checked.
-Tables without one shared snapshot, from different systems or separate jobs, are delivered apart
-with `deliver`; stamping them with one read time would fabricate the instant.
+The receiver declares the tables as a `Group`, with the rules the source keeps between them as
+`Reference`s (each line names an invoice), and delivers them with `deliver_together`, which:
+
+1. checks each file as if it came alone;
+2. requires one `produced_at` for all;
+3. checks each reference, when a failure would prove something;
+4. publishes every table in one transaction, or none.
+
+A reference is checked only when an honest snapshot cannot fail it: the lines are exact at p where
+delivered, and the invoices complete as of p over the whole table. Then a line naming a missing
+invoice proves the files are not one snapshot, and every table is refused. Otherwise an honest
+delivery could fail it: patched lines may keep a line the source deleted with its invoice, and an
+invoice may sit in a region proven before it existed. So the check is skipped and the receipt says
+why. It catches orphans only: separate reads stamped with one instant pass when no line
+happens to be orphaned.
+
+Publishing in one step spares readers new lines beside old invoices, but the guarantee comes from
+the dates: a reader reads rows and ledgers under one publication and checks `exact_as_of`. Every
+later delivery must bring what it covers back to `(p, p)`: a complete file or a keyless append, or
+changes with tombstones covering every deletion since the deletions date. A window file does so only
+inside its window, so a reader of windows passes them to `Group.claims`. Changes without tombstones
+leave a table patched and the group without an instant; a table that did not change sends an empty
+changes file at p. `plan_together` names one read per table at one shared boundary.
 
 ## What it is not
 
-- Not change data capture: CDC transports changes; dogana accounts for what a delivered batch
-  proves. A CDC replica that already applies inserts, updates and deletes may not need it.
-- Not a scheduler or an extractor: the planner proposes reads, your job runs them.
-- Not a quality tool: it checks what bytes can prove (counts, keys, ranges, hashes), never whether
-  the source exported everything, nor business rules.
-- Not a stream processor: a micro-batch committed from a stream is one delivery; there are no
-  event-time windows or watermarks.
-- Not SQLMesh intervals, Iceberg snapshots or dbt snapshots: those record processed intervals,
-  table versions and row history; dogana records source evidence and deletion coverage.
+Not change data capture, a scheduler, an extractor, a quality tool or a stream processor; and not
+SQLMesh intervals, Iceberg snapshots or dbt snapshots, which record processed intervals, table
+versions and row history, not what the source's files proved.
 
 ## Related work
 
-The two dates are a dated form of two properties database research has long named. Motro split a
-database's integrity into completeness, every true fact is stored, and validity, every stored fact
-is true [1, 2]: complete as of speaks about the first, deletions as of about the part of the second
-that concerns rows the source deleted. Levy, then Razniewski and Nutt, studied statements that part
-of a table is complete, and when they make a query's answer complete [3, 4]. A region is such a
-statement, dated and maintained one delivery at a time; [tables read together](#tables-read-together)
-is its case where every part is exact at one instant.
+Motro split a database's integrity into completeness, every true fact is stored, and validity, every
+stored fact is true [1, 2]: complete as of dates the first, deletions as of the part of the second
+about deleted rows. Levy, then Razniewski and Nutt, studied statements that part of a table is
+complete and when they make a query's answer complete [3, 4]. A region is such a statement, dated;
+[tables read together](#tables-read-together) is its case where every part is exact at one instant.
 
 1. A. Motro. [Completeness Information and Its Application to Query Processing](https://www.vldb.org/conf/1986/P170.PDF).
    VLDB 1986, 170-178.
@@ -289,23 +220,14 @@ is its case where every part is exact at one instant.
 
 | Term | Meaning |
 |---|---|
-| Source | The system whose table is exported: an ERP, a SaaS API, a database. |
-| Sender | Whoever produces a file and its manifest from the source. |
-| Receiver | Whoever holds the contract, the store and the ledger, and decides on each file. |
-| Reader | Whoever asks the ledger how far to trust the rows. |
-| Contract | The receiver's declaration for one table: key, window, cursor and deleted columns, accepted shapes, freshness, shrink limit, column hash. |
-| Shape | A kind of file the receiver accepts: coverage, completeness, deletions, checkpoint, cost. |
-| Manifest | The sender's declaration of one file: shape, read boundary, window or checkpoint, live rows, tombstones, column hash, SHA-256. |
-| Read boundary | `produced_at`: the source instant the file shows. |
-| Window column | The date, fixed for each row, along which the dates are kept. |
-| Region | One range of the window column, with its two dates or unknown. |
-| Patched | Complete as of a later date than deletions: rows the source deleted may remain. |
-| Tombstone | A delivered row whose deleted column is true: its key is deleted. |
-| Gate | The checks that turn a manifest and its rows into acceptance or rejection. |
-| Store | Checks candidate rows, then publishes rows, ledger and receipt together. |
-| Receipt | The record of one decision: accepted, rejected or replayed, with its checks. |
-| Replay | The same manifest delivered again: the original receipt, nothing published. |
-| Ledger | Every region of a table with its dates, rebuilt from accepted receipts. |
-| Claims | The regions and their states at the reader's time. |
-| Group | Tables read from one snapshot, and the references between them. |
-| Reference | A rule the source keeps between two tables: each row of one names a row of the other. |
+| Sender, receiver, reader | Writes a file and its manifest; decides on it; asks how far to trust the rows. |
+| Contract, shape | The receiver's declaration of a table; a kind of file it accepts. |
+| Manifest | The sender's declaration of one file. |
+| Read boundary | `produced_at`, the source instant the file shows. |
+| Region | A range of the window column with its two dates, or unknown. |
+| Patched | Complete as of a later date than deletions. |
+| Exact at p | Both dates at p everywhere. |
+| Tombstone | A delivered row whose deleted column is true. |
+| Receipt, replay | The record of a decision; the same manifest again. |
+| Ledger, claims | Every region with its dates; their states at the reader's time. |
+| Group, reference | Tables read from one snapshot; a rule naming rows across them. |
