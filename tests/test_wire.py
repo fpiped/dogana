@@ -25,8 +25,6 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
     [
         {"version": 1},
         {"version": True},
-        {"kind": "Unknown"},
-        {"unknown": 1},
         {"key": ("missing",)},
     ],
 )

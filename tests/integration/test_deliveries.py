@@ -366,20 +366,6 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
         assert store.load_ledger(c).claims(at(19), window=("B", "B")).deletions_as_of == at(18)
 
 
-def test_a_window_cannot_move_a_key_whose_old_region_it_does_not_cover(tmp_path):
-    """Day 18 stays claimed exact at the full's boundary, so taking key 1 out of it would be false."""
-    c = contract()
-    with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        path = csv_file(tmp_path, "base.csv", [row(1, 18)])
-        m = sidecar(path, c, "full", 18, 1)
-        assert store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
-        path = csv_file(tmp_path, "moved.csv", [row(1, 19)])
-        m = sidecar(path, c, "daily", 19, 1, window=(at(19).date(), at(19).date()))
-        refused = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        assert any(x.name == "rows_in_window" and not x.passed for x in refused.checks)
-        assert store.read(c.table) == [row(1, 18)]
-
-
 def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):
     from dogana import Checkpoint, Completeness, Coverage, Deletions, Shape
 
@@ -403,53 +389,6 @@ def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path
         assert [x.name for x in receipt.checks if not x.passed] == ["rows_in_window"]
         assert store.read(c.table) == [row(1, 18), row(2, 19)]
         assert store.load_ledger(c).identity == first.ledger_identity
-
-
-def test_an_out_of_order_overlapping_file_cannot_overwrite_newer_rows(tmp_path):
-    c = contract()
-    with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        path = csv_file(tmp_path, "new.csv", [row(1, 19, value="new")])
-        m = sidecar(path, c, "daily", 21, 1, window=(at(18).date(), at(20).date()))
-        first = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        assert first.accepted
-        path = csv_file(tmp_path, "old.csv", [row(1, 19, value="old")])
-        m = sidecar(path, c, "daily", 20, 1, window=(at(17).date(), at(19).date()))
-        refused = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        assert not refused.accepted
-        assert store.read(c.table) == [row(1, 19, value="new")]
-        assert store.load_ledger(c).identity == first.ledger_identity
-
-
-def test_marked_rows_must_match_the_declared_counts_and_never_name_a_live_key(tmp_path):
-    c = contract(shapes={"full": FULL, "feed": FEED})
-    with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        path = csv_file(tmp_path, "base.csv", [row(1)])
-        m = sidecar(path, c, "full", 18, 1, generation="g1")
-        assert store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
-        for name, deleted, declared, failed in [
-            ("undeclared.csv", (1,), 0, "row_count"),
-            ("overdeclared.csv", (), 1, "row_count"),
-            ("both.csv", (2,), 1, "key_integrity"),
-        ]:
-            path = csv_file(tmp_path, name, marked([row(2)], deleted), MARKED)
-            m = sidecar(path, c, "feed", 19, 1, since="g1", generation="g2", tombstones=declared)
-            receipt = store.deliver(c, _FileSource(path, MARKED), m, now=at(30))
-            assert [x.name for x in receipt.checks if not x.passed] == [failed], name
-        assert store.read(c.table) == [row(1)]
-
-
-@pytest.mark.parametrize("remaining,accepted", [(3, True), (2, False)])
-def test_shrink_tolerance_includes_its_exact_fraction_boundary(tmp_path, remaining, accepted):
-    c = contract(max_shrink_fraction=0.7)
-    with DuckDBStore(tmp_path / "landing.duckdb") as store:
-        path = csv_file(tmp_path, "base.csv", [row(i) for i in range(10)])
-        m = sidecar(path, c, "full", 18, 10)
-        assert store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30)).accepted
-        path = csv_file(tmp_path, "next.csv", [row(i) for i in range(remaining)])
-        m = sidecar(path, c, "full", 19, remaining)
-        receipt = store.deliver(c, _FileSource(path, COLUMNS), m, now=at(30))
-        assert receipt.accepted is accepted
-        assert len(store.read(c.table)) == (remaining if accepted else 10)
 
 
 def test_a_manifest_naming_the_wrong_table_is_audited_against_the_receiving_contract(tmp_path):

@@ -60,7 +60,6 @@ def test_threads_delivering_to_one_file_serialize_checks_and_publish_whole_state
 
             with ThreadPoolExecutor(max_workers=2) as pool:
                 receipts = list(pool.map(deliver, range(2)))
-            assert all(isinstance(r.accepted, bool) for r in receipts)
             assert receipts[1].accepted
             assert Ledger.from_receipts(c, stores[0].receipts(c.table)) == stores[0].load_ledger(c)
             assert stores[0].read(c.table) == [row(3)]

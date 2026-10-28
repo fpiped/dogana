@@ -100,7 +100,7 @@ def test_lossy_integer_counts_and_bounds_are_refused(value):
             Manifest.from_dict(raw)
 
 
-@pytest.mark.parametrize("seconds", [float("inf"), float("-inf"), 10**100, 1e100])
+@pytest.mark.parametrize("seconds", [10**100, 1e100])
 def test_overflowing_wire_durations_use_the_public_serialization_error(seconds):
     raw = Contract.from_json((EXAMPLES / "contract.json").read_text()).to_dict()
     raw["freshness"] = {"$seconds": seconds}

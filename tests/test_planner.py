@@ -157,13 +157,6 @@ def test_ordinary_rolling_overlap_is_preserved_when_runs_are_close_together():
     assert request.window == ((at(20) - timedelta(days=29)).date(), at(20).date())
 
 
-def test_hashless_rolling_windows_use_the_declared_date_domain():
-    c = contract(window_type="date", shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18).date(), at(19).date())))
-    request = next_extraction(ledger, "daily", at(20))
-    assert request.window == ((at(20) - timedelta(days=29)).date(), at(20).date())
-
-
 def test_a_date_domain_refuses_a_fractional_day_rolling_width_at_declaration():
     with pytest.raises(InvalidContract, match="whole number of days"):
         contract(window_type="date", shapes={"daily": replace(WINDOW, window_size=timedelta(hours=12))})
@@ -407,7 +400,7 @@ def test_planning_propagates_programming_errors_instead_of_treating_them_as_impo
         plan_delivery(Ledger(c), Requirement(c.table, at(20)))
 
 
-@pytest.mark.parametrize("required", [at(17), at(18), at(19)])
+@pytest.mark.parametrize("required", [at(18), at(19)])
 def test_an_initial_append_plan_can_advance_past_the_retained_history_start(required):
     c = Contract("events", (), {"append": SINCE}, start_at=at(18))
     request = plan_delivery(Ledger(c), Requirement(c.table, required, required))

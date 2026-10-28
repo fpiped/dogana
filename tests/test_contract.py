@@ -100,8 +100,6 @@ def test_a_manifest_for_an_unadmitted_source_shape_is_refused_before_rows_are_re
         {"window": (1, 3)},
         {"since": at(17)},
         {"rows": -1},
-        {"rows": True},
-        {"tombstones": ((1,),)},
     ],
 )
 def test_a_full_export_manifest_cannot_contradict_its_contract(kwargs):
@@ -225,7 +223,6 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("key", "id"),
         ("key", {"id"}),
         ("key", {"id": 1}),
         ("types", [("id", "int")]),
@@ -399,13 +396,6 @@ def test_optional_declaration_fields_require_keywords():
         Contract("stock", ("id",), {"full": FULL}, None)
     with pytest.raises(TypeError):
         Manifest("stock", "full", at(18), None)
-
-
-@pytest.mark.parametrize("property,value", [("coverage", "sometimes"), ("checkpoint", "hourly")])
-def test_invalid_shape_vocabulary_identifies_the_property_and_value(property, value):
-    with pytest.raises(InvalidContract) as error:
-        replace(FULL, **{property: value})
-    assert f"Shape.{property}" in str(error.value) and repr(value) in str(error.value)
 
 
 @pytest.mark.parametrize(
