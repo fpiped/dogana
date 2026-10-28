@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:Region",
+  "$id": "urn:dogana:wire:4:Region",
   "title": "Region",
   "type": "object",
   "properties": {
@@ -9,12 +9,12 @@
     },
     "version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "low": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/scalar"
+          "$ref": "urn:dogana:wire:4:types#/$defs/scalar"
         },
         {
           "type": "null"
@@ -24,7 +24,7 @@
     "high": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/scalar"
+          "$ref": "urn:dogana:wire:4:types#/$defs/scalar"
         },
         {
           "type": "null"
@@ -34,7 +34,7 @@
     "complete_as_of": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
         },
         {
           "type": "null"
@@ -44,7 +44,7 @@
     "deletions_as_of": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
         },
         {
           "type": "null"
@@ -77,7 +77,7 @@
             "low": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/text"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/text"
                 },
                 {
                   "type": "null"
@@ -87,7 +87,7 @@
             "high": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/text"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/text"
                 },
                 {
                   "type": "null"
@@ -125,7 +125,7 @@
             "low": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/date"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/date"
                 },
                 {
                   "type": "null"
@@ -135,7 +135,7 @@
             "high": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/date"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/date"
                 },
                 {
                   "type": "null"
@@ -149,7 +149,7 @@
             "low": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
                 },
                 {
                   "type": "null"
@@ -159,7 +159,7 @@
             "high": {
               "anyOf": [
                 {
-                  "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+                  "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
                 },
                 {
                   "type": "null"
@@ -188,7 +188,7 @@
       "else": {
         "properties": {
           "deletions_as_of": {
-            "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+            "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
           }
         }
       }

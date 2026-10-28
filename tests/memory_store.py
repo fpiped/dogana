@@ -93,8 +93,6 @@ def check_rows(contract, manifest, rows, previous):
         return window is None or typed(row, col) and window[0] <= row[col] <= window[1]
 
     published = {key(r): r for r in previous}
-    covered = [r for r in previous if inside(r)]
-    shrink = contract.max_shrink_fraction
     cursor = contract.cursor_column
     outcomes = {
         "row_count": manifest.rows == len(rows) and manifest.tombstones == len(deleted) and not unmarked,
@@ -105,9 +103,6 @@ def check_rows(contract, manifest, rows, previous):
         "rows_in_window": all(inside(r) for r in rows)
         and all(k not in published or inside(published[k]) for k in live + deleted),
         "window_present": col is None or all(typed(row, col) for row in rows),
-        "shrink_tolerance": not covered
-        or shrink is None
-        or (len(covered) - len(rows)) / len(covered) <= shrink,
         "content_hash": False,  # rows in memory have no delivered bytes
     }
     if any(r.name == "rows_in_interval" for r in requirements):

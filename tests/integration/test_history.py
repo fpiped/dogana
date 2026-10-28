@@ -15,7 +15,7 @@ from tests.support import SINCE, contract
 
 
 def test_repeated_full_exports_retain_unchanged_row_versions_and_exact_old_publications(tmp_path):
-    c = contract(max_shrink_fraction=None)
+    c = contract()
     with DuckDBStore(":memory:") as store:
         receipts = []
         snapshots = [[row(1), row(2)], [row(1), row(2)], [row(1, value="changed")], [], [row(1)]]
@@ -83,7 +83,7 @@ def test_history_equality_retains_null_values_without_copying_a_complete_table(t
 def test_legacy_snapshot_tables_stay_readable_after_new_publications_use_row_versions(tmp_path):
     from dogana.errors import LedgerAhead
 
-    c = contract(max_shrink_fraction=None)
+    c = contract()
     with DuckDBStore(":memory:") as store:
         source = csv_file(tmp_path, "first.csv", [row(1)])
         first = store.deliver(c, _FileSource(source, COLUMNS), sidecar(source, c, "full", 18, 1), now=at(30))

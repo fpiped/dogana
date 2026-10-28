@@ -177,7 +177,6 @@ class Gate:
     @staticmethod
     def requirements(contract: Contract, manifest: Manifest) -> tuple[CheckRequirement, ...]:
         delivery = manifest.check(contract)
-        shape = delivery.shape
         names = ["row_count"]
         if contract.schema_hash is not None:
             names.append("schema_hash")
@@ -191,8 +190,6 @@ class Gate:
             names.append("rows_in_interval")
         if contract.key:
             names.append("key_integrity")
-        if shape.complete and contract.max_shrink_fraction is not None:
-            names.append("shrink_tolerance")
         if manifest.content_hash is not None:
             names.append("content_hash")
         return tuple(CheckRequirement(n) for n in names)

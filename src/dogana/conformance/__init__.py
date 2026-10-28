@@ -137,7 +137,6 @@ def _contract(table: str = "moves", shapes: dict[str, Shape] | None = None, **kw
     shapes = shapes or {"full": FULL, "daily": WINDOW, "since": SINCE, "feed": FEED}
     window_column = "day" if any(s.coverage == "window" for s in shapes.values()) else None
     deleted_column = "deleted" if any(s.deletions == "tombstone" for s in shapes.values()) else None
-    kwargs.setdefault("max_shrink_fraction", None)
     kwargs.setdefault("schema_hash", _schema_hash(COLUMNS))
     types = {
         "id": "int",
@@ -377,7 +376,6 @@ class StoreConformance(_StoreScenarios):
             "schema",
             "duplicate",
             "null",
-            "shrink",
             "missing_column",
             "renamed_column",
             "retyped_column",
@@ -389,7 +387,7 @@ class StoreConformance(_StoreScenarios):
     def test_a_contradictory_delivery_keeps_the_previous_publication(
         self, factory: StoreFactory, store: Store, problem: str
     ) -> None:
-        c = _contract(max_shrink_fraction=0.25)
+        c = _contract()
         first = self._deliver(factory, store, c, [_row(i) for i in range(4)])
         kwargs: dict[str, Any] = {}
         rows, shape = [_row(i) for i in range(4)], "full"
@@ -399,8 +397,6 @@ class StoreConformance(_StoreScenarios):
             rows[1]["id"] = 0
         elif problem == "null":
             rows[1]["id"] = None
-        elif problem == "shrink":
-            rows = rows[:2]
         columns = dict(COLUMNS)
         if problem == "missing_column":
             columns.pop("value")
@@ -702,7 +698,6 @@ class StoreConformance(_StoreScenarios):
             cursor_column="at",
             deleted_column="deleted",
             schema_hash=_schema_hash(columns),
-            max_shrink_fraction=None,
         )
         marked = {**columns, "deleted": "bool"}
         base = [{**_row(1), "at": _at(17), "deleted": False}, {**_row(2), "at": _at(17), "deleted": False}]
@@ -818,17 +813,6 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (receipt,)
         self._fold(store, c)
 
-    @pytest.mark.parametrize("remaining,accepted", [(3, True), (2, False)])
-    def test_a_complete_export_respects_the_exact_shrink_fraction(
-        self, factory: StoreFactory, store: Store, remaining: int, accepted: bool
-    ) -> None:
-        c = _contract(max_shrink_fraction=0.7)
-        first = self._deliver(factory, store, c, [_row(i) for i in range(10)])
-        receipt = self._deliver(factory, store, c, [_row(i) for i in range(remaining)], day=19)
-        assert receipt.accepted is accepted
-        assert len(factory.read_table(store, c.table)) == (remaining if accepted else 10)
-        assert store.load_ledger(c).identity == (receipt if accepted else first).ledger_identity
-
     def test_empty_named_plant_exports_preserve_other_plants_and_unknown_history(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -840,7 +824,6 @@ class StoreConformance(_StoreScenarios):
             window_column="plant",
             types=columns,
             schema_hash=_schema_hash(columns),
-            max_shrink_fraction=None,
         )
         for day, name, rows in (
             (18, "IT01", [{"id": 1, "plant": "IT01"}]),
@@ -1054,7 +1037,6 @@ class StoreConformance(_StoreScenarios):
             types={"id": "int", "seq": "int"},
             cursor_column="seq",
             schema_hash=_schema_hash(columns),
-            max_shrink_fraction=None,
         )
 
         def read(day: int, rows: list[dict[str, Any]], **kwargs: Any) -> Receipt:

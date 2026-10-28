@@ -62,8 +62,6 @@ def test_a_source_cannot_declare_a_contradictory_shape(properties):
         {"window_column": "day"},
         {"key": (), "shapes": {"feed": FEED}},
         {"key": ("id", "id")},
-        {"max_shrink_fraction": -0.1},
-        {"max_shrink_fraction": 1.1},
         {"types": {"other": "str"}},
         {"table": "__dogana_ledgers"},
         {"table": "__DOGANA_ledgers"},
@@ -162,13 +160,6 @@ def test_a_duration_cannot_define_a_rolling_window_over_integer_or_string_partit
         contract(types={"id": "int", "day": column_type, "deleted": "bool"})
 
 
-def test_shrink_protection_is_enabled_by_default_and_only_none_disables_it():
-    assert contract().max_shrink_fraction == 0.5
-    assert contract(max_shrink_fraction=None).max_shrink_fraction is None
-    assert contract(max_shrink_fraction=0).max_shrink_fraction == 0.0
-    assert type(contract(max_shrink_fraction=0).max_shrink_fraction) is float
-
-
 @pytest.mark.parametrize("lookback", [timedelta(0), timedelta(minutes=5)])
 def test_lookback_belongs_to_keyed_timestamp_reads(lookback):
     shape = replace(SINCE, lookback=lookback)
@@ -201,7 +192,6 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         types={**original.types, "changed_at": "datetime"},
         schema_hash="new-columns",
         freshness=timedelta(days=1),
-        max_shrink_fraction=None,
         cursor_column="changed_at",
         shapes={**original.shapes, "another": FULL},
     )
@@ -231,9 +221,6 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         ("shapes", [("full", FULL)]),
         ("shapes", {1: FULL}),
         ("freshness", 5),
-        ("max_shrink_fraction", True),
-        ("max_shrink_fraction", "0.5"),
-        ("max_shrink_fraction", float("nan")),
         ("cursor_column", 1),
     ],
 )

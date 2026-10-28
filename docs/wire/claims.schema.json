@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:Claims",
+  "$id": "urn:dogana:wire:4:Claims",
   "title": "Claims",
   "type": "object",
   "properties": {
@@ -9,12 +9,12 @@
     },
     "version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "regions": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:3:RegionClaim"
+        "$ref": "urn:dogana:wire:4:RegionClaim"
       },
       "minItems": 1
     }

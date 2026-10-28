@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:Receipt",
+  "$id": "urn:dogana:wire:4:Receipt",
   "title": "Receipt",
   "type": "object",
   "properties": {
@@ -9,18 +9,18 @@
     },
     "version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "manifest": {
-      "$ref": "urn:dogana:wire:3:Manifest"
+      "$ref": "urn:dogana:wire:4:Manifest"
     },
     "contract": {
-      "$ref": "urn:dogana:wire:3:Contract"
+      "$ref": "urn:dogana:wire:4:Contract"
     },
     "checks": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:3:Check"
+        "$ref": "urn:dogana:wire:4:Check"
       }
     },
     "outcome": {
@@ -33,7 +33,7 @@
     "transition": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:Transition"
+          "$ref": "urn:dogana:wire:4:Transition"
         },
         {
           "type": "null"
@@ -41,12 +41,12 @@
       ]
     },
     "ledger_identity": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
     },
     "publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
         },
         {
           "type": "null"
@@ -54,12 +54,12 @@
       ]
     },
     "received_at": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
     },
     "source": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/text"
+          "$ref": "urn:dogana:wire:4:types#/$defs/text"
         },
         {
           "type": "null"
@@ -69,7 +69,7 @@
     "base_publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/text"
+          "$ref": "urn:dogana:wire:4:types#/$defs/text"
         },
         {
           "type": "null"
@@ -111,7 +111,7 @@
       "else": {
         "properties": {
           "transition": {
-            "$ref": "urn:dogana:wire:3:Transition"
+            "$ref": "urn:dogana:wire:4:Transition"
           },
           "checks": {
             "items": {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:ApplyPlan",
+  "$id": "urn:dogana:wire:4:ApplyPlan",
   "title": "ApplyPlan",
   "type": "object",
   "properties": {
@@ -9,22 +9,22 @@
     },
     "version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "table": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
     },
     "key": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:3:types#/$defs/identifier"
+        "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
       },
       "uniqueItems": true
     },
     "window_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -34,7 +34,7 @@
     "actions": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:3:Action"
+        "$ref": "urn:dogana:wire:4:Action"
       }
     }
   },

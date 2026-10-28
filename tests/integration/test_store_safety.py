@@ -77,7 +77,7 @@ def test_bad_csv_cast_reports_only_evaluated_predicates(tmp_path):
         outcomes = {check.name: check for check in receipt.checks}
         assert not receipt.accepted
         assert not outcomes["schema_hash"].passed
-        for name in ("key_integrity", "window_present", "shrink_tolerance"):
+        for name in ("key_integrity", "window_present"):
             assert outcomes[name].detail == "not evaluated"
             assert not outcomes[name].passed
 
@@ -313,7 +313,7 @@ def test_schema_evolution_retains_each_original_publication(tmp_path):
 
 def test_keyless_replacement_closes_replaced_history_versions(tmp_path):
     columns = {"event": "str"}
-    c = Contract("events", (), {"full": FULL}, schema_hash=schema_hash(columns), max_shrink_fraction=None)
+    c = Contract("events", (), {"full": FULL}, schema_hash=schema_hash(columns))
     with DuckDBStore(":memory:") as store:
         first = publish(store, tmp_path, [{"event": "old"}, {"event": "old"}], c=c, columns=columns)
         second = publish(store, tmp_path, [{"event": "new"}], c=c, columns=columns, day=19)
@@ -424,7 +424,6 @@ def test_changing_published_columns_refuses_publication_without_losing_history(s
         {"full": FULL, "since": SINCE},
         types={"id": "int"},
         schema_hash=schema_hash(columns),
-        max_shrink_fraction=None,
     )
     original = [{"id": 1, "amount": 99}, {"id": 2, "amount": 70}]
     with DuckDBStore(":memory:") as store:

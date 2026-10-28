@@ -1,6 +1,6 @@
 # The dogana protocol
 
-Version 3 of the wire format, the `version: 3` every document carries; the package is versioned
+Version 4 of the wire format, the `version: 4` every document carries; the package is versioned
 separately. [Concepts](concepts.md) explains the same ideas with examples.
 
 ## Notation
@@ -17,8 +17,8 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
 1. A delivery is rows and a `Manifest`, the sender's declaration of the read. The `Contract` states
    the source's guarantees; the `Gate` checks declaration and rows against each other, never against
    the source. A truncated full export with a matching count, an overstated window or an omitted
-   late commit passes. A count derived by the receiver checks parsing, not completeness; the shrink
-   guard limits one delivery's loss, not cumulative loss or source dishonesty.
+   late commit passes. A count derived by the receiver checks parsing, not completeness: only a
+   count the export computed in the same read can catch a truncated file.
 2. The invariant holds given truthful extraction, the declared guarantees and correct store checks:
    **a delivery never raises a date above what those premises prove**. The core checks that regions
    partition the domain, date order, continuity and that evidence outside coverage is unchanged. It
@@ -41,9 +41,8 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
 ## Contract and shapes
 
 `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, `cursor_column` and
-`deleted_column`, `types`, optional `schema_hash`, `max_shrink_fraction` (default 0.5, between zero
-and one, disabled only by explicit `None`), `freshness` (default seven days: cadence plus arrival
-slack) and `start_at`.
+`deleted_column`, `types`, optional `schema_hash`, `freshness` (default seven days: cadence plus
+arrival slack) and `start_at`.
 
 **Types.** `types` maps exactly the key, window, cursor and deleted columns, no others, to logical
 types `int`, `float`, `str`, `bool`, `date` or `datetime`; it is empty only when none are bound.
@@ -247,9 +246,12 @@ no keys. The core describes operations and never reads rows.
 | rows_in_window | Every live window value is non-null and inside the window, and so is that of every published row sharing a key with a delivered row. |
 | window_present | Every live window value is non-null, so each row falls in a region. |
 | key_integrity | Every key, live or tombstoned, is non-null and appears once. |
-| shrink_tolerance | A complete delivery removes no more than the allowed fraction of the published rows in coverage. |
 | rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. A tombstone's may be null, else in the same interval. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes read equals it. |
+
+Every row check compares the rows with a declaration, the manifest's or the contract's, so an
+honest delivery never fails one. A rule about the source's data, such as a table that should not
+halve or an amount that must be positive, declares nothing and is a business check.
 
 A window delivery refuses a key already published in another region instead of moving it, since
 that region keeps its claim. A row whose window value changes at the source can still leave a hole
@@ -480,14 +482,14 @@ mismatches still fold the whole history.
 
 The same initial ledger and accepted history give the same ledger. Store delivery is idempotent by
 receipt lookup; `Ledger.apply` is not. Disjoint complete or timestamp windows commute on evidence
-when both orders are admissible, never on the chain. Ledgers cannot be merged. Rejection and shrink
-apply per manifest, not to a batch or a history.
+when both orders are admissible, never on the chain. Ledgers cannot be merged. Rejection applies per
+manifest, not to a batch or a history.
 
 ## Contract evolution
 
 Once a table has history, its `table`, `key`, `window_column` and the types of the key and window
 columns are fixed, and stores refuse a contract that changes them. Everything else may evolve:
-freshness, shrink, costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
+freshness, costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
 receipt keeps its contract. Every contract change alters the chain, since the whole contract, with
 normalized numbers, enters it, but only a change to a fixed field refuses the history.
 `Ledger.with_contract(contract)` checks compatibility and keeps regions, generation and head;
@@ -495,8 +497,9 @@ reconstruction uses each receipt's contract, then the requested one.
 
 ## Versioned JSON
 
-1. Structured values carry `version: 3` and `kind`, the class name. Earlier versions are refused:
-   version 1 manifests (dogana 0.1) listed keys, version 2 receipts (0.2 and 0.3) carried ledgers.
+1. Structured values carry `version: 4` and `kind`, the class name. Earlier versions are refused:
+   version 1 manifests (dogana 0.1) listed keys, version 2 receipts (0.2 and 0.3) carried ledgers,
+   version 3 contracts (0.4 to 0.6) carried a shrink limit.
 2. Field names match constructor arguments, and every field is present, defaults included. Tuples
    are arrays, enums strings, mappings objects. Missing or unknown fields, unknown versions or
    kinds, wrong types, overflowing tags and naive datetimes raise `SerializationError` before

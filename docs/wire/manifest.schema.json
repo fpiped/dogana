@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:Manifest",
+  "$id": "urn:dogana:wire:4:Manifest",
   "title": "Manifest",
   "type": "object",
   "properties": {
@@ -9,21 +9,21 @@
     },
     "version": {
       "type": "integer",
-      "const": 3
+      "const": 4
     },
     "table": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
     },
     "shape": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
     },
     "produced_at": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
     },
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/window"
+          "$ref": "urn:dogana:wire:4:types#/$defs/window"
         },
         {
           "type": "null"
@@ -31,12 +31,12 @@
       ]
     },
     "since": {
-      "$ref": "urn:dogana:wire:3:types#/$defs/checkpoint"
+      "$ref": "urn:dogana:wire:4:types#/$defs/checkpoint"
     },
     "generation": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
         },
         {
           "type": "integer"
@@ -60,7 +60,7 @@
     "schema_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/text"
+          "$ref": "urn:dogana:wire:4:types#/$defs/text"
         },
         {
           "type": "null"
@@ -74,7 +74,7 @@
     "content_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/sha256"
+          "$ref": "urn:dogana:wire:4:types#/$defs/sha256"
         },
         {
           "type": "null"

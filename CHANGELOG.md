@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+The protocol checks declarations only. Every row check compares the rows with what the manifest or
+the contract declares, so an honest delivery never fails one.
+
+- The shrink limit is gone: `max_shrink_fraction` leaves the contract and `shrink_tolerance` the row
+  checks. It refused honest files, such as a full after the source archived half its rows, and
+  passed dishonest ones, such as two files truncated by 40% each. A truncated file is caught by a
+  count the export computes in the same read; a rule on how much a table may shrink is a business
+  check.
+- The wire format is version 4, since a version 3 contract carries the shrink limit: stores and
+  documents written by 0.6.0 or earlier are refused, and a table moves to the new version with a
+  new full delivery into a new store.
+
 ## 0.6.0 (2026-10-28)
 
 The documentation is rewritten for a reader who knows SQL but not dogana: Concepts follows one

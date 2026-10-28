@@ -25,9 +25,9 @@ def outcomes(c, m, fail=None):
     return tuple(Check(r.name, r.name != fail) for r in Gate.requirements(c, m))
 
 
-@pytest.mark.parametrize("failure", ["row_count", "rows_in_window", "key_integrity", "shrink_tolerance"])
+@pytest.mark.parametrize("failure", ["row_count", "rows_in_window", "key_integrity"])
 def test_a_failed_required_check_never_changes_the_published_ledger(failure):
-    c = contract(max_shrink_fraction=0.2)
+    c = contract()
     ledger = Ledger(c)
     manifest = Manifest(c.table, "daily", at(18), window=(1, 30), rows=10, schema_hash=c.schema_hash)
     receipt = Gate.evaluate(ledger, manifest, outcomes(c, manifest, failure), now=at(25))

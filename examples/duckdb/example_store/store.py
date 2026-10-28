@@ -831,7 +831,6 @@ class DuckDBStore:
             "window_present": self._check_window_present,
             "rows_in_interval": self._check_rows_in_interval,
             "key_integrity": self._check_key_integrity,
-            "shrink_tolerance": self._check_shrink_tolerance,
             "content_hash": self._check_content_hash,
         }
         checks: dict[str, Check] = {}
@@ -842,8 +841,6 @@ class DuckDBStore:
                 if contract.schema_hash is not None and name not in ("row_count", "schema_hash")
                 else ()
             )
-            if name == "shrink_tolerance":
-                dependencies += ("row_count",)
             checks[name] = (
                 Check(name, False, "not evaluated")
                 if any(not checks[dependency].passed for dependency in dependencies)
@@ -944,25 +941,6 @@ class DuckDBStore:
             "rows_in_interval",
             invalid == 0,
             f"cursor values must be inside ({low}, {high}]; a tombstone's may be null",
-        )
-
-    def _check_shrink_tolerance(self, audit: _Audit) -> Check:
-        contract = audit.contract
-        previous = 0
-        if self._exists(contract.table):
-            sql = f"SELECT count(*) FROM {_quote(contract.table)}"
-            params: list[object] = []
-            if audit.window is not None:
-                assert contract.window_column is not None
-                inside, params = _inside(_quote(contract.window_column), audit.window)
-                sql += f" WHERE {inside}"
-            previous = self._one(sql, params)[0]
-        limit = contract.max_shrink_fraction
-        assert limit is not None
-        return Check(
-            "shrink_tolerance",
-            previous == 0 or (previous - audit.count) / previous <= limit,
-            f"previous={previous}, candidate={audit.count}",
         )
 
     def _assert_base(self, checked: _Checked) -> None:

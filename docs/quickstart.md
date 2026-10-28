@@ -133,9 +133,8 @@ row_count
 ```
 
 The manifest declares two rows and the file has none, so the whole file is rejected and nothing
-changes. If a truncated file declared a matching count, the count check would pass. A second check
-catches the worst cases: a complete file, a full export or a window file, is rejected if it would
-remove more than half of the published rows in its range.
+changes. A truncated file whose manifest declared a matching count would pass: the count must come
+from the export, computed in the same read, never from counting the file.
 
 ## 5. The next full export, and the same file twice
 

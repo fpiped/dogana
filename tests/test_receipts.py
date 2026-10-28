@@ -44,7 +44,7 @@ def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
 
     c = contract()
     first = publication(Ledger(c), 18)
-    newer = replace(c, freshness=timedelta(days=2), max_shrink_fraction=None)
+    newer = replace(c, freshness=timedelta(days=2))
     second = publication(fold(first).with_contract(newer), 19)
     assert first.contract == c
     assert second.contract == newer

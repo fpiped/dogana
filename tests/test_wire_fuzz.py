@@ -7,13 +7,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from dogana import Contract, InvalidContract, Ledger, Manifest, Receipt
+from dogana.wire import Wire
 
 EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
 
 def objects(value, path=()):
     if isinstance(value, dict):
-        if value.get("version") == 3 and "kind" in value:
+        if value.get("version") == Wire.version and "kind" in value:
             yield path
         for key, item in value.items():
             yield from objects(item, (*path, key))
@@ -47,7 +48,7 @@ def test_mutations_of_nested_wire_values_raise_public_contract_errors(name, cls,
     elif mutation == "kind":
         node["kind"] = "unknown"
     else:
-        node["version"] = data.draw(st.sampled_from((0, 1, 2, True, "3")), label="version")
+        node["version"] = data.draw(st.sampled_from((0, 1, 2, 3, True, "4")), label="version")
     with pytest.raises(InvalidContract):
         cls.from_json(json.dumps(value))
 

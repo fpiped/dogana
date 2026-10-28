@@ -35,7 +35,6 @@ CONTRACT = Contract(
     },
     window_column="bucket",
     types={"id": "int", "bucket": "int", "deleted": "bool"},
-    max_shrink_fraction=None,
     deleted_column="deleted",
 )
 LAWS = settings(max_examples=80, deadline=None, database=None)

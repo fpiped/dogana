@@ -125,7 +125,6 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
         "count",
         "missing_column",
         "retyped_column",
-        "shrink",
         "shape",
         "duplicate_key",
         "null_key",
@@ -134,7 +133,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
     ],
 )
 def test_a_contradictory_file_is_rejected_without_changing_the_publication(tmp_path, problem):
-    c = contract(max_shrink_fraction=0.25)
+    c = contract()
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         path = csv_file(tmp_path, "base.csv", [row(i) for i in range(4)])
         sidecar(path, c, "full", 18, 4)
@@ -150,8 +149,6 @@ def test_a_contradictory_file_is_rejected_without_changing_the_publication(tmp_p
             )
         elif problem == "retyped_column":
             incoming[0]["id"] = "not_an_integer"
-        elif problem == "shrink":
-            incoming = incoming[:2]
         elif problem == "shape":
             shape = "not_admitted"
         elif problem == "duplicate_key":
@@ -241,7 +238,6 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
         window_column="plant",
         types={"id": "int", "plant": "str"},
         schema_hash=schema_hash(columns),
-        max_shrink_fraction=None,
     )
     with DuckDBStore(tmp_path / "landing.duckdb") as store:
         for day, name, rows in [

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:3:types",
+  "$id": "urn:dogana:wire:4:types",
   "$defs": {
     "text": {
       "type": "string",
@@ -50,16 +50,16 @@
     "scalar": {
       "oneOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/text"
+          "$ref": "urn:dogana:wire:4:types#/$defs/text"
         },
         {
           "type": "integer"
         },
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/date"
+          "$ref": "urn:dogana:wire:4:types#/$defs/date"
         },
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
         }
       ]
     },
@@ -68,7 +68,7 @@
         {
           "type": "array",
           "items": {
-            "$ref": "urn:dogana:wire:3:types#/$defs/text"
+            "$ref": "urn:dogana:wire:4:types#/$defs/text"
           },
           "minItems": 2,
           "maxItems": 2
@@ -84,7 +84,7 @@
         {
           "type": "array",
           "items": {
-            "$ref": "urn:dogana:wire:3:types#/$defs/date"
+            "$ref": "urn:dogana:wire:4:types#/$defs/date"
           },
           "minItems": 2,
           "maxItems": 2
@@ -92,7 +92,7 @@
         {
           "type": "array",
           "items": {
-            "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+            "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
           },
           "minItems": 2,
           "maxItems": 2
@@ -128,10 +128,10 @@
     "checkpoint": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
         },
         {
-          "$ref": "urn:dogana:wire:3:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
         },
         {
           "type": "integer"

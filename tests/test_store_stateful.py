@@ -48,7 +48,6 @@ class PublicationSequences(RuleBasedStateMachine):
             window_column="bucket",
             types={"id": "int", "bucket": "int", "deleted": "bool"},
             schema_hash=schema_hash(COLUMNS),
-            max_shrink_fraction=None,
             deleted_column="deleted",
         )
         self.tick = 0

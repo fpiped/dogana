@@ -216,9 +216,8 @@ def test_a_replay_is_one_delivery_of_these_files_under_these_references():
     from example_store import Rows
 
     shapes = {"full": FULL, "daily": WINDOW}
-    # Each window delivery empties its day, so shrink tolerance stays out of the way.
-    orders = contract("orders", shapes=shapes, max_shrink_fraction=None)
-    lines = contract("order_lines", shapes=shapes, columns=LINE_COLUMNS, max_shrink_fraction=None)
+    orders = contract("orders", shapes=shapes)
+    lines = contract("order_lines", shapes=shapes, columns=LINE_COLUMNS)
     group = Group((orders, lines), (Reference("order_lines", ("order_id",), "orders"),))
 
     def daily(c, columns, day):
@@ -320,7 +319,7 @@ def test_closing_a_store_whose_rollback_failed_releases_the_file_for_other_threa
 
 def test_a_window_to_the_end_of_the_dates_covers_values_past_what_python_can_name(tmp_path):
     shapes = {"full": FULL, "daily": WINDOW}
-    moves = contract("moves", shapes=shapes, max_shrink_fraction=None)
+    moves = contract("moves", shapes=shapes)
     path = tmp_path / "far.csv"
     path.write_text("id,day,value\n1,infinity,far\n2,2026-10-18,near\n")
     with DuckDBStore(":memory:") as store:
@@ -428,7 +427,6 @@ def test_an_int_window_bound_past_bigint_covers_every_stored_value():
         shapes,
         window_column="seq",
         types={"id": "int", "seq": "int"},
-        max_shrink_fraction=None,
     )
     with DuckDBStore(":memory:") as store:
         assert deliver(

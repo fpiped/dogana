@@ -87,7 +87,6 @@ def sequence_contract():
         window_column="day",
         types={"id": "int", "day": "int", "deleted": "bool"},
         schema_hash=schema_hash(RECORD_COLUMNS),
-        max_shrink_fraction=None,
         deleted_column="deleted",
     )
 

@@ -3,14 +3,14 @@
     "contract": "73e7a37939f0583ff390d280f0d621184532643e8067ca6b93d70b0829751737",
     "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
     "ledger": "a47cab9c2c742ea3839bafb02c581f9342d77433273f4cddd67c238857346cd5",
-    "receipt": "aa4de7f11795e3e009604d93bec78bb40400415aa4bb6bbf91b40d5d838c52f8"
+    "receipt": "1eb1ac5552efad56a98b2ea775340fb2f02bad058c6355ecdc08d871143fadcf"
   },
   "vectors": [
     {
       "name": "shape-defaults",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -26,7 +26,7 @@
       "name": "shape-numbers-and-durations",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "window",
         "completeness": "changed_only",
         "deletions": "tombstone",
@@ -46,7 +46,7 @@
       "name": "minimal-manifest",
       "wire": {
         "kind": "Manifest",
-        "version": 3,
+        "version": 4,
         "table": "stock",
         "shape": "full",
         "produced_at": {
@@ -67,9 +67,9 @@
       "name": "unicode-shape-and-utc",
       "wire": {
         "kind": "Manifest",
-        "version": 3,
+        "version": 4,
         "table": "stock",
-        "shape": "r\u00e9cent",
+        "shape": "récent",
         "produced_at": {
           "$datetime": "2026-10-18T02:00:00.123456+02:00"
         },
@@ -81,14 +81,14 @@
         "tombstones": 2,
         "content_hash": "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
       },
-      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"r\u00e9cent\",\"table\":\"stock\",\"tombstones\":2}",
+      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"récent\",\"table\":\"stock\",\"tombstones\":2}",
       "sha256": "4ad6c477daccfcab252c50399eb8c9ab436d638d25657be00b5ba9930e11f6b6"
     },
     {
-      "name": "explicit-disabled-shrink",
+      "name": "explicit-freshness",
       "wire": {
         "kind": "Contract",
-        "version": 3,
+        "version": 4,
         "table": "stock",
         "key": [
           "id"
@@ -96,7 +96,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -107,9 +107,8 @@
           }
         },
         "window_column": null,
-        "max_shrink_fraction": null,
         "freshness": {
-          "$seconds": 604800
+          "$seconds": 172800
         },
         "start_at": null,
         "cursor_column": null,
@@ -119,14 +118,14 @@
         "schema_hash": null,
         "deleted_column": null
       },
-      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"max_shrink_fraction\":null,\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
-      "sha256": "3a57d7447db0eb789ff794eb4081094de819f0f214509d0bad3039d3179a3423"
+      "canonical": "{\"freshness\":{\"$seconds\":172800},\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
+      "sha256": "1f59d64c2d8296fb1c88cc5e2bc0458b2a94e25b820bcbed74a2e2b88edae751"
     },
     {
       "name": "shape-small-cost",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -142,7 +141,7 @@
       "name": "shape-fixed-cost",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -158,7 +157,7 @@
       "name": "shape-exponent-cost",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -174,7 +173,7 @@
       "name": "shape-negative-zero",
       "wire": {
         "kind": "Shape",
-        "version": 3,
+        "version": 4,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -190,15 +189,15 @@
       "name": "utf16-shape-name-order",
       "wire": {
         "kind": "Contract",
-        "version": 3,
+        "version": 4,
         "table": "stock",
         "key": [
           "id"
         ],
         "shapes": {
-          "\ufffd": {
+          "�": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -207,9 +206,9 @@
             "window_size": null,
             "lookback": null
           },
-          "\ud83d\ude00": {
+          "😀": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -220,7 +219,6 @@
           }
         },
         "window_column": null,
-        "max_shrink_fraction": 0.5,
         "freshness": {
           "$seconds": 604800
         },
@@ -232,14 +230,14 @@
         "schema_hash": null,
         "deleted_column": null
       },
-      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"\ud83d\ude00\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"\ufffd\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
+      "canonical": "{\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"😀\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"},\"�\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
       "sha256": "4972f813d5842e8b6a9a8ac7ac872b6b83d5a65723d53581c87b78f1ed124e8c"
     },
     {
       "name": "contract-types-and-external-hash",
       "wire": {
         "kind": "Contract",
-        "version": 3,
+        "version": 4,
         "table": "events",
         "key": [
           "id"
@@ -247,7 +245,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -258,7 +256,7 @@
           },
           "daily": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "window",
             "completeness": "complete",
             "deletions": "absence",
@@ -275,7 +273,6 @@
           "id": "int"
         },
         "schema_hash": "opaque:orders-columns-v1",
-        "max_shrink_fraction": 0.5,
         "freshness": {
           "$seconds": 604800
         },
@@ -290,13 +287,13 @@
       "name": "unbound-contract-defaults",
       "wire": {
         "kind": "Contract",
-        "version": 3,
+        "version": 4,
         "table": "events",
         "key": [],
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 3,
+            "version": 4,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -309,7 +306,6 @@
         "window_column": null,
         "types": {},
         "schema_hash": null,
-        "max_shrink_fraction": 0.5,
         "freshness": {
           "$seconds": 604800
         },

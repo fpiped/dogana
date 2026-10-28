@@ -20,7 +20,7 @@ JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dic
 
 
 class Wire:
-    version: ClassVar[int] = 3
+    version: ClassVar[int] = 4
 
     @classmethod
     def _wire_schema(cls) -> type[Wire]:

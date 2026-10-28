@@ -29,7 +29,6 @@ def keyed(**kwargs):
         types={"id": "int", "seq": "int"},
         cursor_column="seq",
         schema_hash=schema_hash(COLUMNS),
-        max_shrink_fraction=None,
         **kwargs,
     )
 

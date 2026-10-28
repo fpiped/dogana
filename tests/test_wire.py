@@ -17,7 +17,7 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
         for value in (c, m, ledger):
             assert type(value).from_dict(value.to_dict()) == value
             assert type(value).from_json(value.to_json()) == value
-            assert json.loads(value.to_json())["version"] == 3
+            assert json.loads(value.to_json())["version"] == 4
 
 
 @pytest.mark.parametrize(
@@ -32,6 +32,12 @@ def test_unsupported_or_invalid_wire_contracts_are_refused(change):
     value = contract(columns=COLUMNS).to_dict()
     value.update(change)
     with pytest.raises(SerializationError):
+        Contract.from_dict(value)
+
+
+def test_a_version_3_contract_with_its_shrink_limit_is_refused():
+    value = contract(columns=COLUMNS).to_dict() | {"version": 3, "max_shrink_fraction": 0.5}
+    with pytest.raises(SerializationError, match="unsupported wire version"):
         Contract.from_dict(value)
 
 
@@ -253,7 +259,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
     assert type(ProtocolShape.from_json(FULL.to_json())) is ProtocolShape
     for kind in ("PrivateValue", "Wire"):
         with pytest.raises(SerializationError, match="unknown wire kind"):
-            Wire.from_dict({"version": 3, "kind": kind})
+            Wire.from_dict({"version": 4, "kind": kind})
     with pytest.raises(SerializationError, match="unknown wire kind"):
         Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
@@ -274,8 +280,6 @@ def test_numeric_spellings_and_default_values_do_not_fork_identity():
     assert "cost" not in replace(integer, cost=1).identity_dict()
     c = Contract("stock", ("id",), {"full": integer}, types={"id": "int"})
     assert "freshness" not in c.identity_dict()
-    assert "max_shrink_fraction" not in c.identity_dict()
-    assert replace(c, max_shrink_fraction=None).identity_dict()["max_shrink_fraction"] is None
     assert replace(c, freshness=timedelta(seconds=2)).identity_dict()["freshness"] == {"$seconds": 2}
 
 
@@ -398,4 +402,4 @@ def test_removed_schema_and_column_wire_kind_are_refused():
     with pytest.raises(SerializationError, match="unknown fields"):
         Contract.from_dict(contract().to_dict() | {"schema": []})
     with pytest.raises(SerializationError, match="unknown wire kind"):
-        Wire.from_dict({"kind": "Column", "version": 3, "name": "id", "type": "int"})
+        Wire.from_dict({"kind": "Column", "version": 4, "name": "id", "type": "int"})
