@@ -35,17 +35,14 @@ def test_a_delivered_path_never_expands_to_other_files(tmp_path, name):
         assert not store._candidates
 
 
-def test_existing_untracked_tables_require_explicit_adoption(tmp_path):
+def test_an_existing_table_without_a_publication_is_refused(tmp_path):
     path, c = tmp_path / "landing.duckdb", contract()
     with DuckDBStore(path) as store:
         store.connection.execute("CREATE TABLE moves(id BIGINT, day DATE, value VARCHAR)")
         store.connection.execute("INSERT INTO moves VALUES (1, DATE '2026-10-18', 'original')")
-        with pytest.raises(StoreError, match="adopt=True"):
+        with pytest.raises(StoreError, match="table exists without a publication"):
             publish(store, tmp_path, [row(2)], c=c)
         assert store.read(c.table) == [row(1, value="original")]
-    with DuckDBStore(path, adopt=True) as store:
-        assert publish(store, tmp_path, [row(2)], c=c).accepted
-        assert store.read(c.table) == [row(2)]
 
 
 def test_declared_csv_types_preserve_numeric_strings_nulls_and_integral_floats(tmp_path):
@@ -303,7 +300,7 @@ def test_schema_evolution_retains_each_original_publication(tmp_path):
     with DuckDBStore(":memory:") as store:
         first = publish(store, tmp_path, [row(1)], c=c)
         columns = {**COLUMNS, "extra": "str"}
-        changed = replace(c, schema_hash=schema_hash(columns), freshness=timedelta(days=10))
+        changed = replace(c, schema_hash=schema_hash(columns))
         second = publish(store, tmp_path, [{**row(2), "extra": "new"}], c=changed, columns=columns, day=19)
         assert second.accepted
         assert store.read(c.table, first.publication_id) == [row(1)]
@@ -396,21 +393,6 @@ def test_candidate_payload_renames_and_retypes_fail_the_external_schema_hash(inc
         assert not next(check for check in receipt.checks if check.name == "schema_hash").passed
         assert store.read_publication(c) == (original, fold(first))
         assert store.receipts(c.table) == (first, receipt)
-
-
-def test_adopting_a_table_with_reordered_columns_refuses_publication():
-    columns = {"id": "int", "amount": "int"}
-    c = Contract("pairs", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
-    manifest = Manifest(c.table, "full", at(18), rows=1, schema_hash=c.schema_hash)
-    with DuckDBStore(":memory:", adopt=True) as store:
-        store.connection.execute("CREATE TABLE pairs(amount BIGINT, id BIGINT)")
-        store.connection.execute("INSERT INTO pairs VALUES (99, 1)")
-        with pytest.raises(StoreError, match="published column order or types differ"):
-            deliver(store, c, [{"id": 2, "amount": 80}], manifest, at(20))
-        assert store.read_publication(c) == ([{"id": 1, "amount": 99}], Ledger(c))
-        assert store.receipts(c.table) == ()
-        assert store.publication_stamp(c.table) is None
-        assert not store._candidates and store._transaction is None
 
 
 @pytest.mark.parametrize("shape", ["full", "since"])

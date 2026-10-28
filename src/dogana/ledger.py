@@ -145,15 +145,16 @@ class Region(Wire):
             raise InvalidContract("region dates must be present or absent together")
         return Known(self.complete_as_of, self.deletions_as_of)
 
-    def state(self, now: datetime, limit: timedelta) -> State:
+    def state(self, now: datetime, limit: timedelta | None = None) -> State:
+        """The region's state at the reader's time; without a limit no region expires."""
         now = utc(now)
-        if not isinstance(limit, timedelta) or limit < timedelta(0):
+        if limit is not None and (not isinstance(limit, timedelta) or limit < timedelta(0)):
             raise InvalidContract("freshness limit must be nonnegative")
         match self.evidence:
             case Unknown():
                 return State.UNKNOWN
             case Known(complete, deletions):
-                if now - complete > limit:
+                if limit is not None and now - complete > limit:
                     return State.EXPIRED
                 return State.COMPLETE if complete == deletions else State.PATCHED
             case _ as unreachable:
@@ -296,11 +297,6 @@ class Claims(Wire):
 
     def in_state(self, state: State) -> tuple[RegionClaim, ...]:
         return tuple(r for r in self.regions if r.state is state)
-
-    @classmethod
-    def combine(cls, *claims: Claims) -> Claims:
-        """Return the weakest input bounds; only `exact_as_of` asserts a common snapshot."""
-        return cls(tuple(r for claim in claims for r in claim.regions))
 
 
 @dataclass(frozen=True)
@@ -484,9 +480,6 @@ class Ledger(Wire):
 
     def claims(self, now: datetime, limit: timedelta | None = None, window: Window | None = None) -> Claims:
         now = utc(now)
-        limit = self.contract.freshness if limit is None else limit
-        if not isinstance(limit, timedelta) or limit < timedelta(0):
-            raise InvalidContract("freshness limit must be nonnegative")
         return Claims(
             tuple(RegionClaim(self.contract.table, r, r.state(now, limit)) for r in self.covered(window))
         )

@@ -34,7 +34,7 @@ imports a reader of data files (csv, DuckDB, Arrow).
   checks into a `Receipt` with an `ApplyPlan`, the row operations to execute. The core describes
   row operations and never reads rows.
 - **`group.py`**: `Group` and `Reference`, tables read together and the rules the source keeps
-  between them. `Group.claims` combines their claims, and `Claims.exact_as_of` is the instant at
+  between them. `Group.claims` returns their claims together, and `Claims.exact_as_of` is the instant at
   which all of them equal the source, if there is one.
 - **`planner.py`**: because `Ledger.apply` has no side effects, the planner simulates each admitted
   read on the current ledger and keeps the cheapest one that establishes the required dates.

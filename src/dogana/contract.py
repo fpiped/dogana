@@ -230,7 +230,6 @@ class Contract(Wire):
     window_column: str | None = None
     types: Mapping[str, str] = field(default_factory=dict)
     schema_hash: str | None = None
-    freshness: timedelta = timedelta(days=7)
     start_at: datetime | None = None
     cursor_column: str | None = None
     deleted_column: str | None = None
@@ -296,8 +295,6 @@ class Contract(Wire):
             for shape in self.shapes.values()
         ):
             raise InvalidContract("DATE window_size must contain a whole number of days")
-        if self.freshness < timedelta(0):
-            raise InvalidContract("freshness must be a nonnegative duration")
         if not self.key:
             if any(shape.lookback is not None for shape in self.shapes.values()):
                 raise InvalidContract("lookback requires a keyed contract")
@@ -344,7 +341,6 @@ class Contract(Wire):
                 self.window_column,
                 tuple(sorted(self.types.items())),
                 self.schema_hash,
-                self.freshness,
                 self.start_at,
                 self.cursor_column,
                 self.deleted_column,

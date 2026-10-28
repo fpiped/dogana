@@ -41,8 +41,7 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
 ## Contract and shapes
 
 `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, `cursor_column` and
-`deleted_column`, `types`, optional `schema_hash`, `freshness` (default seven days: cadence plus
-arrival slack) and `start_at`.
+`deleted_column`, `types`, optional `schema_hash` and `start_at`.
 
 **Types.** `types` maps exactly the key, window, cursor and deleted columns, no others, to logical
 types `int`, `float`, `str`, `bool`, `date` or `datetime`; it is empty only when none are bound.
@@ -285,23 +284,25 @@ cleanup, and a failure after commit cannot revoke an acceptance.
 ## Claims and planning
 
 `Ledger.claims(now, limit=None, window=None)` cuts the regions to `window`, if given, and states
-each one at the reader's time `now`. `now` only judges freshness: claims never show a past state of
-the ledger. `limit` replaces the contract's freshness when given. A region exactly `limit` old is
-still fresh.
+each one at the reader's time `now`. How old is too old is the reader's decision, not the table's:
+`limit`, when given, expires a region whose `complete_as_of` is older than `limit` at `now`, and a
+region exactly `limit` old is not expired. Without `limit` no region expires. Claims never show a
+past state of the ledger.
 
 | State | Condition |
 |---|---|
 | unknown | Both dates absent. |
-| complete | Dates equal, within the freshness limit. |
-| patched | `complete_as_of` newer than `deletions_as_of`, within the limit. |
-| expired | `complete_as_of` older than the limit, whatever `deletions_as_of` says. |
+| complete | Dates equal, and not expired. |
+| patched | `complete_as_of` newer than `deletions_as_of`, and not expired. |
+| expired | `complete_as_of` older than `limit` at `now`, whatever `deletions_as_of` says. |
 
 1. The table's state is its worst region's, in the order unknown, expired, patched, complete. Its
    two dates are the minimum of each date over its regions, taken separately, and absent if any
    region is unknown. Equal minima do not make every region exact. The table's deletions date stays
    visible even when recent changes have raised every completeness date.
-2. `Claims.combine` takes the same minima across tables. They are lower bounds on each input's
-   dates, not a statement about one snapshot or a joined result. Without a common instant they
+2. The claims of several tables, as `Group.claims` returns them, take the same minima across
+   tables. They are lower bounds on each input's dates, not a statement about one snapshot or a
+   joined result. Without a common instant they
    guarantee no row of a query over several tables or regions, even a query without negation: a
    later read can miss a row deleted after an earlier read, and carry a later version of a row.
 3. Negation (`NOT EXISTS`, anti-joins, difference) swaps the two requirements for the negated
@@ -349,7 +350,8 @@ under one publication (obligation 6), are consistent however they were published
 **Group and reference.** `Group(contracts, references=())` names tables read together, each once
 whatever its letter case. A table belongs to one group, since a table accepted in one group does not
 replay in another: a parent with several children is one group. `Group.claims(ledgers, now,
-windows=None)` combines the tables' claims, each clipped to its window. `Reference(table, columns,
+windows=None, limit=None)` returns every table's regions together, each table clipped to its
+window. `Reference(table, columns,
 parent)` states that every live row of `table` whose `columns` are all non-null names, in order, the
 key of a `parent` row; it has one column per parent key column, and both tables are in the group.
 
@@ -489,7 +491,7 @@ manifest, not to a batch or a history.
 
 Once a table has history, its `table`, `key`, `window_column` and the types of the key and window
 columns are fixed, and stores refuse a contract that changes them. Everything else may evolve:
-freshness, costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
+costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
 receipt keeps its contract. Every contract change alters the chain, since the whole contract, with
 normalized numbers, enters it, but only a change to a fixed field refuses the history.
 `Ledger.with_contract(contract)` checks compatibility and keeps regions, generation and head;

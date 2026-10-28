@@ -13,6 +13,15 @@ the contract declares, so an honest delivery never fails one.
 - The wire format is version 4, since a version 3 contract carries the shrink limit: stores and
   documents written by 0.6.0 or earlier are refused, and a table moves to the new version with a
   new full delivery into a new store.
+- `freshness` leaves the contract. It never decided whether a file was accepted, only whether a
+  region read as expired, and how old is too old is the reader's choice: `Ledger.claims(now,
+  limit)` and `Group.claims(..., limit=...)` take it, and without a limit no region expires.
+  `dogana claims` takes `--limit-days`.
+- `Claims.combine` is gone. The minimum dates across tables guarantee nothing about a query over
+  them; `Group.claims` returns a group's regions together, and `exact_as_of` is the instant that
+  does.
+- The example DuckDB store loses `adopt=True`, which took over an existing table without
+  certifying a row: an existing table without evidence is refused.
 
 ## 0.6.0 (2026-10-28)
 

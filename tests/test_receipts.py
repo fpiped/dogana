@@ -40,11 +40,10 @@ def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):
 
 
 def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
-    from datetime import timedelta
 
     c = contract()
     first = publication(Ledger(c), 18)
-    newer = replace(c, freshness=timedelta(days=2))
+    newer = replace(c, shapes={name: replace(shape, cost=shape.cost + 1) for name, shape in c.shapes.items()})
     second = publication(fold(first).with_contract(newer), 19)
     assert first.contract == c
     assert second.contract == newer

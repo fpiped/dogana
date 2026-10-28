@@ -110,7 +110,9 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 receipt_count += 1
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             assert len(store.receipts()) == receipt_count
-            surface = Claims.combine(*(store.load_ledger(c).claims(at(day)) for c in contracts))
+            surface = Claims(
+                tuple(r for c in contracts for r in store.load_ledger(c).claims(at(day)).regions)
+            )
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
             assert surface.deletions_as_of == at(day if day in (18, 25) else 18)
             assert store.read("moves", publication_ids["moves", 18]) == sorted(
@@ -445,7 +447,7 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         receipt = store.deliver(c, source_file, manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
-        claims = store.load_ledger(c).claims(receipt.received_at)
+        claims = store.load_ledger(c).claims(receipt.received_at, timedelta(days=7))
         assert claims.complete_as_of == at(19)
         assert claims.deletions_as_of == at(18)
         assert claims.state is State.EXPIRED

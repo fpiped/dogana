@@ -12,7 +12,7 @@ from a checkout.
 ```text
 dogana manifest FILE --contract PATH --shape NAME --produced-at TIME --rows N [options]
 dogana check FILE --contract PATH [--manifest PATH]
-dogana claims LEDGER [--at TIME] [--window LOW HIGH]
+dogana claims LEDGER [--at TIME] [--limit-days DAYS] [--window LOW HIGH]
 ```
 
 `manifest` writes `FILE.json`, validated against the contract, with the SHA-256 of FILE and the
@@ -28,7 +28,8 @@ against its `content_hash`, refusing a manifest without one. Rows are checked by
 
 `claims` prints what a ledger, as JSON (`store.load_ledger(contract).to_json()`), claims at `--at`,
 now by default: one line per region, cut to `--window` if given, then the table's state and its
-exact instant. Date and integer bounds print closed.
+exact instant. With `--limit-days`, a region proven longer ago than that is expired. Date and
+integer bounds print closed.
 
 ```text
 orders (-inf, 2026-09-26]: unknown; complete as of unknown; deletions as of unknown
@@ -77,7 +78,7 @@ storage failure.
 
 ## Example store on DuckDB
 
-`DuckDBStore(path, adopt=False)` opens the DuckDB database at `path`. A delivery's source is a CSV
+`DuckDBStore(path)` opens the DuckDB database at `path`. A delivery's source is a CSV
 or Parquet path, row dictionaries, or an Arrow table. A path is copied into the store's private
 folder while it is hashed, and only that copy is read.
 `deliver(store, contract, source, manifest, now)` commits rows, ledger, stamp and receipt in one
@@ -93,7 +94,7 @@ transaction; a refusal changes nothing published, and `StoreError` means storage
   the published table see live rows only. Deliver them from a typed source.
 - **CSV** follows the protocol's grammar; a quoted empty field is the empty string, an unquoted one
   null. A file DuckDB cannot read is a recorded rejection.
-- **Existing tables** without evidence are refused unless `adopt=True`, which certifies no row. The
+- **Existing tables** without evidence are refused: the store publishes only tables it created. The
   `__dogana_` prefix is reserved, and a table's spelling must not change, since DuckDB ignores case.
 - **Concurrency.** Use one writer process per file; stores on it share a process-local lock and
   refuse a second name for it, such as a hard link. After a rollback that could not be resolved,

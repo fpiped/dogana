@@ -1,12 +1,13 @@
 import copy
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from dogana import Contract, InvalidContract, Ledger, Manifest, Receipt
+from dogana import Contract, InvalidContract, Ledger, Manifest, Receipt, Shape
 from dogana.wire import Wire
 
 EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
@@ -103,10 +104,10 @@ def test_lossy_integer_counts_and_bounds_are_refused(value):
 
 @pytest.mark.parametrize("seconds", [10**100, 1e100])
 def test_overflowing_wire_durations_use_the_public_serialization_error(seconds):
-    raw = Contract.from_json((EXAMPLES / "contract.json").read_text()).to_dict()
-    raw["freshness"] = {"$seconds": seconds}
+    raw = Shape.window(size=timedelta(days=1)).to_dict()
+    raw["window_size"] = {"$seconds": seconds}
     with pytest.raises(InvalidContract):
-        Contract.from_json(json.dumps(raw))
+        Shape.from_json(json.dumps(raw))
 
 
 @pytest.mark.parametrize("name,cls", [("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)])

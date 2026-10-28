@@ -363,7 +363,9 @@ class StoreConformance(_StoreScenarios):
                 )
                 assert store.receipts(c.table) == audit_before
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
-            surface = Claims.combine(*(store.load_ledger(c).claims(_at(day)) for c in contracts))
+            surface = Claims(
+                tuple(r for c in contracts for r in store.load_ledger(c).claims(_at(day)).regions)
+            )
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
             assert surface.deletions_as_of == _at(day if day in (18, 25) else 18)
         assert sum(len(store.receipts(c.table)) for c in contracts) == 25

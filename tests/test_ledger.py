@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from dogana import Claims, Contract, InvalidContract, Ledger, Manifest, RejectedDelivery, Shape, State
+from dogana import Claims, Contract, Group, InvalidContract, Ledger, Manifest, RejectedDelivery, Shape, State
 from tests.support import FEED, FULL, SINCE, WINDOW, at, fold
 from tests.support import accounting_contract as contract
 
@@ -12,8 +12,8 @@ def full(c, day=18, generation=None):
     return Ledger(c).apply(Manifest(c.table, "full", at(day), generation=generation))
 
 
-def point(ledger, value, now=None):
-    return ledger.claims(now or at(25), window=(value, value))
+def point(ledger, value, now=None, limit=None):
+    return ledger.claims(now or at(25), limit, (value, value))
 
 
 def test_nightly_full_exports_replace_the_entire_domain_with_current_evidence():
@@ -254,9 +254,11 @@ def test_an_empty_append_interval_cannot_carry_rows():
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
     ledger = full(contract())
     ledger = ledger.apply(Manifest(ledger.contract.table, "daily", at(24), window=(10, 20)))
-    assert ledger.claims(at(25)).state is State.COMPLETE
-    assert ledger.claims(at(25, 1)).state is State.EXPIRED
-    assert point(ledger, 15, at(25, 1)).state is State.COMPLETE
+    week = timedelta(days=7)
+    assert ledger.claims(at(25), week).state is State.COMPLETE
+    assert ledger.claims(at(25, 1), week).state is State.EXPIRED
+    assert point(ledger, 15, at(25, 1), week).state is State.COMPLETE
+    assert ledger.claims(at(31)).state is State.COMPLETE
 
 
 @pytest.mark.parametrize("shape,kwargs", [("full", {}), ("since", {"since": at(17)})])
@@ -271,9 +273,10 @@ def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     invoices = full(contract("invoices"), 18)
     invoices = invoices.apply(Manifest("invoices", "since", at(21), since=at(18)))
     plants = full(contract("plants"), 19)
-    claims = Claims.combine(*(ledger.claims(at(21)) for ledger in (stocks, invoices, plants)))
+    ledgers = {ledger.contract.table: ledger for ledger in (stocks, invoices, plants)}
+    claims = Group(tuple(ledger.contract for ledger in ledgers.values())).claims(ledgers, at(21))
     assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (State.PATCHED, at(19), at(18))
-    unknown = Claims.combine(claims, Ledger(contract("missing")).claims(at(21)))
+    unknown = Claims(claims.regions + Ledger(contract("missing")).claims(at(21)).regions)
     assert unknown.state is State.UNKNOWN
     assert unknown.complete_as_of is None
     assert len(unknown.in_state(State.UNKNOWN)) == 1
@@ -622,7 +625,9 @@ def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash()
     from dataclasses import replace
 
     c, first, second = receipt_chain()
-    evolved = replace(c, freshness=timedelta(days=1))
+    evolved = replace(
+        c, shapes={name: replace(shape, cost=shape.cost + 1) for name, shape in c.shapes.items()}
+    )
     current = fold(first, second).with_contract(evolved)
     assert (
         Ledger.reconcile(

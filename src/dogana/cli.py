@@ -40,11 +40,12 @@ receiver's store, which reads the rows."""
 
 CLAIMS_EXAMPLES = """\
 example:
-  dogana claims orders.ledger.json --at 2026-10-27T08:00:00Z
+  dogana claims orders.ledger.json --at 2026-10-27T08:00:00Z --limit-days 2
 
 LEDGER is a ledger as JSON, as a store returns it from load_ledger(contract).to_json(). Prints one
 line per region: its bounds, its state at TIME (now by default) and its two dates, then the table's
-state and the instant it is exact at, if any."""
+state and the instant it is exact at, if any. With --limit-days, a region whose complete as of date
+is older than that at TIME is expired."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -114,7 +115,10 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     claims.add_argument("ledger", type=Path, metavar="LEDGER", help="a ledger as JSON")
-    claims.add_argument("--at", metavar="TIME", help="the instant to judge freshness at, with a UTC offset")
+    claims.add_argument("--at", metavar="TIME", help="the reader's instant, with a UTC offset")
+    claims.add_argument(
+        "--limit-days", type=float, metavar="DAYS", help="expire regions proven longer ago than this"
+    )
     claims.add_argument(
         "--window", nargs=2, metavar=("LOW", "HIGH"), help="only this window, regions cut to it"
     )
@@ -195,7 +199,15 @@ def _claims(args: argparse.Namespace) -> int:
         kind = ledger.contract.types[ledger.contract.window_column]
         low, high = (_scalar(bound, kind) for bound in args.window)
         window = (low, high)
-    claims = ledger.claims(at, window=window)
+    limit = None
+    if args.limit_days is not None:
+        try:
+            limit = timedelta(days=args.limit_days)
+        except (OverflowError, ValueError):
+            limit = None
+        if limit is None or limit < timedelta(0):
+            raise _UsageError("--limit-days must be a nonnegative number of days")
+    claims = ledger.claims(at, limit, window)
     for claim in claims.regions:
         region = claim.region
         print(

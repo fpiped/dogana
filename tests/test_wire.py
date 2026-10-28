@@ -266,7 +266,6 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
 
 def test_numeric_spellings_and_default_values_do_not_fork_identity():
     from dataclasses import replace
-    from datetime import timedelta
 
     from dogana import Shape
 
@@ -279,8 +278,7 @@ def test_numeric_spellings_and_default_values_do_not_fork_identity():
     assert integer.identity_dict()["cost"] == 2
     assert "cost" not in replace(integer, cost=1).identity_dict()
     c = Contract("stock", ("id",), {"full": integer}, types={"id": "int"})
-    assert "freshness" not in c.identity_dict()
-    assert replace(c, freshness=timedelta(seconds=2)).identity_dict()["freshness"] == {"$seconds": 2}
+    assert "start_at" not in c.identity_dict()
 
 
 def test_identity_excludes_versions_recursively(monkeypatch):

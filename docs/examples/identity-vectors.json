@@ -85,43 +85,6 @@
       "sha256": "4ad6c477daccfcab252c50399eb8c9ab436d638d25657be00b5ba9930e11f6b6"
     },
     {
-      "name": "explicit-freshness",
-      "wire": {
-        "kind": "Contract",
-        "version": 4,
-        "table": "stock",
-        "key": [
-          "id"
-        ],
-        "shapes": {
-          "full": {
-            "kind": "Shape",
-            "version": 4,
-            "coverage": "all",
-            "completeness": "complete",
-            "deletions": "absence",
-            "checkpoint": "none",
-            "cost": 1.0,
-            "window_size": null,
-            "lookback": null
-          }
-        },
-        "window_column": null,
-        "freshness": {
-          "$seconds": 172800
-        },
-        "start_at": null,
-        "cursor_column": null,
-        "types": {
-          "id": "int"
-        },
-        "schema_hash": null,
-        "deleted_column": null
-      },
-      "canonical": "{\"freshness\":{\"$seconds\":172800},\"key\":[\"id\"],\"kind\":\"Contract\",\"shapes\":{\"full\":{\"checkpoint\":\"none\",\"completeness\":\"complete\",\"coverage\":\"all\",\"deletions\":\"absence\",\"kind\":\"Shape\"}},\"table\":\"stock\",\"types\":{\"id\":\"int\"}}",
-      "sha256": "1f59d64c2d8296fb1c88cc5e2bc0458b2a94e25b820bcbed74a2e2b88edae751"
-    },
-    {
       "name": "shape-small-cost",
       "wire": {
         "kind": "Shape",
@@ -219,9 +182,6 @@
           }
         },
         "window_column": null,
-        "freshness": {
-          "$seconds": 604800
-        },
         "start_at": null,
         "cursor_column": null,
         "types": {
@@ -273,9 +233,6 @@
           "id": "int"
         },
         "schema_hash": "opaque:orders-columns-v1",
-        "freshness": {
-          "$seconds": 604800
-        },
         "start_at": null,
         "cursor_column": "updated_at",
         "deleted_column": null
@@ -306,9 +263,6 @@
         "window_column": null,
         "types": {},
         "schema_hash": null,
-        "freshness": {
-          "$seconds": 604800
-        },
         "start_at": null,
         "cursor_column": null,
         "deleted_column": null

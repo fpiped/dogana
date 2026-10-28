@@ -231,6 +231,13 @@ def test_claims_prints_each_region_and_the_instant_the_table_is_exact_at(tmp_pat
         "orders [2026-10-27, +inf): unknown; complete as of unknown; deletions as of unknown\n"
         "orders: unknown; exact at no single instant\n"
     )
+    window = ["--window", "2026-10-01", "2026-10-02"]
+    assert main(["claims", str(path), "--at", "2026-10-28T06:00:00Z", "--limit-days", "2", *window]) == 0
+    assert capsys.readouterr().out.endswith("orders: complete; exact as of 2026-10-26T06:00:00+00:00\n")
+    assert main(["claims", str(path), "--at", "2026-10-28T06:00:01Z", "--limit-days", "2", *window]) == 0
+    assert capsys.readouterr().out.endswith("orders: expired; exact as of 2026-10-26T06:00:00+00:00\n")
+    for days in ("-1", "inf", "nan"):
+        assert main(["claims", str(path), "--limit-days", days]) == 2
 
 
 def test_the_module_and_the_console_script_run_the_same_command():

@@ -320,7 +320,9 @@ def join(left: Region, right: Region) -> Region:
 
 
 def meet(left: Region, right: Region) -> Region:
-    claims = Claims.combine(*(Ledger(CONTRACT, (region,)).claims(at(200)) for region in (left, right)))
+    claims = Claims(
+        tuple(r for region in (left, right) for r in Ledger(CONTRACT, (region,)).claims(at(200)).regions)
+    )
     return Region(complete_as_of=claims.complete_as_of, deletions_as_of=claims.deletions_as_of)
 
 

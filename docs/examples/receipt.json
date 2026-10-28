@@ -54,9 +54,6 @@
   "contract":{
     "cursor_column":null,
     "deleted_column":null,
-    "freshness":{
-      "$seconds":604800
-    },
     "key":[
       "id"
     ],

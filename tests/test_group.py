@@ -4,7 +4,6 @@ import pytest
 
 from dogana import (
     Check,
-    Claims,
     Contract,
     Gate,
     Group,
@@ -64,13 +63,14 @@ def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant
     mixed = ledger.apply(Manifest("orders", "daily", at(19), window=window, schema_hash=ORDERS.schema_hash))
     assert mixed.claims(at(19)).exact_as_of is None
     assert mixed.claims(at(19), window=window).exact_as_of == at(19)
-    assert full(ORDERS, 18).claims(at(30)).state is State.EXPIRED
-    assert full(ORDERS, 18).claims(at(30)).exact_as_of == at(18)
+    assert full(ORDERS, 18).claims(at(30)).state is State.COMPLETE
+    assert full(ORDERS, 18).claims(at(30), timedelta(days=7)).state is State.EXPIRED
+    assert full(ORDERS, 18).claims(at(30), timedelta(days=7)).exact_as_of == at(18)
 
 
 def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     early, late = full(ORDERS, 18), full(LINES, 19)
-    combined = Claims.combine(early.claims(at(19)), late.claims(at(19)))
+    combined = Group((ORDERS, LINES)).claims({"orders": early, "order_lines": late}, at(19))
     assert (combined.state, combined.complete_as_of, combined.deletions_as_of) == (
         State.COMPLETE,
         at(18),

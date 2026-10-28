@@ -65,7 +65,6 @@ def test_a_source_cannot_declare_a_contradictory_shape(properties):
         {"types": {"other": "str"}},
         {"table": "__dogana_ledgers"},
         {"table": "__DOGANA_ledgers"},
-        {"freshness": timedelta(days=-1)},
     ],
 )
 def test_contract_parameters_must_describe_a_coherent_table(kwargs):
@@ -191,7 +190,6 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         original,
         types={**original.types, "changed_at": "datetime"},
         schema_hash="new-columns",
-        freshness=timedelta(days=1),
         cursor_column="changed_at",
         shapes={**original.shapes, "another": FULL},
     )
@@ -220,7 +218,6 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         ("schema_hash", 1),
         ("shapes", [("full", FULL)]),
         ("shapes", {1: FULL}),
-        ("freshness", 5),
         ("cursor_column", 1),
     ],
 )
@@ -297,7 +294,6 @@ def test_corrected_content_changes_manifest_identity():
 @pytest.mark.parametrize("duration", [timedelta(days=100000, microseconds=1), timedelta.max])
 def test_durations_that_cannot_round_trip_in_seconds_are_refused(duration):
     for build in (
-        lambda: replace(contract(), freshness=duration),
         lambda: replace(SINCE, lookback=duration),
         lambda: replace(WINDOW, window_size=duration),
     ):
@@ -307,11 +303,11 @@ def test_durations_that_cannot_round_trip_in_seconds_are_refused(duration):
 
 def test_large_integral_durations_remain_exact_and_round_trip():
     duration = timedelta(days=999999999, seconds=86399)
-    c = replace(contract(), freshness=duration)
-    assert c.to_dict()["freshness"] == {"$seconds": 86399999999999}
-    assert Contract.from_json(c.to_json()) == c
-    adjacent = replace(c, freshness=duration - timedelta(seconds=1))
-    assert adjacent.identity != c.identity
+    s = replace(WINDOW, window_size=duration)
+    assert s.to_dict()["window_size"] == {"$seconds": 86399999999999}
+    assert Shape.from_json(s.to_json()) == s
+    adjacent = replace(s, window_size=duration - timedelta(seconds=1))
+    assert adjacent.identity != s.identity
 
 
 def test_integer_costs_cannot_silently_lose_precision():

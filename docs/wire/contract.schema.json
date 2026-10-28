@@ -41,9 +41,6 @@
         }
       ]
     },
-    "freshness": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/nonnegativeDuration"
-    },
     "start_at": {
       "anyOf": [
         {
@@ -108,7 +105,6 @@
     "key",
     "shapes",
     "window_column",
-    "freshness",
     "start_at",
     "cursor_column",
     "deleted_column",

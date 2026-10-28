@@ -144,7 +144,8 @@ again = send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
 ledger = store.load_ledger(orders)
 claims = ledger.claims(again.received_at)
 print(f"whole table: complete as of {claims.complete_as_of.date()}, {claims.state.value}")
-print(f"eight days later: {ledger.claims(again.received_at + timedelta(days=8)).state.value}")
+week = timedelta(days=7)
+print(f"eight days later: {ledger.claims(again.received_at + timedelta(days=8), week).state.value}")
 ```
 
 ```text
@@ -155,9 +156,9 @@ eight days later: expired
 ```
 
 The full export removes order 1, which is no longer in it. Sent again, the same manifest gets back
-its first receipt, and nothing is written twice. Claims are evaluated at the instant you ask. The
-contract's freshness, seven days by default, is how old the complete as of date may be. Eight days
-after October 25 it is older than that, so the table is expired until a new file arrives.
+its first receipt, and nothing is written twice. Claims are evaluated at the instant you ask. How
+old is too old is the reader's choice: with a limit of seven days, eight days after October 25 the
+table is expired until a new file arrives.
 
 ## 6. Ask for the next read
 

@@ -172,13 +172,10 @@ orders = Contract(
     cursor_column="updated_at",
     deleted_column="deleted",
     types={"id": "int", "order_date": "date", "updated_at": "datetime", "deleted": "bool"},
-    freshness=timedelta(days=2),
 )
 ```
 
-`types` gives the type of the columns dogana reads: key, window, cursor and deleted. `freshness` is
-how old the complete as of date may grow before a reader should stop trusting it: here two days,
-for daily files plus some slack. The default is seven days.
+`types` gives the type of the columns dogana reads: key, window, cursor and deleted.
 
 Take the files of [the window column](#the-window-column) example:
 
@@ -254,9 +251,9 @@ A **reader** is whoever queries the loaded rows. Before trusting them, it asks t
 | State | Meaning |
 |---|---|
 | unknown | Nothing is proven. |
-| complete | Both dates are equal, and recent enough for the contract's freshness. |
-| patched | Complete as of a later date than deletions, and recent enough. |
-| expired | Complete as of a date older than the contract's freshness allows. |
+| complete | Both dates are equal, and not expired. |
+| patched | Complete as of a later date than deletions, and not expired. |
+| expired | Complete as of a date older than the limit the reader gives. |
 
 A table's state is its worst region's, in the order unknown, expired, patched, complete. Its dates
 are the earliest complete as of and the earliest deletions as of among its regions.
@@ -409,7 +406,7 @@ Knowing when a table holds every row it should is an old question in database re
 | Receipt | The record of the decision on one delivery, whether accepted or refused. |
 | Replay | The same manifest sent again. dogana answers with the first receipt and changes nothing. |
 | Claims | The state of each region at the moment a reader asks. |
-| Expired | The state of a region whose complete as of date is older than the contract's freshness allows. |
+| Expired | The state of a region whose complete as of date is older than the limit the reader gives. |
 | Exact at p | Every region has both dates equal to p: the table holds exactly the rows the source had at p. |
 | Group | Tables read together, from one snapshot of the source. |
 | Reference | A rule the source keeps between two tables of a group, such as "every invoice line names an existing invoice". |

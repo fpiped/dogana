@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .contract import Contract, Manifest, Window, coverage_window, identifier
 from .errors import InvalidContract
@@ -78,7 +78,11 @@ class Group:
         return None
 
     def claims(
-        self, ledgers: Mapping[str, Ledger], now: datetime, windows: Mapping[str, Window] | None = None
+        self,
+        ledgers: Mapping[str, Ledger],
+        now: datetime,
+        windows: Mapping[str, Window] | None = None,
+        limit: timedelta | None = None,
     ) -> Claims:
         """Every table's claims at now, clipped to its window; `exact_as_of` is the group's common instant."""
         windows = windows or {}
@@ -86,4 +90,10 @@ class Group:
             raise InvalidContract("group claims need one ledger per table of the group")
         if not set(windows) <= set(self.tables):
             raise InvalidContract("group windows name tables outside the group")
-        return Claims.combine(*(ledgers[t].claims(now, window=windows.get(t)) for t in self.tables))
+        return Claims(
+            tuple(
+                region
+                for t in self.tables
+                for region in ledgers[t].claims(now, limit, windows.get(t)).regions
+            )
+        )

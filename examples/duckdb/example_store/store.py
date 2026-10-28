@@ -231,8 +231,7 @@ def _deleted(candidate: str) -> str:
 
 
 class DuckDBStore:
-    def __init__(self, path: str | Path, *, adopt: bool = False) -> None:
-        self._adopt = adopt
+    def __init__(self, path: str | Path) -> None:
         self._candidates: dict[str, _Candidate] = {}
         self._checked: dict[str, _Checked] = {}
         self._references: dict[tuple[tuple[Reference, ...], frozenset[str]], Check] = {}
@@ -358,8 +357,8 @@ class DuckDBStore:
                 "EXISTS(SELECT 1 FROM __dogana_publications WHERE table_name=?)",
                 [contract.table] * 3,
             )[0]
-            if self._exists(contract.table) and not tracked and not self._adopt and not created:
-                raise StoreError("table exists without a publication; explicit adopt=True is required")
+            if self._exists(contract.table) and not tracked and not created:
+                raise StoreError("table exists without a publication")
             return Ledger(contract)
         try:
             ledger = Ledger.from_json(row[0])
