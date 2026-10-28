@@ -29,11 +29,14 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
    doubling, UTF-8, a header row, no comments, no other dialect; a sender counting rows parses that
    grammar. A `datetime`, in a file or a manifest, carries its UTC offset or is refused. A file that
    does not parse is a recorded rejection, never a storage error.
-5. `produced_at` is the source snapshot or read boundary: the extractor guarantees every change
-   through it, endpoint included. Download completion, arrival time and a scheduler's logical date
-   are not that boundary. Receiver time `now` rejects `produced_at > now`. A late commit with an
-   earlier `updated_at` is invisible to the gate; overlapping keyed reads mitigate bounded lag, and
-   no lookback proves extraction complete.
+5. `produced_at` is the instant of the source the file shows: the extractor guarantees every
+   change up to it, that instant included. When the download finished, when the file arrived and a
+   scheduler's logical date are not that instant. The gate rejects `produced_at` later than the
+   receiver's time `now`. A read that is not one snapshot, such as an API paged for forty minutes,
+   shows no single instant: whatever it declares is wrong by the rows created or deleted while it
+   ran. A transaction that stamps `updated_at = 01:59:58` and commits at 02:00:03 is invisible to a
+   read at 02:00, and to the gate. A keyed shape's `lookback` rereads an overlap to narrow that gap;
+   no lookback proves it closed.
 
 ## Contract and shapes
 
@@ -50,49 +53,66 @@ Keys and window bounds use ordered scalar types, a cursor `datetime` or `int`, t
 **Column hash.** The data contract owns the columns; the delivery contract references them by an
 opaque `schema_hash`, from an ODCS (Open Data Contract Standard) document, a dbt model or a column
 list. When present, the manifest carries the same hash and the store checks its candidate against
-it; when absent, no schema check is required. For an ODCS schema object: take its properties in
-declared order as `[name, type]` pairs, with dogana's six type names or `decimal(p,s)` for an exact
-decimal, physical and nested types resolved by the receiver, and hash
+it; when absent, no schema check is required. For an ODCS schema object, build one `[name, type]`
+pair per property, in declared order. The type is one of dogana's six type names, or `decimal(p,s)`
+for an exact decimal; the receiver maps physical and nested types to these names. Hash
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")` with SHA-256. Only the
 pairs are hashed. The example store and file drop use this recipe; another store must agree with
 its receiver on the hash.
 
-**Window column.** It exists exactly when a window shape exists. Regions divide its ordered domain,
-not the key space. Its value never changes for a key, deletion and reinsertion included: a creation,
-order, document or event date, never an update time. A row whose value moves between regions proven
-at different instants can be missing from both, so a window delivery refuses a key published outside
-its window, and only a whole-table delivery moves one. "Rows updated in the last 30 days" is a
-changes delivery whose `since` is 30 days back.
+**Window column.** A contract has one exactly when it has a window shape. Regions divide the
+window column's values, not the keys. A key's window value never changes, even if the row is
+deleted and inserted again: use a creation, order, document or event date, never an update time. A
+row whose value moves between two regions proven at different instants can be missing from both.
+So a window delivery refuses a key already published outside its window, and only a whole-table
+delivery can move a key. "Rows updated in the last 30 days" is not a window: it is a changes
+delivery whose `since` is 30 days back.
 
 **Domains.** Keys are unique and non-null. Key and window values are strings, integers, dates or UTC
 datetimes, of the type in `types`, as are manifest bounds. Aware datetimes are normalized to UTC
 before equality or arithmetic, DST folds included. Strings use code-point order, without Unicode
 normalization or collation; the successor of `s` is `s + "\x00"` and the minimum `""`. Date and
-datetime domains stop at their representable limits, and empty exterior intervals are discarded. An
-equal-endpoint window is one partition; delivered partitions never close the rest of the domain,
-which needs a full read.
+datetime domains end at the smallest and largest values Python represents, and a window reaching
+one of them creates no empty region beyond it. A
+window whose two ends are equal is one partition, such as one day or one plant. Delivering
+partitions never proves the values no partition covers: that needs a full read.
 
-**Keyless tables.** An empty `key` means rows have no identity: they form a multiset, equal events
-keep separate occurrences, and complete shapes replace their coverage wholesale. Keyless
-changed-only shapes are whole-domain timestamp appends without deletions, from a `start_at` that
-bounds retained history (events after it, never at it): the source only appends, never deletes or
-revises. Tombstones, generations and sequences need keys.
+**Keyless tables.** An empty `key` means rows have no identity: two equal events stay two rows, and
+a complete delivery replaces everything in its coverage. A keyless shape of changes is an append:
+whole table, timestamp checkpoint, no deletions. The source only appends and never deletes or
+revises a row. The first append on an untouched ledger starts at the contract's `start_at`, the
+start of the history the source keeps, and holds events after it, never at it. Tombstones,
+generations and sequences need keys.
 
-**Cursor column.** Declared `datetime` or `int` in `types`, it checks every row of a read: a
-`datetime` cursor timestamp reads against `(since, produced_at]`, an `int` cursor sequence reads
-against `(since, generation]`. It must check one of the contract's changed-only shapes. Without it,
-rows are not checked against the declared interval.
+**Cursor column.** The column a changes read selects on, typed `datetime` or `int` in `types`.
+With a `datetime` cursor, every live row of a timestamp read has its cursor in
+`(since, produced_at]`; with an `int` cursor, every live row of a sequence read has it in
+`(since, generation]`. A tombstone's cursor may be null. Without a cursor column, rows are not
+checked against the declared interval.
 
-**Deleted column.** Declared `bool`, distinct from key, window and cursor, it exists exactly when a
-tombstone shape exists. In a file, a row where it is true is a tombstone: it names a deleted key,
-its other values are not published and may be null, but typed where present. False is a live row;
-null is neither and fails the row count. A file may omit the column, and then every row is live;
-only a tombstone shape may deliver true. The column is never published and the column hash leaves it
-out. Since keys travel in the file, only `content_hash` identifies which keys a file deletes:
-without it a second file with the same manifest is a replay, never read. Declare it for tombstone
-shapes, as `dogana manifest` and the file drop do. A soft-deleting source may deliver its flag here
-only if the soft delete moves the update time and nothing is removed physically; otherwise its
-deletions are `none`. Dates then speak of the rows whose flag is false.
+**Deleted column.** A `bool` column, distinct from key, window and cursor. A contract has one
+exactly when it has a tombstone shape. In a file, a row where it is true is a tombstone: it names a
+deleted key, and its other values are not published and may be null, though typed where present. A
+row where it is false is live. A null is neither, and fails the row count. A file may omit the
+column, and then every row is live; only a tombstone shape may deliver true. The column is never
+published, and the column hash leaves it out.
+
+The keys a file deletes travel in the file, not in the manifest, so only `content_hash` tells two
+such files apart: without it, a second file with the same manifest is a replay and is never read.
+Declare `content_hash` for tombstone shapes, as `dogana manifest` and the file drop do.
+
+A soft delete is a flag on a row the source keeps. A soft-deleting source may declare a tombstone
+shape, delivering the flag as the deleted column or keeping flagged rows as data with no
+tombstones, only if three things hold:
+
+1. setting the flag also moves the cursor column, since otherwise a changes read never selects the
+   flagged row and the deletion is never delivered;
+2. the source removes nothing physically: no archiving, retention purge, legal erasure or cascade
+   to child tables;
+3. the flag is on the table being loaded, not on another one.
+
+Otherwise the shape's deletions are `none`, and a periodic complete read removes the deleted rows.
+With the flag as the deleted column, dates speak of the rows whose flag is false.
 
 **Shapes.** A `Shape` has four properties:
 
@@ -105,17 +125,19 @@ deletions are `none`. Dates then speak of the rows whose flag is false.
 
 1. Complete shapes have deletions `absence` and checkpoint `none`; changed-only shapes a timestamp,
    generation or sequence checkpoint and deletions `none` or `tombstone`.
-2. Generations and sequences are table-wide positions: no window feeds of either, and one kind of
-   position per table. Ten shapes remain: complete over the table or a window, changed-only over the
-   table (three checkpoints) or a window (timestamp only), each with or without tombstones.
+2. Generations and sequences are positions in the whole table, so no window shape uses them, and a
+   table uses one kind of position. That leaves ten shapes: complete, over the table or a window;
+   changed-only over the table, with each of the three checkpoints, or over a window, by timestamp
+   only. Each changed-only shape comes with or without tombstones.
 3. `cost`, nonnegative, default one, is how expensive the file is to ask for; only the planner reads
    it.
 4. `window_size`, optional and positive, is a planning hint, not a limit on pushed windows. Rolling
    durations need date or datetime windows, typed as in `types`: DATE widths are whole UTC calendar
    days including both ends (thirty days ending October 19 start September 20), datetime widths an
    elapsed UTC duration including both ends, at microsecond resolution.
-5. `lookback`, nonnegative, only on timestamp shapes of keyed contracts, extends a planned read back
-   from the weakest covered completeness boundary. Keyless appends cannot overlap.
+5. `lookback`, nonnegative, is allowed only on timestamp shapes of keyed contracts. It starts a
+   planned read that much earlier than the oldest `complete_as_of` it covers, so consecutive reads
+   overlap. Keyless appends cannot overlap, since a reread event would count twice.
 
 Shape constructors take keywords; `Contract` and `Manifest` take keywords after `shapes` and
 `produced_at`. `Contract.manifest(shape, produced_at, ...)` fills in the table and the schema hash;
@@ -132,11 +154,11 @@ content_hash)` describes one read.
    feed issues its next one.
 2. Sequence reads carry integers and cover `(since, generation]`, with `generation >= since`; an
    empty interval has no rows. Like `produced_at`, `generation` promises every change up to it, so
-   positions follow commit order. An auto-increment id is assigned at insert, and a lower one can
-   commit after a read saw a higher one: read such ids only below every open transaction, or reread
-   with overlap, which keyed sequence reads admit. `produced_at` precedes the commit of the first
-   change after `generation`: a consumer behind the head uses the commit time of the last change it
-   read. Keyless tables append by timestamp.
+   positions must follow commit order. An auto-increment id does not: it is assigned at insert, so
+   id 41 can commit after a read has already seen id 42. Read such ids only below every open
+   transaction, or reread with overlap, which keyed sequence reads allow. `produced_at` must come
+   before the commit of the first change after `generation`, so a consumer behind the head of the
+   log declares the commit time of the last change it read. Keyless tables append by timestamp.
 3. A delivery that issues a position issues the table's kind: an integer when the contract has
    sequence shapes, else a string. A complete whole-table delivery may issue one; a complete window
    never does.
@@ -168,10 +190,11 @@ For a region `(c, d)`: every row the source held at `c` with a window value in t
 present, and every row retained there was live at some instant in `[d, c]`. Equal dates mean the
 region is the source at that instant. Unknown is not empty: nothing has been proven there.
 
-The ledger stores only the cuts where evidence changes, each with the evidence up to the next;
-regions are the view between cuts. Neighbours with equal evidence merge, and space no delivery
-touched stays unknown. `Ledger.apply` does accounting only, without row checks or replay lookup,
-which belongs to store delivery.
+The ledger stores only the points where the evidence changes, each with the evidence up to the
+next point; regions are the view between points. Neighbouring regions with equal dates merge, and
+values no delivery touched stay unknown. `Ledger.apply` does accounting only: it checks the
+transition and updates dates, position and publication chain. Checking rows and looking up replays
+belong to store delivery.
 
 ## Transitions
 
@@ -192,15 +215,17 @@ which belongs to store delivery.
 1. The manifest matches its shape and contract, bounds and key types included.
 2. Every affected known region has `t > complete_as_of`: a late full cannot overwrite a newer
    window.
-3. Changed-only coverage is known throughout, except for the first keyless append on an untouched
-   ledger, which has `since = start_at`; later appends have `since = complete_as_of` in every
-   affected region, so after a newer complete window a global append needs a full reset.
+3. Every region a changed-only delivery covers is known. The one exception is the first keyless
+   append on an untouched ledger, whose `since` equals `start_at`. Every later append has `since`
+   equal to `complete_as_of` in every region it covers. Once a complete window moves one region
+   ahead, no single `since` fits them all, and a whole-table append needs a complete whole-table
+   delivery first.
 4. Timestamp changes have `since <= t` and `since <= complete_as_of` everywhere covered.
 5. Generation changes have `since` equal to the held generation; a broken chain needs a full reset.
 6. Keyed sequence reads have `since <= position <= generation` for the held integer position: they
    may reread, never skip or go back. A missing or opaque position needs a complete delivery issuing
    one.
-7. The gate also requires `t <= now`; accounting alone has no receiver clock.
+7. The gate also requires `t <= now`; `Ledger.apply` alone has no receiver clock, so it cannot.
 8. Each acceptance extends the publication chain with the previous head, contract and manifest;
    disjoint windows commute on evidence, never on the chain.
 
@@ -226,25 +251,29 @@ no keys. The core describes operations and never reads rows.
 | rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. A tombstone's may be null, else in the same interval. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes read equals it. |
 
-A key published in another region is refused rather than moved, since that region keeps its claim;
-a row leaving a window at the source can still leave a hole no check sees, so source immutability
-remains necessary. A check blocked by an
-earlier failure answers `passed=False, detail="not evaluated"`. Business rules run outside this set,
-and the caller keeps their results.
+A window delivery refuses a key already published in another region instead of moving it, since
+that region keeps its claim. A row whose window value changes at the source can still leave a hole
+no check sees, so the window column must never change. A check that an earlier failure blocks
+answers `passed=False, detail="not evaluated"`. Business rules run outside this set, and the caller
+keeps their results.
 
 `Gate.evaluate(ledger, manifest, outcomes, now=now, source=None)` adds the core checks: structure,
 source time, base coverage, continuity and monotonic time. `Gate.preflight(ledger, manifest,
 now=now)` returns them without rows; `Gate.reject(ledger, manifest, checks, now=now, source=None)`
 records a declared failure.
 
-A `Receipt` records one decision: manifest, contract in force, checks, `outcome` (`accepted`,
-`rejected` or `replayed`, which `accepted` and `replayed` read), `received_at`, optional `source`,
-`base_publication_id`, the publication identity, and `ledger_identity`, the identity of the ledger
-the decision leaves. Acceptance and replay carry a `Transition`: the plan and the regions over the
-coverage afterwards. A rejection leaves ledger and publication as they were. The ledger is never in
-a receipt: it is the fold of the accepted receipts, which `ledger_identity` checks step by step. A
-receipt grows with its coverage, never with history, rows or deleted keys; it is indexed by the
-contract's table even when a rejected manifest names another, and its identity covers its checks.
+A `Receipt` records one decision: the manifest, the contract in force, the checks, `outcome`,
+`received_at`, an optional `source`, `base_publication_id`, the publication identity, and
+`ledger_identity`, the identity of the ledger the decision leaves. `outcome` is `accepted`,
+`rejected` or `replayed`; the `accepted` property is true for `accepted` and `replayed`, the
+`replayed` property only for `replayed`. An
+acceptance or a replay carries a `Transition`: the plan, and the regions over the coverage
+afterwards. A rejection leaves ledger and publication as they were.
+
+The ledger is never in a receipt: it is the result of applying the accepted receipts in order, and
+`ledger_identity` checks each step. A receipt grows with its coverage, never with history, rows or
+deleted keys. It is filed under the contract's table even when a rejected manifest names another,
+and its identity covers its checks.
 
 `DoganaError` is the root of `InvalidContract` (with its subclass `SerializationError`),
 `RejectedDelivery`, `PlanningError` and `StoreError` (with `InconsistentPublication`). Only declared
@@ -253,8 +282,10 @@ cleanup, and a failure after commit cannot revoke an acceptance.
 
 ## Claims and planning
 
-`Ledger.claims(now, limit=None, window=None)` clips regions to an optional window and states each
-one at the reader's time `now`, which evaluates freshness, not history. At the limit is fresh.
+`Ledger.claims(now, limit=None, window=None)` cuts the regions to `window`, if given, and states
+each one at the reader's time `now`. `now` only judges freshness: claims never show a past state of
+the ledger. `limit` replaces the contract's freshness when given. A region exactly `limit` old is
+still fresh.
 
 | State | Condition |
 |---|---|
@@ -263,52 +294,55 @@ one at the reader's time `now`, which evaluates freshness, not history. At the l
 | patched | `complete_as_of` newer than `deletions_as_of`, within the limit. |
 | expired | `complete_as_of` older than the limit, whatever `deletions_as_of` says. |
 
-1. The table's state is its worst region's, in the order unknown, expired, patched, complete; its
-   dates are separate minima, absent if any region is unknown. Equal minima do not make every
-   region exact, and the deletion date stays visible when recent patches hide old deletion
-   knowledge.
-2. `Claims.combine` takes the minima across tables: lower bounds on input dates, not a statement
-   about one snapshot or a joined result. Without a common instant they guarantee no row of any
-   query over several tables or regions, monotone ones included: a later read can miss a row deleted
-   after an earlier one, and carry a later version of a row.
-3. Negation (`NOT EXISTS`, anti-joins, difference) swaps the completeness and deletion requirements
-   for the negated input: with exact items and complete but patched movements at the same boundary,
-   "items with no movement" is valid but possibly incomplete, since a retained deleted movement
-   hides an item. Exact `COUNT` and `SUM` need both dates.
+1. The table's state is its worst region's, in the order unknown, expired, patched, complete. Its
+   two dates are the minimum of each date over its regions, taken separately, and absent if any
+   region is unknown. Equal minima do not make every region exact. The table's deletions date stays
+   visible even when recent changes have raised every completeness date.
+2. `Claims.combine` takes the same minima across tables. They are lower bounds on each input's
+   dates, not a statement about one snapshot or a joined result. Without a common instant they
+   guarantee no row of a query over several tables or regions, even a query without negation: a
+   later read can miss a row deleted after an earlier read, and carry a later version of a row.
+3. Negation (`NOT EXISTS`, anti-joins, difference) swaps the two requirements for the negated
+   input. Take items exact at `p` and movements complete as of `p` but patched: "items with no
+   movement" lists only right answers, but may miss some, since a deleted movement still present
+   hides its item. Exact `COUNT` and `SUM` need both dates.
 4. `Requirement` names a table, a minimum `complete_as_of`, an optional minimum `deletions_as_of`
    and window. `plan_delivery` returns nothing if claims suffice, else the cheapest admitted shape
    that establishes it, ties broken by name, checking each candidate transition against the ledger.
-   Unknown bases and unrepairable deletion gaps exclude feeds; windows prove bounded requirements,
-   whole-domain ones need whole-domain evidence. No suitable shape raises `PlanningError`. The
-   boundary may exceed the minimum to be later than all affected evidence, and the extractor must
-   obtain it.
+   A feed is excluded when a covered region is unknown, or when the requirement needs a deletions
+   date a feed cannot reach, since a feed starts from the held position and repairs deletions only
+   where both dates are equal. A window shape meets a requirement on a bounded window; a
+   requirement on the whole table needs a whole-table shape. No suitable shape raises
+   `PlanningError`. The planned boundary may be later than the required date, because it must be
+   later than every covered `complete_as_of`, and the extractor must then read at that boundary.
 5. `next_extraction(ledger, shape, until)` derives a rolling window from `window_size`, extended
-   back to bridge the last complete evidence. Timestamp `since` is the weakest covered completeness
-   boundary minus `lookback`; appends need one common boundary; generation requests use the held
-   cursor. `until` becomes `produced_at` only when extraction achieves it. Push and pull use one
-   gate.
+   back to meet the last complete evidence. For a timestamp shape, `since` is the earliest covered
+   `complete_as_of` minus `lookback`; an append needs every covered region to share one
+   `complete_as_of`; a generation request starts from the held generation. Declare `until` as
+   `produced_at` only if the read really saw the source at `until`. Files a sender pushes and reads
+   a receiver pulls pass the same gate.
 
 ## Tables together
 
-**Exact.** A region is exact at `p` when its dates are `(p, p)`; claims are exact at `p` when every
-region is. `Claims.exact_as_of` is that `p`, or `None`. Table dates are minima, so equal table dates
-do not imply it: a window proven later than the rest of its table gives equal minima and no instant.
-Freshness does not affect it; `state` still reports expiry.
+**Exact.** A region is exact at `p` when its dates are `(p, p)`, and claims are exact at `p` when
+every region is. `Claims.exact_as_of` is that `p`, or `None`. Equal table dates do not imply it,
+since they are minima: a window proven later than the rest of its table gives equal minima and no
+common instant. Freshness does not affect it; `state` still reports expiry.
 
 **Theorem.** If every region a query reads, in every table, is exact at the same `p`, the query
 answers as the source would have at `p` (filters, joins, unions, negation and exact aggregates),
 provided both sides compare and compute alike (collation, nulls, the order of a floating-point sum)
 and every rule the source keeps between its tables holds between the published ones.
 
-**Premise.** Every file comes from one consistent read of the source at `p`, stamped `p`; dogana
-cannot verify it. One read is one snapshot of every table. READ COMMITTED, the default of Postgres,
-Oracle and SQL Server, takes a snapshot per statement and is not one read. One read is REPEATABLE
-READ, SERIALIZABLE or one exported snapshot shared by workers in Postgres; `START TRANSACTION WITH
-CONSISTENT SNAPSHOT` in MySQL; a read-only transaction or queries `AS OF` one SCN (system change
-number) in Oracle; SNAPSHOT isolation in SQL Server. Separate export jobs are not one read, and one
-`produced_at` for them, such as one date in their file names, fabricates the instant. No common
-store transaction is needed: tables each read with its ledger under one publication (obligation 6),
-each exact at `p`, are consistent however they were published.
+**Premise.** Every file comes from one consistent read of the source at `p`, stamped `p`, which
+dogana cannot verify. One read is one snapshot of every table. READ COMMITTED, the default of
+Postgres, Oracle and SQL Server, takes a new snapshot for each statement, so it is not one read. One
+read is REPEATABLE READ, SERIALIZABLE or one exported snapshot shared by workers in Postgres; `START
+TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL; a read-only transaction or queries `AS OF` one SCN
+(system change number) in Oracle; SNAPSHOT isolation in SQL Server. Separate export jobs are not one
+read, and one `produced_at` for them, such as one date in their file names, fabricates the instant.
+The theorem needs no common store transaction: tables each exact at `p`, each read with its ledger
+under one publication (obligation 6), are consistent however they were published.
 
 **Group and reference.** `Group(contracts, references=())` names tables read together, each once
 whatever its letter case. A table belongs to one group, since a table accepted in one group does not
@@ -324,27 +358,29 @@ table and decides them as one:
 2. The `together` check passes when every manifest has the same `produced_at` and every table is
    accepted alone. Its detail digests every manifest identity and the references, so a receipt
    carrying it was accepted with exactly those files.
-3. With references and a passed `together`, the store answers one `references` check on the rows
-   every table's plan would produce, for the references `Group.unchecked` leaves to test.
+3. When the group has references and `together` passed, the store answers one more check,
+   `references`, on the rows each table would hold once its plan is applied. It covers only the
+   references `Group.unchecked` gives no reason to skip.
 4. Both checks join every receipt through `Gate.evaluate(..., joint=checks)`. If any receipt is a
    rejection, every table records its refusal; otherwise `publish_together` publishes every table's
    rows, ledger and receipt in one atomic step.
 
 **When a reference is tested.** Only when the child's delivered coverage ends exact at `p` and the
-parent is complete as of `p` over its whole domain. Then every child row there was live at `p` and
-every row it can name is present, so a row whose reference columns are all non-null and name no
-parent row proves the premise false, or that the source breaks the rule. Otherwise the reference
-passes untested and the detail says why, so an honest delivery is never refused for one: a child
-without tombstones or a parent delivered by windows leaves it untested, and `exact_as_of` tells the
-reader. A tested reference covers every child row in the coverage, so the store scans the child and
-joins the parent on each delivery. Values compare as values, int and float alike; a reference column
-typed other than its parent key column is a declaration error, and fails as soon as one row names a
-parent.
+parent is complete as of `p` over its whole domain. Then every child row there was live at `p`, and
+so was every parent row it can name, which is therefore present. A child row whose reference columns
+are all non-null and name no parent row proves the premise false, or that the source breaks the
+rule. In every other case the reference passes untested and the detail says why, so an honest
+delivery is never refused for one. A child without tombstones, or a parent delivered by windows,
+leaves it untested, and `exact_as_of` tells the reader. A tested reference covers every child row in
+the coverage, so the store scans the child and joins the parent on each delivery. Values compare as
+values, int and float alike; a reference column typed other than its parent key column is a
+declaration error, and fails as soon as one row names a parent.
 
-**Reaching `(p, p)`.** `together` does not require an exact result; the shapes decide it over each
-coverage: a complete delivery or keyless append, timestamp tombstones with `since` no later than the
-deletion date, or generation or sequence tombstones when both dates were equal. A table without
-changes delivers an empty changes file at `p`. Pass the windows to `Group.claims`.
+**Reaching `(p, p)`.** `together` does not require the result to be exact; each table's shape
+decides it over that table's coverage. These reach `(p, p)`: a complete delivery, a keyless append,
+timestamp tombstones with `since` no later than the deletions date, and generation or sequence
+tombstones when both dates were already equal. A table without changes delivers an empty file of
+a tombstone changes shape at `p`. A reader of windows passes them to `Group.claims`.
 
 **Replay and races.**
 
@@ -352,12 +388,13 @@ changes delivers an empty changes file at `p`. Pass the windows to `Group.claims
    these files under these references, every receipt replays, provided every declared hash still
    matches the bytes; when any was accepted alone, in another delivery or under other references,
    every table is refused, and the group needs a new read.
-2. A failure after the group's commit returns the committed receipts. A delivery whose tables
-   another delivery accepted meanwhile is decided the same way, so the outcome does not depend on
-   timing; when that delivery lands while refusals are recorded, the call raises `StoreError` and a
-   retry decides it. Only a publication that committed some tables and not others raises
-   `InconsistentPublication`. Two concurrent deliveries with equal manifests and receiver times give
-   one receipt, so the one that published nothing may also be answered `accepted`.
+2. A failure after the group's commit returns the committed receipts. If another delivery accepts
+   the same manifests in the meantime, this one is decided by rule 1, as if the other came first, so
+   the outcome does not depend on timing. If that other delivery lands while this one is recording
+   refusals, the call raises `StoreError`, and a retry decides it. Only a publication that committed
+   some tables and not others raises `InconsistentPublication`. Two concurrent deliveries with equal
+   manifests and receiver times give one receipt, so the one that published nothing may also be
+   answered `accepted`.
 3. Each table keeps its receipts, chain and reconstruction; a group adds no wire kind.
 
 Atomic publication serves availability, not the guarantee: without it a refused table leaves the
@@ -375,9 +412,10 @@ table with its accepted receipt. The store must:
 
 1. answer the references check on the rows the candidates would produce, without changing published
    rows, only for candidates that passed their own checks and references `Group.unchecked` leaves;
-2. verify every receipt against its checks, the `together` check recomputed from them and the
-   references, and, when there are references, the answer it gave for exactly those candidates after
-   their last check, refusing to publish without one;
+2. verify that each receipt agrees with its checks, that the `together` check equals the one
+   recomputed from the receipts and the references, and, when there are references, that the
+   `references` answer is the one it gave itself for exactly these candidates after their last
+   check. Without that answer it refuses to publish;
 3. publish every entry or none in one atomic step, under the six obligations of a single
    publication.
 
@@ -399,11 +437,11 @@ source, manifest, now)` owns the sequence:
    its rows and evidence, or records the rejection; `abort(candidate)` releases staged work after a
    failure.
 
-With `receipts(table=None)`, in persistence order, and `digest(source)`, the SHA-256 of a source's
-bytes or `None` for rows, these are the eight required methods. Publication of an acceptance needs a
-held and checked candidate; a rejection also compares and sets the parent, and a receipt that cannot
-decode is refused before the log changes. `publication_stamp(table)` and `repair(contract)` form the
-optional stamped tier, `check_references` and `publish_together` the
+These six, with `receipts(table=None)`, in persistence order, and `digest(source)`, the SHA-256 of a
+source's bytes or `None` for rows, are the eight required methods. Publishing an acceptance needs a
+held and checked candidate. Recording a rejection also compares and sets the parent, and a receipt
+that cannot be decoded is refused before the log changes. `publication_stamp(table)` and
+`repair(contract)` form the optional stamped tier, `check_references` and `publish_together` the
 [together tier](#tables-together); read methods and `store.deliver` are conveniences.
 
 The store's six obligations:
@@ -411,7 +449,7 @@ The store's six obligations:
 1. Check candidate rows before published rows change; execute only an accepted receipt's plan.
 2. Publish rows, ledger, receipt and any stamp in one atomic step: one transaction, or a
    table-format commit carrying the receipt or a reference to a durable one. Ordered writes with
-   idempotent plans are not atomic; accounting alone guarantees no publication.
+   idempotent plans are not atomic, and `Ledger.apply` alone guarantees nothing about rows.
 3. Compare and set against `receipt.base_publication_id`, refusing a changed head, cached checks on
    a stale base included; a commit retry never silently rebases an approved plan.
 4. Persist accepted and rejected receipts; keep accepted ones in publication order.
@@ -421,10 +459,10 @@ The store's six obligations:
 
 **Chain and recovery.** The publication chain is SHA-256 of UTF-8
 `f"{previous}:{contract.identity}:{manifest.identity}"`, the first `previous` the string `None`. The
-stamp ties rows to that head; it is no row checksum. Comparing it with the ledger finds a ledger
-behind its rows or a publication from outside; it cannot see row edits that keep the stamp, lost
-rejections or the loss of all evidence. Surviving receipts or stamps disprove a fresh start when a
-ledger is missing. Stores fail closed.
+store stamps the published rows with that head; the stamp is not a checksum of the rows. Comparing
+it with the ledger finds a ledger behind its rows, or a publication from outside dogana. It cannot
+see a row edit that keeps the stamp, a lost rejection or the loss of all evidence. When a ledger is
+missing, surviving receipts or stamps show the table is not new. Stores fail closed.
 
 `Ledger.follow(receipt)` applies one accepted receipt and checks its publication and ledger
 identities; `Ledger.from_receipts(contract, receipts)` folds the accepted ones in order, ignoring
@@ -447,10 +485,11 @@ apply per manifest, not to a batch or a history.
 
 ## Contract evolution
 
-History binds `table`, `key`, `window_column` and the types of key and window columns; stores refuse
-changes to them. Everything else may evolve: freshness, shrink, costs, window sizes, lookback,
-shapes, cursor columns, the column hash. Each receipt keeps its contract; the whole contract, with
-normalized numbers, enters the chain, but only binding changes refuse history.
+Once a table has history, its `table`, `key`, `window_column` and the types of the key and window
+columns are fixed, and stores refuse a contract that changes them. Everything else may evolve:
+freshness, shrink, costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
+receipt keeps its contract. Every contract change alters the chain, since the whole contract, with
+normalized numbers, enters it, but only a change to a fixed field refuses the history.
 `Ledger.with_contract(contract)` checks compatibility and keeps regions, generation and head;
 reconstruction uses each receipt's contract, then the requested one.
 

@@ -90,17 +90,20 @@ Keep accepted receipts beyond snapshot expiration if recovery must outlive row s
 
 ## Streams
 
-A micro-batch committed from a stream is one delivery. A CDC feed consumed in offset ranges after a
-snapshot is `Shape.feed()`, `since` and `generation` the committed and next offsets as one opaque
-string per table, each batch collapsed to one row per key. Keyless events are `Shape.append()`;
-upserts without deletes are `Shape.changes()` with a `lookback`.
+A micro-batch committed from a stream is one delivery. A CDC feed read in offset ranges after an
+initial snapshot uses `Shape.feed()`: `since` is the last committed offset and `generation` the next
+one, each encoded as one opaque string per table. Collapse each batch to one row per key. Keyless
+events are `Shape.append()`; upserts without deletes are `Shape.changes()` with a `lookback`.
+Debezium's new-record-state transform writes a delete as a row whose boolean `__deleted` is true:
+declare it as the deleted column.
 
-The loop is exactly-once with the receipt as commit record: resume from the ledger's generation with
-broker auto-commit off, retain rows and manifest, `deliver`, and acknowledge only after acceptance
-or replay; after a crash, replaying the retained manifest converges. A Spark `foreachBatch` id can
-be a feed's generation under a stable checkpoint location; it gives neither read boundary nor event
-time. Events re-emitted in a new batch are deduplicated by key, not by the ledger, and a late event
-with an earlier timestamp is invisible.
+With the receipt as the commit record, the loop delivers each batch exactly once. Turn the broker's
+auto-commit off and resume from the ledger's generation. Keep each batch's rows and manifest, call
+`deliver`, and acknowledge the batch only after it is accepted or replayed. After a crash,
+delivering the kept manifest again is a replay, so the loop ends in the same state. A Spark
+`foreachBatch` id can be a feed's generation under a stable checkpoint location; it gives neither
+read boundary nor event time. Events re-emitted in a new batch are deduplicated by key, not by the
+ledger, and a late event with an earlier timestamp is invisible.
 
 ## Orchestrators and loaders
 

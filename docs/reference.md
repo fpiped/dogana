@@ -71,13 +71,15 @@ changes and commit. The example's factory is in `tests/test_conformance.py`.
 (`StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger`); `TogetherConformance`
 adds groups for stores with `check_references` and `publish_together`: one instant, a refusal
 refusing every table, untested references, different read boundaries, failures after rows, a table
-published alone between check and publication, receipts without the store's own references answer,
-and whole replay. Passing is evidence for these scenarios, not a proof under every storage failure.
+published alone between check and publication, receipts whose `references` answer the store did not
+compute itself, and whole replay. Passing is evidence for these scenarios, not a proof under every
+storage failure.
 
 ## Example store on DuckDB
 
-`DuckDBStore(path, adopt=False)` takes a CSV or Parquet path, row dictionaries, or an Arrow table. A
-path is copied into the store's private folder while it is hashed, and only that copy is read.
+`DuckDBStore(path, adopt=False)` opens the DuckDB database at `path`. A delivery's source is a CSV
+or Parquet path, row dictionaries, or an Arrow table. A path is copied into the store's private
+folder while it is hashed, and only that copy is read.
 `deliver(store, contract, source, manifest, now)` commits rows, ledger, stamp and receipt in one
 transaction; a refusal changes nothing published, and `StoreError` means storage failed.
 

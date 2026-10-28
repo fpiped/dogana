@@ -1,15 +1,16 @@
 # Quick start
 
-Python 3.11 or later. dogana never reads a data file, so this page publishes through the
-repository's example store, a DuckDB database and a file drop outside the package. From a checkout,
-with uv and an active virtual environment:
+You need Python 3.11 or later. dogana itself never reads a data file, so this page uses the
+example store from the repository: it keeps the tables in a DuckDB database and picks up files from
+a folder. From a checkout of the repository (`git clone https://github.com/fpiped/dogana`), with
+uv and an active virtual environment (`uv venv`, then `source .venv/bin/activate`):
 
 ```sh
 uv pip install -e . -e examples/duckdb
 ```
 
 The blocks form one script: run them in order, in an empty directory. Steps 1 to 6 follow a table
-of orders through a week of files; 7 and 8 add deletions and a second table.
+of orders through a week of files. Steps 7 and 8 add deletions and a second table.
 [Concepts](concepts.md) explains every term.
 
 ## 1. Write the contract
@@ -38,10 +39,15 @@ orders = Contract(
 )
 ```
 
-`columns` lists every column with its type; the contract keeps its SHA-256, so a file with other
-columns is rejected. `id` identifies an order; `day`, its order date, never changes, so the dates
-are kept per range of days. The receiver accepts a full export, ten times as expensive to ask for,
-and every order dated in the last 30 days.
+`columns` lists every column with its type. `schema_hash` is the SHA-256 of that list as compact
+JSON, the protocol's recipe. The example store computes the same hash for each file, so a file with
+other columns is rejected. `id` is the key. `day`, the order date, never changes on an order, so it
+is the window column: dogana keeps the two dates separately for each range of days. `types` lists
+only the columns dogana itself reads, here the key and the window column.
+
+The contract accepts two shapes, or kinds of file: `full`, a full export, and `daily`, every order
+dated in the 30 days up to the read. Costs are weights the planner compares in step 6: a full
+export costs ten times a daily file.
 
 ## 2. Send and receive a file
 
@@ -78,8 +84,9 @@ sunday: accepted, orders [1, 2]
 ```
 
 The store, a DuckDB file, holds the rows, the dates and every decision. The manifest travels beside
-the file as `sunday.csv.json`: its shape, the instant the source was read, its rows and the SHA-256
-of its bytes. Senders in other languages write it with `dogana manifest`.
+the file as `sunday.csv.json`. It declares the shape, the instant the source was read, the number of
+rows and the SHA-256 of the file's bytes. Senders in other languages write it with
+`dogana manifest`.
 
 ## 3. A window file
 
@@ -106,9 +113,12 @@ Sep 20 to Oct 19  complete as of 2026-10-19, deletions as of 2026-10-19, complet
 before Sep 20     complete as of 2026-10-18, deletions as of 2026-10-18, complete
 ```
 
-Thirty days ending October 19 start on September 20, both ends included. Inside them the file is
-complete, so order 2, dated October 18 and missing, was deleted at the source; order 1, dated
-September 1, is outside and stays. The range is proven as of Monday, the rest as of Sunday.
+The 30 days ending October 19 start on September 20, both ends included. The file has every order
+dated in those days. Order 2, dated October 18, is missing from it, so it was deleted at the source
+and dogana removes it. Order 1, dated September 1, is outside the window and stays. The window is
+now proven as of Monday, October 19, and the rest of the table as of Sunday, October 18.
+`ledger.claims(now, window=...)` returns what the ledger proves about a range of days at the
+instant `now`: the two dates and a state.
 
 ## 4. A truncated file
 
@@ -123,8 +133,9 @@ row_count
 ```
 
 The manifest declares two rows and the file has none, so the whole file is rejected and nothing
-changes. A truncated file whose count matches passes the count; the shrink limit then rejects a
-complete file that removes more than half the rows it covers.
+changes. If a truncated file declared a matching count, the count check would pass. A second check
+catches the worst cases: a complete file, a full export or a window file, is rejected if it would
+remove more than half of the published rows in its range.
 
 ## 5. The next full export, and the same file twice
 
@@ -144,9 +155,10 @@ whole table: complete as of 2026-10-25, complete
 eight days later: expired
 ```
 
-The full export removes order 1. Delivered again, the same manifest returns the original receipt
-and publishes nothing. Claims are read at the reader's time: past the contract's freshness, seven
-days by default, the table is expired until a new file arrives.
+The full export removes order 1, which is no longer in it. Sent again, the same manifest gets back
+its first receipt, and nothing is written twice. Claims are evaluated at the instant you ask. The
+contract's freshness, seven days by default, is how old the complete as of date may be. Eight days
+after October 25 it is older than that, so the table is expired until a new file arrives.
 
 ## 6. Ask for the next read
 
@@ -168,10 +180,11 @@ to prove 2026-10-01 to 2026-10-26: a daily file for 2026-10-01 to 2026-10-26
 the next daily file: 2026-09-27 to 2026-10-26
 ```
 
-The planner works backwards from what a reader needs: for both dates on October 26 over orders
-dated October 1 to 26, the cheapest proof is a window file for those days, at cost 10, not a full
-export at 100. `next_extraction` gives the next regular file of a shape: the 30 days ending
-October 26. Your job runs the read and declares the instant the source was read
+`plan_delivery`, the planner, starts from what a reader needs: both dates at October 26, for orders
+dated October 1 to 26. The cheapest file that proves it is a window file for exactly those days, at
+cost 10, not a full export at cost 100. `next_extraction` follows the schedule instead: the next
+file of a shape at its usual size, the 30 days ending October 26. Neither function reads the source.
+Your extraction job runs the read and declares in the manifest the instant it read the source
 ([which instant](concepts.md#which-instant-to-declare)).
 
 ## 7. Deliver deletions
@@ -200,10 +213,13 @@ feed: accepted, stock [{'id': 2, 'qty': 9}]
 stock: complete, both dates Monday
 ```
 
-A feed is a series of change files, each starting where the previous one ended: Sunday's export
-is tagged `g1`, and Monday's feed runs from `g1` to `g2`, so no change between them is missing. A
-row whose `deleted` is true deletes its key, and the manifest only counts those rows
-(`tombstones=1`). Item 1 is gone, item 2 is updated, and both dates move to Monday.
+`deliver` hands the store rows, here Python dictionaries instead of a file, with their manifest.
+A feed is a series of change files, each starting where the previous one ended. Its position is a
+generation, a token the source issues with each read: Sunday's export carries `g1`, and Monday's
+file declares `since="g1"` and its new generation `g2`, so no change between them is missing. A row
+whose `deleted` is true is a tombstone: it deletes its key. The manifest counts those rows
+(`tombstones=1`) but does not list them. Item 1 is gone and item 2 is updated. Both dates move to
+Monday, because the feed starts where Sunday's export ended and reports its deletions.
 
 ## 8. Deliver related tables together
 
@@ -247,8 +263,12 @@ rejected: lines [10], exact as of Monday
 invoice_lines(invoice_id) references invoices: rows without a parent row in invoices: 1, naming invoice_id 2
 ```
 
-Invoices and their lines are read from one snapshot, so both files carry the same read time, and
-are delivered as one. On Monday both are published in one step and are the source as of Monday: a
-join answers as the source would have. Tuesday's line 11 names invoice 2, in neither file, so the
-files cannot be one instant of a source that keeps every line's invoice: both are rejected, and the
-tables stay exactly as of Monday.
+A group names tables read together. A reference states a rule the source keeps between them:
+every `invoice_lines.invoice_id` names an `invoices` key. Invoices and their lines are read in one
+snapshot, so both manifests carry the same instant, and `deliver_together` decides them as one.
+
+On Monday both are published in one step. Both are exact as of Monday, meaning both dates equal
+Monday everywhere, so a join between them gives the source's answer. On Tuesday, line 11 names
+invoice 2, but the invoices file has no invoice 2. The source keeps every line's invoice, so one
+snapshot of it can never hold a line without its invoice: the two files are not one snapshot. Both
+are rejected, and the tables stay as of Monday.

@@ -1,90 +1,129 @@
 # Concepts
 
-dogana from the beginning, each idea with an example. The [protocol](protocol.md) states the same
-rules precisely.
+One example runs through this page: a shop whose ERP sends its `orders` table as files. The
+[protocol](protocol.md) states the same rules exactly, edge cases included.
 
 ## The problem
 
-A source (an ERP, a SaaS API, a database you do not own) has a table that changes. Each file it
-sends shows part of that table at one instant, its **read boundary** `produced_at`, and proves what
-its kind of read proves:
+The **source** is the system that owns a table: an ERP, a SaaS API, a database you do not control.
+You cannot query it whenever you like. Instead it sends you files, and you load them into your own
+database.
 
-- a full dump: every row is here, and every row missing was deleted;
-- every order dated in the last 30 days: the same, for those days only;
-- every row changed since yesterday: nothing new or updated is missing; nothing about deletions.
+Each file is a copy of part of the table at one instant, and each kind of file tells you something
+different:
 
-Once loaded, a row is just a row, and nobody remembers which file proved what. dogana keeps that
-record beside the rows and refuses any file that would make it lie. "Proves" always means: if the
-sender read the source as its manifest declares. dogana checks files against declarations, never
-against the source.
+- A full dump of `orders` has every order. An order you loaded before and that is missing now was
+  deleted at the source.
+- A file of every order dated in the last 30 days tells you the same, for those 30 days only.
+- A file of every order changed since yesterday has every new and updated order. It says nothing
+  about deleted orders, because a deleted order is no longer there to export.
+
+Once loaded, the rows look the same whichever file brought them. You can no longer tell whether an
+order is in your table because the source still has it, or because no file has told you it was
+deleted.
+
+dogana keeps a record of what each file proved, beside the rows. It checks every file, updates the
+record, and refuses a file that would make the record wrong.
+
+The **sender** is whoever exports the files from the source. The **receiver** runs dogana and
+decides which files to accept. dogana never sees the source: it checks each file only against what
+the sender declares about it. If the export misses rows the source has, and the declaration counts
+only what was exported, no check can tell.
 
 ## Two dates
 
-For every part of a table dogana keeps two instants:
+For a table, or for each range of it (see [the window column](#the-window-column)), dogana keeps
+two instants:
 
-- **complete as of** (`c`): every row the source had at `c` is here;
-- **deletions as of** (`d`): no row the source deleted before `d` is still here.
+- **complete as of** (`c`): every row the source had at `c` is in your table.
+- **deletions as of** (`d`): no row the source deleted before `d` is still in your table.
 
-`d` is never later than `c`. When they are equal, that part is exactly the source at that instant;
-when `c` is later, it is **patched**: rows deleted since `d` may remain. A full dump on Sunday gives
-(Sunday, Sunday); Monday's changes without deletions give (Monday, Sunday). The rule behind every
-decision: **a delivery never raises a date above what it proves**.
+On Sunday the source sends a full dump of `orders`. Your table now holds exactly the orders the
+source had on Sunday, so both dates are Sunday.
 
-## Which instant to declare
+On Monday it sends the orders changed since Sunday. Every new and updated order arrives, so the
+table is complete as of Monday. An order deleted on Monday morning is not in the file, so it is
+still in your table, and the deletions date stays at Sunday.
 
-`produced_at` is the instant of the source the file shows. A nightly job scheduled at midnight
-queries at 02:00 and finishes the file at 02:40. It declares 02:00, the instant of its snapshot, or
-for a changes read the bound it selects, `updated_at <= 02:00`. Midnight would claim a row deleted
-at 01:00 is here; 02:40 would claim a row created at 02:10 is here.
+`d` is never later than `c`. When both equal an instant `p`, the table holds exactly the rows the
+source had at `p`. When `c` is later, the table is **patched**: it may still hold rows the source
+deleted between `d` and `c`.
 
-A read that is not one snapshot, such as an API paged for forty minutes, shows no single instant.
-A transaction that stamps `updated_at = 01:59:58` and commits at 02:00:03 is invisible at 02:00; a
-keyed shape's `lookback` overlaps the next read to narrow that gap, without proving it closed.
+Every decision dogana makes follows one rule: **a file moves a date only as far as the file
+proves.**
 
 ## The window column
 
-Dates are kept per range of one column, the **window column**, not per row. With `order_date` as
-window column, a full dump on Sunday (Oct 25) and on Tuesday a file of the orders dated Oct 25 to
-27:
+dogana can keep the two dates separately for each range of one column, the **window column**. Its
+value never changes on a row; usually it is a date, such as `order_date`. Ranges are needed because
+some files cover only part of that column, such as the orders of the last 30 days.
+
+On Sunday, October 25, the source sends a full dump. On Tuesday it sends every order dated October
+25 to 27. The table now has three ranges:
 
 | Order dates | Complete as of | Deletions as of |
 |---|---|---|
-| up to Oct 24 | Sunday | Sunday |
-| Oct 25 to Oct 27 | Tuesday | Tuesday |
-| from Oct 28 | Sunday | Sunday |
+| up to October 24 | Sunday | Sunday |
+| October 25 to 27 | Tuesday | Tuesday |
+| from October 28 | Sunday | Sunday |
 
-Each range is a **region**. Before any delivery there is one, **unknown**: nothing is proven there,
-which is not the same as empty. A table without a window column is one region.
+The last range is proven too: Sunday's dump had every order, including any dated in the future.
 
-**A row's window value must never change**: an order, invoice or event date, never an update time.
-With `updated_at`, an order edited on Oct 20 leaves the September region, and a later file of
-September deletes it while no file carries it into October. No file can show this, so the rule is
-the receiver's to keep.
+A range with its two dates is a **region**, and the list of a table's regions is its **ledger**.
+Before the first file, the table is one region with no dates, called **unknown**. Unknown means
+nothing has been proven there yet; it does not mean empty. A table without a window column is
+always one region.
+
+**A row's window value must never change.** Use an order date, an invoice date or an event date,
+never an update time. Suppose the window column is `updated_at`, and a September order is edited on
+October 20:
+
+- A file of the October range, read before the edit, does not have the order: it was still a
+  September row.
+- A file of the September range, read after the edit, does not have it either, because its
+  `updated_at` is now October 20. dogana removes it as deleted.
+
+The order is now in neither range, and both ranges say they are complete. No file shows the
+mistake, so choosing a column that never changes is up to you.
 
 ## Shapes
 
-A **shape** is a kind of file the receiver accepts: the whole table or a window, every current row
-or only changes, deletions told by absence, by tombstones or not at all, and changes since a time, a
-token the source hands out, or a log position.
+A **shape** is one kind of file the receiver accepts. Shapes differ in three ways:
 
-| Source behavior | Shape | What it proves |
+- **coverage**: the whole table, or a window of the window column;
+- **completeness**: every current row, or only the rows changed since a point;
+- **deletions**: told by absence (a missing row was deleted), by tombstones (next section), or not
+  at all.
+
+A shape of changes also says how that point, its **checkpoint**, is measured: a time (`timestamp`),
+a token the source hands out with each read (`generation`), or a position in the source's log
+(`sequence`).
+
+| What the source can send | Shape | What it proves |
 |---|---|---|
-| A full export | `Shape.full()` | both dates, everywhere |
-| Every order dated in the last 30 days | `Shape.window(size=timedelta(days=30))` | both dates, for those dates |
-| One complete file per day or plant | a window with equal ends | both dates for that value |
-| Rows with `updated_at` after the last read | `Shape.changes()` | complete as of this read; deletions do not move |
-| The same, with the keys deleted since | `Shape.changes(deletions="tombstone")` | both dates, when the read starts no later than the deletions date |
-| A change feed with a sync token | `Shape.feed()` | both dates, when each read starts from the previous token |
-| CDC batches by log position | `Shape.feed(checkpoint="sequence")` after a full snapshot | the same, by position |
-| Immutable events without a key | `Shape.append()` from `start_at` | both dates, when each read starts where the last ended |
+| A full export | `Shape.full()` | Both dates, for the whole table |
+| Every order dated in the last 30 days | `Shape.window(size=timedelta(days=30))` | Both dates, for those days |
+| One complete file per day or per plant | A window whose two ends are equal | Both dates, for that day or plant |
+| The rows whose `updated_at` is after the last read | `Shape.changes()` | Complete as of the read; the deletions date does not move |
+| The same, plus the keys deleted since | `Shape.changes(deletions="tombstone")` | Both dates, if the read starts no later than the deletions date |
+| A change feed with a sync token | `Shape.feed()` | Both dates, if each read starts from the token the previous one issued |
+| Change data capture batches by log position | `Shape.feed(checkpoint="sequence")`, after a full snapshot | Both dates, if each batch starts where the previous one ended |
+| Events without a key that never change | `Shape.append()` | Both dates, if each read starts where the previous one ended |
 
-A shape's **cost** tells the planner how expensive that file is to ask for.
+Each shape has a **cost**: how expensive that file is to ask the source for. dogana uses it to pick
+the cheapest file that gives a reader the dates it needs.
 
 ## Deletions
 
-Only **physical** deletions are hard: the row is gone, so no later export can show it. A
-**tombstone** shape names them in the file: a row whose boolean **deleted column** is true deletes
-its key, and its other values may be empty.
+The difficult case is a **physical** deletion, also called a hard delete: the row is gone from the
+source, so no later export can show it. A file can report it in two ways.
+
+A **complete** file holds every current row of what it covers, such as a full dump or a window
+file. It reports deletions by absence.
+
+A **tombstone** is a row in a file that says its key was deleted. The table's contract (below)
+names a boolean column, the **deleted column**. A row where that column is true is a tombstone, and
+its other values may be empty:
 
 ```text
 id,order_date,amount,deleted
@@ -92,20 +131,33 @@ id,order_date,amount,deleted
 9,,,true
 ```
 
-Its manifest declares `rows=1` and `tombstones=1`, never the keys. A **soft delete**, a flag on a
-kept row, may serve as the deleted column only if it moves `updated_at` (or the changes read never
-selects the flagged row), nothing deletes physically (archiving, retention purges, legal erasure,
-cascades) and the flag is on this table; otherwise the shape says `deletions="none"` and a periodic
-full dump heals the gap. Debezium's new-record-state transform writes deletes as rows with a boolean
-`__deleted`: that is a deleted column.
+Order 7 is a current row; order 9 was deleted. The file's [manifest](#the-manifest) counts the
+tombstones, here one, but never lists the keys.
+
+A **soft delete** is a flag, such as `is_deleted`, on a row the source does not remove. It can be
+the deleted column only if three things hold:
+
+- setting the flag also moves `updated_at`, so a read of changes picks the row up;
+- the source never removes a row physically, not even by archiving or retention purges;
+- the flag is on this table, not on another one.
+
+Otherwise declare the shape with `deletions="none"`, and send a full dump from time to time to
+remove the deleted rows.
 
 ## Writing a contract
 
-The receiver answers, per table: the **key**; the **window column**, if the source exports ranges of
-a date fixed per row; the **shapes** the source can really produce, with their costs; the **deleted
-column**, if a shape has tombstones; the **cursor column** a changes read selects on, so each row is
-checked against the declared interval; and the **column hash** from the data contract that owns the
-columns.
+A **contract** is the receiver's description of one table. It names:
+
+- the **key**: the columns that identify a row;
+- the **window column**, if the source can export ranges of it;
+- the **shapes** the source can really produce, each with its cost;
+- the **deleted column**, if a shape carries tombstones;
+- the **cursor column**: the column a read of changes filters on, such as `updated_at`. The
+  manifest declares the interval the read covers, from `since` to `produced_at`, and dogana checks
+  that every current row of the file has its cursor value inside it;
+- the **column hash**, `schema_hash`: a SHA-256 of the column names and types, computed from
+  wherever the columns are defined, such as a data contract, a dbt model or a list of columns. A
+  file with other columns is refused.
 
 ```python
 orders = Contract(
@@ -120,90 +172,202 @@ orders = Contract(
     cursor_column="updated_at",
     deleted_column="deleted",
     types={"id": "int", "order_date": "date", "updated_at": "datetime", "deleted": "bool"},
+    freshness=timedelta(days=2),
 )
 ```
 
-`types` names only the columns dogana reads. `freshness`, seven days by default, is the cadence plus
-arrival slack; a complete file that removes more than half the rows it covers is refused.
+`types` gives the type of the columns dogana reads: key, window, cursor and deleted. `freshness` is
+how old the complete as of date may grow before a reader should stop trusting it: here two days,
+for daily files plus some slack. The default is seven days.
 
-With this contract, a `changes` file since Sunday, after Sunday's `full` and Tuesday's `last3`,
-proves the whole table as of its read. The same file since Monday is refused: an order dated Oct 10
-and changed on Sunday evening is in neither Sunday's file nor Monday's.
+Take the files of [the window column](#the-window-column) example:
 
-## Delivering and reading
+- Sunday's `full` file proves the whole table as of Sunday.
+- Tuesday's `last3` file proves the orders dated October 25 to 27 as of Tuesday.
+- On Wednesday a `changes` file arrives with every change since Sunday's read. Its tombstones
+  report the deletions, so it proves the whole table as of Wednesday, both dates.
 
-The **gate** checks a file's **manifest** against the contract and the ledger (a changes file needs
-a proven base, a checkpoint leaves no gap), the **store** checks the rows (counts, keys, values,
-column hash, bytes, shrinkage), then publishes rows, dates and a **receipt** in one transaction, or
-records a refusal. The same manifest again is a **replay**, answered by its receipt. The **ledger**
-of regions is rebuilt from the receipts.
+The same file with only the changes since Monday is refused. Most of the table is proven only up to
+Sunday's read, so a change made between that read and Monday would be in no file, such as an order
+dated October 10 and changed on Sunday evening.
 
-A reader asks the ledger for **claims** at its current time: each region is unknown, **complete**,
-patched or **expired** (older than the freshness), and a table takes its worst state and earliest
-dates. Questions with a "not" need the deletions date: "items
-with no movement" over patched movements can miss an item whose deleted movement remains.
-`plan_delivery` names the cheapest read that gives the dates a reader needs.
+## The manifest
+
+Every file arrives with a **manifest**, the sender's declaration about that one file:
+
+- the table and the shape;
+- `produced_at`, the instant the file's data was read from the source (next section);
+- the window, for a window file;
+- `since`, where a read of changes starts, and for a feed `generation`, the token or position it
+  ends at;
+- `rows`, the number of current rows, and `tombstones`, the number of tombstones;
+- `content_hash`, the SHA-256 of the file's bytes.
+
+It usually travels as a JSON file beside the data file, such as `orders.csv.json`; the
+[example manifest](examples/manifest.json) shows one. The [reference](reference.md#file-drop) shows
+how to derive it from the file's name instead.
+
+## Which instant to declare
+
+`produced_at`, the file's **read boundary**, is the instant its data was read from the source.
+dogana checks only that it is not in the future and is later than the dates it moves. The rest is up
+to the sender.
+
+A nightly job is scheduled at midnight. It queries the source at 02:00 and finishes writing the
+file at 02:40. The file shows the source at 02:00, so it declares 02:00. For a file of changes,
+02:00 is the upper bound of its query, `updated_at <= 02:00`. The other two times are wrong:
+
+- Midnight claims the file has every order the source had at midnight. An order deleted at 01:00
+  existed at midnight, but the file, read at 02:00, does not have it.
+- 02:40 claims the file has every order the source had at 02:40. An order created at 02:10 is not
+  in it.
+
+A **snapshot** is a read that sees the whole source at one instant. One database transaction can be
+one, at the right isolation level (see [tables read together](#tables-read-together)). A read that
+is not one snapshot, such as an API paged for forty minutes, shows no single instant. Whatever
+instant it declares, it is wrong by the rows created or deleted while it ran.
+
+## Delivering a file
+
+A **delivery** is one file with its manifest, handed to dogana. It is decided in three steps:
+
+1. The **gate** checks the manifest against the contract and the ledger. For example, a file of
+   changes needs a base: the table must already be proven everywhere the file covers, and the read
+   must start no later than the complete as of date there.
+2. The **store**, the code that writes to your database, checks the rows against the manifest: for
+   example the counts, unique keys, window values inside the window, the column hash, and the bytes
+   against `content_hash`.
+3. If every check passes, the store publishes the rows, the new ledger and a receipt in one
+   transaction: readers see all of them from then on, or none. If any check fails, the whole file
+   is refused, rows and ledger stay as they were, and the refusal is recorded.
+
+A **receipt** is the record of one decision: the manifest, the checks and the outcome. dogana can
+rebuild the ledger from the accepted receipts. The same manifest sent again is a **replay**: dogana
+returns the first receipt and changes nothing, so a job that failed halfway can simply send its file
+again.
+
+## Reading
+
+A **reader** is whoever queries the loaded rows. Before trusting them, it asks the ledger for its
+**claims**: the state of each region at the reader's current time.
+
+| State | Meaning |
+|---|---|
+| unknown | Nothing is proven. |
+| complete | Both dates are equal, and recent enough for the contract's freshness. |
+| patched | Complete as of a later date than deletions, and recent enough. |
+| expired | Complete as of a date older than the contract's freshness allows. |
+
+A table's state is its worst region's, in the order unknown, expired, patched, complete. Its dates
+are the earliest complete as of and the earliest deletions as of among its regions.
+
+Which date a reader needs depends on the question:
+
+- The rows a query lists ("orders over 1,000 euros") include every one the source had at `c`, when
+  every region the query reads is complete as of the same `c`. They may include orders deleted
+  since `d`.
+- A question with "no" or "not" ("customers with no order in October") also needs the deletions
+  date: a deleted order still in the table makes its customer look active.
+- An exact count or sum needs both dates.
+- Regions or tables proven at different instants guarantee none of this, as the next section
+  shows.
+
+`plan_delivery` works the other way: given the dates a reader needs, it names the cheapest file to
+ask the source for ([quick start, step 6](quickstart.md#6-ask-for-the-next-read)).
 
 ## Tables read together
 
-A table is **exact at p** when every region has both dates at p: it holds exactly the rows the
-source had at p. If every table a query reads is exact at the same p, the query answers as the
-source would have at p, whatever it computes (a join, a `NOT EXISTS`, a total), because its inputs
-are the source's tables at p. `Claims.exact_as_of` names that instant, or none.
+A query often reads several tables, such as invoices and their lines. A table is **exact at `p`**
+when every region has both dates equal to `p`: it holds exactly the rows the source had at `p`.
 
-Tables exact each on its own are not enough:
+If every table a query reads is exact at the same `p`, the query gives the answer the source would
+have given at `p`, whatever it computes: a join, a `NOT EXISTS`, a total. Its inputs are the
+source's tables at `p`, so its output is too. `Claims.exact_as_of` returns that instant, or none
+when there is no such instant.
 
-| Time | Source | Delivery |
+Each table being exact on its own is not enough:
+
+| Time | At the source | Delivered |
 |---|---|---|
-| 10:00 | | `invoices` read: invoice 1 |
-| 10:03 | invoice 2 created, with its line 11 | |
-| 10:05 | | `invoice_lines` read: lines 10 and 11 |
+| 10:00 | | `invoices`, read now: invoice 1 |
+| 10:03 | invoice 2 is created, with its line 11 | |
+| 10:05 | | `invoice_lines`, read now: lines 10 and 11 |
 
-Invoices are exact at 10:00 and lines at 10:05, so the join finds line 11 without its invoice, and
-`exact_as_of` is none: the reader knows not to trust the join.
+Invoices are exact at 10:00 and lines at 10:05. A join finds line 11 but not its invoice.
+`exact_as_of` returns none, so the reader knows not to trust the join.
 
-One instant takes one read: every table from one snapshot, every manifest stamped with its instant.
-One transaction is not always one snapshot: at the default isolation level of most databases each
-statement sees the data as of its own start [5]; the [protocol](protocol.md#tables-together) lists
-the settings that give one. The snapshot is the sender's word, like every declaration.
+**One instant needs one snapshot.** The sender reads every table in one snapshot and stamps every
+manifest with its instant. One transaction is not always one snapshot: at the default isolation
+level of most databases, two queries in one transaction can see different data [5]. The
+[protocol](protocol.md#tables-together) lists the settings that give one snapshot. dogana cannot
+check that the read was one snapshot.
 
-The receiver declares the tables as a `Group`, with the rules the source keeps between them as
-`Reference`s (each line names an invoice), and delivers them with `deliver_together`, which:
+**A group.** The receiver declares the tables read together as a **group**. It may add
+**references**, rules the source keeps between them, such as "every invoice line names an existing
+invoice". `deliver_together` then decides the files as one:
 
-1. checks each file as if it came alone;
-2. requires one `produced_at` for all;
-3. checks each reference, when a failure would prove something;
-4. publishes every table in one transaction, or none.
+1. it checks each file as if it came alone;
+2. it requires the same `produced_at` on every manifest;
+3. it checks each reference, when the check can prove something (below);
+4. it publishes every table in one transaction, or none.
 
-A reference is checked only when an honest snapshot cannot fail it: the lines are exact at p where
-delivered, and the invoices complete as of p over the whole table. Then a line naming a missing
-invoice proves the files are not one snapshot, and every table is refused. Otherwise an honest
-delivery could fail it: patched lines may keep a line the source deleted with its invoice, and an
-invoice may sit in a region proven before it existed. So the check is skipped and the receipt says
-why. It catches orphans only: separate reads stamped with one instant pass when no line
-happens to be orphaned.
+**When a reference is checked.** Suppose the lines are exact at `p` where this delivery covers them,
+and the invoices are complete as of `p` over the whole table. Because the lines are exact at `p`,
+every line there existed at the source at `p`. The source keeps the rule, so each line's invoice
+also existed at `p`. Because the invoices are complete as of `p`, that invoice is in your table. So
+a line whose invoice is missing proves the files are not one snapshot, and every table is refused.
 
-Publishing in one step spares readers new lines beside old invoices, but the guarantee comes from
-the dates: a reader reads rows and ledgers under one publication and checks `exact_as_of`. Every
-later delivery must bring what it covers back to `(p, p)`: a complete file or a keyless append, or
-changes with tombstones covering every deletion since the deletions date. A window file does so only
-inside its window, so a reader of windows passes them to `Group.claims`. Changes without tombstones
-leave a table patched and the group without an instant; a table that did not change sends an empty
-changes file at p. `plan_together` names one read per table at one shared boundary.
+In any other case an honest delivery could fail the check, so dogana skips it and the receipt says
+why:
+
+- Lines delivered as changes without tombstones are patched: a line the source deleted with its
+  invoice can stay, naming an invoice that is gone.
+- If invoices arrive as window files, a range may have been proven yesterday. An invoice created
+  today with yesterday's date is missing from it, and a line delivered today can name it.
+
+The check catches only orphans, lines whose invoice is missing. Two separate reads stamped with the
+same instant pass it whenever, by chance, no line names a missing invoice. So a reader relies on
+`exact_as_of`, not on the check.
+
+**Keeping one instant.** Publishing in one transaction means a reader never sees new lines beside
+old invoices. Even so, a reader must read the rows and the ledgers together, from one committed
+state of the store, and check `exact_as_of`.
+
+To keep a common instant, every later delivery must leave each table with both dates equal to the
+new instant. These files do it:
+
+- a complete file;
+- an append of keyless events;
+- changes with tombstones whose `since` is no later than the deletions date;
+- a feed with tombstones, when both dates were already equal.
+
+A window file does it only inside its window, so a reader that queries only those windows passes
+them to `Group.claims`, which then judges only those ranges. Changes without tombstones leave a
+table patched, and the group without an instant. For a table with no changes, the sender sends an
+empty file of its tombstone changes shape, stamped with the new instant. `plan_together` returns
+one read per table, all at one shared instant.
 
 ## What it is not
 
-Not change data capture, a scheduler, an extractor, a quality tool or a stream processor; and not
-SQLMesh intervals, Iceberg snapshots or dbt snapshots, which record processed intervals, table
-versions and row history, not what the source's files proved.
+dogana does not capture changes from a database log, schedule jobs, extract data, test data quality
+or process streams. It also differs from tools that keep history: SQLMesh records which intervals
+a model processed, Iceberg records versions of a table, dbt snapshots record each row's history.
+None of them records what the source's files proved.
 
 ## Related work
 
-Motro split a database's integrity into completeness, every true fact is stored, and validity, every
-stored fact is true [1, 2]: complete as of dates the first, deletions as of the part of the second
-about deleted rows. Levy, then Razniewski and Nutt, studied statements that part of a table is
-complete and when they make a query's answer complete [3, 4]. A region is such a statement, dated;
-[tables read together](#tables-read-together) is its case where every part is exact at one instant.
+Knowing when a table holds every row it should is an old question in database research.
+
+- Motro [1, 2] separated two properties of a database. It is *valid* when every row it stores is
+  true, and *complete* when every true row is stored. dogana's two dates measure them: complete as
+  of `c` is completeness at `c`, and deletions as of `d` is validity against a single kind of
+  error, keeping a row the source has already deleted.
+- Levy [3], then Razniewski and Nutt [4], let a database state that part of a table is complete,
+  such as "all orders of 2025", and showed when such statements make a query's answer complete. A
+  region is such a statement, with a date.
+- Berenson and others [5] analyse the isolation levels of ANSI SQL and the anomalies each allows. At
+  READ COMMITTED, the default of most databases, two statements of one transaction can see
+  different data, which is why tables read together need one snapshot.
 
 1. A. Motro. [Completeness Information and Its Application to Query Processing](https://www.vldb.org/conf/1986/P170.PDF).
    VLDB 1986, 170-178.
@@ -220,14 +384,32 @@ complete and when they make a query's answer complete [3, 4]. A region is such a
 
 | Term | Meaning |
 |---|---|
-| Sender, receiver, reader | Writes a file and its manifest; decides on it; asks how far to trust the rows. |
-| Contract, shape | The receiver's declaration of a table; a kind of file it accepts. |
-| Manifest | The sender's declaration of one file. |
-| Read boundary | `produced_at`, the source instant the file shows. |
-| Region | A range of the window column with its two dates, or unknown. |
-| Patched | Complete as of a later date than deletions. |
-| Exact at p | Both dates at p everywhere. |
-| Tombstone | A delivered row whose deleted column is true. |
-| Receipt, replay | The record of a decision; the same manifest again. |
-| Ledger, claims | Every region with its dates; their states at the reader's time. |
-| Group, reference | Tables read from one snapshot; a rule naming rows across them. |
+| Source | The system that owns the table, such as an ERP, a SaaS API or a database. |
+| Sender | Whoever exports files from the source and writes their manifests. |
+| Receiver | Whoever runs dogana and decides whether to accept each file. |
+| Reader | Whoever queries the loaded rows and needs to know how far to trust them. |
+| Complete as of | Every row the source had at that instant is in the table. |
+| Deletions as of | No row the source deleted before that instant is still in the table. |
+| Patched | Complete as of a later instant than deletions: rows deleted in between may remain. |
+| Window column | A column whose value never changes on a row, usually a date such as `order_date`. |
+| Region | A range of the window column, with its two dates. |
+| Unknown | The state of a region where nothing has been proven yet. It is not the same as empty. |
+| Ledger | The list of a table's regions with their dates. |
+| Shape | One kind of file the receiver accepts, such as a full dump or the rows changed since the last read. |
+| Checkpoint | How a shape of changes measures where a read starts: a time, a token or a log position. |
+| Complete file | A file that holds every current row of what it covers, such as a full dump or a window file. |
+| Tombstone | A row in a file that says its key was deleted. Its deleted column is true. |
+| Contract | The receiver's description of one table: its key, its columns and its shapes. |
+| Manifest | The sender's declaration about one file: its shape, instant, row count and hash. |
+| Read boundary | `produced_at`, the instant the file's data was read from the source. |
+| Snapshot | A read that sees the whole source at one instant. |
+| Delivery | One file with its manifest, handed to dogana. |
+| Gate | The part of dogana that checks a manifest against the contract and the ledger. |
+| Store | The code that checks the rows and writes them to your database. |
+| Receipt | The record of the decision on one delivery, whether accepted or refused. |
+| Replay | The same manifest sent again. dogana answers with the first receipt and changes nothing. |
+| Claims | The state of each region at the moment a reader asks. |
+| Expired | The state of a region whose complete as of date is older than the contract's freshness allows. |
+| Exact at p | Every region has both dates equal to p: the table holds exactly the rows the source had at p. |
+| Group | Tables read together, from one snapshot of the source. |
+| Reference | A rule the source keeps between two tables of a group, such as "every invoice line names an existing invoice". |
