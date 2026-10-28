@@ -1,7 +1,7 @@
 [project]
 name = "dogana"
-version = "0.5.0"
-description = "A Python library for tables loaded from exports: it checks each delivered file against its manifest and contract, and keeps in a ledger what every delivery shows about the table"
+version = "0.6.0"
+description = "A Python library that tracks which rows of a table loaded from exported files you can trust, and as of when"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Filippo Scotti" }]

@@ -5,8 +5,9 @@ description: How to use dogana to load tables from exports with dates that say h
 
 # dogana
 
-dogana checks each delivered file against its sender's manifest and the receiver's contract, and
-keeps per table two dates: **complete as of** (every row the source had then is here) and
+dogana tracks how far a table loaded from exported files matches its source. It checks each file
+against the declaration that comes with it (the manifest) and the receiver's description of the
+table (the contract), and keeps per table two dates: **complete as of** (every row the source had then is here) and
 **deletions as of** (no row the source deleted before then is still here). The core is pure
 Python with no dependencies and never parses a data file. Docs: https://fpiped.github.io/dogana/,
 the specification is `docs/protocol.md`.
@@ -23,7 +24,8 @@ Every one of these passes every check when broken, and makes the dates lie.
    `updated_at`. "Rows updated in the last N days" is `Shape.changes()`, not a window.
 3. **Declare only what the source really does.** A changes read that cannot see physical deletes is
    `deletions="none"`; schedule a periodic `Shape.full()` to heal them. A soft-delete flag is a
-   deleted column only if it moves `updated_at` and nothing deletes physically.
+   deleted column only if setting it moves `updated_at`, nothing deletes physically, and the flag is
+   on the table being loaded.
 4. **Counts come from the export**, not from re-reading the file: `rows` live rows, `tombstones`
    deleted ones. Always set `content_hash`, the SHA-256 of the file's bytes; tombstone shapes need
    it.

@@ -1,12 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-28)
+
+The documentation is rewritten for a reader who knows SQL but not dogana: Concepts follows one
+orders table from the first file to tables read together, defines every term where it first
+appears, and links the research it builds on.
 
 - The package ships a skill for coding agents, `dogana/.agents/skills/dogana/SKILL.md`: the rules no
   check can enforce (the instant to declare, a window column that never changes, honest shapes,
   counts from the export, one snapshot for tables read together), a contract, the shapes and the
   calls. Its code runs in the tests.
 - The documentation site serves `llms.txt`, `llms-full.txt` and every page as Markdown.
+- The protocol states the soft-delete rule correctly again: a flag is a deleted column only if
+  setting it moves the cursor column, since otherwise a changes read never delivers the deletion. It
+  also states that a tombstone's cursor may be null, and that an empty changes file keeps a group's
+  instant only for a tombstone shape.
 
 ## 0.5.0 (2026-10-27)
 
