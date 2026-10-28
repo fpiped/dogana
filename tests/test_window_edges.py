@@ -27,14 +27,14 @@ def test_equal_adjacent_and_exactly_touching_windows_have_no_phantom_gap(low, un
     c = contract(window_type=type(low).__name__, shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(low, low)))
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=(low + unit, low + 3 * unit)))
-    assert ledger.claims(at(20), limit=None, window=(low, low + 3 * unit)).complete_as_of == at(19)
+    assert ledger.claims(at(20), limit=timedelta.max, window=(low, low + 3 * unit)).complete_as_of == at(19)
     ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=(low + 3 * unit, low + 4 * unit)))
-    assert ledger.claims(at(21), limit=None, window=(low + 3 * unit, low + 3 * unit)).deletions_as_of == at(
-        21
-    )
-    assert ledger.claims(at(21), limit=None, window=(low + 2 * unit, low + 2 * unit)).deletions_as_of == at(
-        20
-    )
+    assert ledger.claims(
+        at(21), limit=timedelta.max, window=(low + 3 * unit, low + 3 * unit)
+    ).deletions_as_of == at(21)
+    assert ledger.claims(
+        at(21), limit=timedelta.max, window=(low + 2 * unit, low + 2 * unit)
+    ).deletions_as_of == at(20)
 
 
 def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings():
@@ -48,9 +48,9 @@ def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings
     assert ledger == Ledger.from_json(ledger.to_json())
     for offset in (0, 30, 60):
         point = low.astimezone(UTC) + timedelta(minutes=offset)
-        assert ledger.claims(at(26), limit=None, window=(point, point)).deletions_as_of == at(26)
+        assert ledger.claims(at(26), limit=timedelta.max, window=(point, point)).deletions_as_of == at(26)
     outside = low.astimezone(UTC) - timedelta(microseconds=1)
-    assert ledger.claims(at(26), limit=None, window=(outside, outside)).deletions_as_of is None
+    assert ledger.claims(at(26), limit=timedelta.max, window=(outside, outside)).deletions_as_of is None
 
 
 def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_gap():
@@ -67,7 +67,7 @@ def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap(
     c = contract(window_type="str", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("a", "a")))
     ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=("a\x00", "a\x00")))
-    claims = ledger.claims(at(20), limit=None, window=("a", "a\x00"))
+    claims = ledger.claims(at(20), limit=timedelta.max, window=("a", "a\x00"))
     assert claims.complete_as_of == at(19)
     assert len(claims.regions) == 2
 
@@ -78,7 +78,7 @@ def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap(
 def test_full_representable_window_delivery_leaves_no_unknown_exterior(low, high):
     c = contract(window_type=type(low).__name__, shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(low, high)))
-    assert ledger.claims(at(19), limit=None).complete_as_of == at(19)
+    assert ledger.claims(at(19), limit=timedelta.max).complete_as_of == at(19)
     assert len(ledger.regions) == 1
     assert Ledger.from_json(ledger.to_json()) == ledger
 
@@ -116,8 +116,8 @@ def test_delivery_regions_only_touch_their_ordered_successor():
 def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value):
     c = contract(shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(value, value)))
-    assert ledger.claims(at(19), limit=None, window=(value, value)).complete_as_of == at(19)
-    assert ledger.claims(at(19), limit=None).complete_as_of is None
+    assert ledger.claims(at(19), limit=timedelta.max, window=(value, value)).complete_as_of == at(19)
+    assert ledger.claims(at(19), limit=timedelta.max).complete_as_of is None
     assert len(ledger.regions) == 3
     assert Ledger.from_json(ledger.to_json()) == ledger
     known = ledger.regions[1]
@@ -132,5 +132,5 @@ def test_delivery_at_the_last_scalar_preserves_the_preceding_unknown_domain(maxi
     assert len(ledger.regions) == 2
     assert ledger.regions[0].complete_as_of is None
     assert ledger.regions[1].complete_as_of == at(19)
-    assert ledger.claims(at(19), limit=None, window=(maximum, maximum)).complete_as_of == at(19)
+    assert ledger.claims(at(19), limit=timedelta.max, window=(maximum, maximum)).complete_as_of == at(19)
     assert Ledger.from_json(ledger.to_json()) == ledger

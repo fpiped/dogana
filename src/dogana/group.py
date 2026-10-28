@@ -82,7 +82,7 @@ class Group:
         ledgers: Mapping[str, Ledger],
         now: datetime,
         *,
-        limit: timedelta | None,
+        limit: timedelta,
         windows: Mapping[str, Window] | None = None,
     ) -> Claims:
         """Every table's claims at now, clipped to its window; `exact_as_of` is the group's common instant."""

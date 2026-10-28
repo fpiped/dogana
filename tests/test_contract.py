@@ -204,6 +204,11 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         replace(
             original, window_column=None, shapes={"full": FULL}, types={"id": "int"}, deleted_column=None
         ),
+        replace(
+            original,
+            deleted_column="erased",
+            types={**{k: v for k, v in original.types.items() if k != "deleted"}, "erased": "bool"},
+        ),
     ):
         assert not original.compatible_with(incompatible)
 
@@ -426,7 +431,8 @@ def test_a_deleted_column_exists_exactly_for_tombstone_shapes_and_has_its_own_bo
     feed = Contract(
         "stock", ("id",), {"feed": FEED}, types={"id": "int", "gone": "bool"}, deleted_column="gone"
     )
-    assert feed.deleted_column == "gone" and feed.compatible_with(
+    assert feed.deleted_column == "gone"
+    assert not feed.compatible_with(
         replace(feed, deleted_column="__deleted", types={"id": "int", "__deleted": "bool"})
     )
     with pytest.raises(InvalidContract, match="exactly one deleted column"):

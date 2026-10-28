@@ -1,12 +1,16 @@
 import ast
 import json
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from dogana import Contract, Ledger, Manifest, SerializationError
-from tests.support import COLUMNS, at
+from dogana import Contract, InvalidContract, Ledger, Manifest, Receipt, SerializationError, Shape
+from tests.support import COLUMNS, SINCE, at
 from tests.support import accounting_contract as contract
+
+EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
 
 def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types():
@@ -35,10 +39,57 @@ def test_unsupported_or_invalid_wire_contracts_are_refused(change):
         Contract.from_dict(value)
 
 
-def test_a_version_3_contract_with_its_shrink_limit_is_refused():
-    value = contract(columns=COLUMNS).to_dict() | {"version": 3, "max_shrink_fraction": 0.5}
-    with pytest.raises(SerializationError, match="unsupported wire version"):
-        Contract.from_dict(value)
+@pytest.mark.parametrize(
+    "name,cls", [("contract", Contract), ("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)]
+)
+def test_every_version_3_document_is_refused_naming_both_versions(name, cls):
+    value = json.loads((EXAMPLES / f"{name}.json").read_text()) | {"version": 3}
+    if name == "contract":
+        value["max_shrink_fraction"] = 0.5
+    with pytest.raises(SerializationError, match="unsupported wire version 3: this dogana reads version 4"):
+        cls.from_dict(value)
+
+
+@pytest.mark.parametrize("seconds", [1e-7, -1e-7, -5, 1.5e-6, 1e100, float("inf"), float("nan")])
+def test_a_duration_that_would_round_or_is_negative_is_refused_not_rounded(seconds):
+    raw = replace(SINCE, lookback=timedelta(minutes=5)).to_dict()
+    raw["lookback"] = {"$seconds": seconds}
+    with pytest.raises(SerializationError, match="duration"):
+        Shape.from_dict(raw)
+    assert Shape.from_dict(raw | {"lookback": {"$seconds": 1.5}}).lookback == timedelta(seconds=1.5)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2026-10-18T00:00:00.0000009+00:00",
+        "2026-10-18T00:00:00",
+        "2026-10-18 00:00:00+00:00",
+        "2026-10-18T00:00:00+0000",
+        "20261018T000000Z",
+    ],
+)
+def test_a_datetime_outside_the_wire_grammar_is_refused_not_truncated(text):
+    raw = Manifest("stock", "full", at(18)).to_dict()
+    with pytest.raises(SerializationError, match="datetime tag"):
+        Manifest.from_dict(raw | {"produced_at": {"$datetime": text}})
+    zulu = Manifest.from_dict(raw | {"produced_at": {"$datetime": "2026-10-18T00:00:00Z"}})
+    assert zulu.produced_at == at(18)
+
+
+@pytest.mark.parametrize("text", ["2026-10-18T00:00:00", "20261018", "2026-W42-1"])
+def test_a_date_tag_with_more_than_a_date_is_refused(text):
+    raw = Manifest("stock", "daily", at(18), window=(at(18).date(), at(18).date())).to_dict()
+    raw["window"] = [{"$date": text}, {"$date": "2026-10-18"}]
+    with pytest.raises(SerializationError, match="date tag"):
+        Manifest.from_dict(raw)
+
+
+@pytest.mark.parametrize("field", ["ledger_identity", "publication_id"])
+def test_a_receipt_never_carries_an_empty_identity(field):
+    receipt = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
+    with pytest.raises(InvalidContract, match="never empty"):
+        replace(receipt, **{field: ""})
 
 
 def test_a_manifest_cannot_be_decoded_as_a_contract():
@@ -143,7 +194,7 @@ def test_the_core_runs_alone_from_a_copy_of_its_modules(tmp_path):
     program = """
 import sys
 sys.path.insert(0, sys.argv[1])
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
 shape = Shape(coverage='all', completeness='complete', deletions='absence', checkpoint='none')
 c = Contract('stock', ('id',), {'full': shape}, types={'id': 'int'})
@@ -152,7 +203,7 @@ checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
 ledger = Ledger(c).follow(receipt)
-assert ledger.claims(receipt.received_at, limit=None).state is State.COMPLETE
+assert ledger.claims(receipt.received_at, limit=timedelta.max).state is State.COMPLETE
 assert Ledger.from_json(ledger.to_json()) == ledger
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
@@ -203,7 +254,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
     checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
-    claims = ledger.claims(receipt.received_at, limit=None)
+    claims = ledger.claims(receipt.received_at, limit=timedelta.max)
     values = (
         FULL,
         c,

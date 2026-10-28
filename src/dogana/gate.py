@@ -163,6 +163,8 @@ class Receipt(Wire):
             raise InvalidContract("accepted receipts cannot attest a future source boundary")
         if not self.accepted and self.base_publication_id != self.publication_id:
             raise InvalidContract("rejected receipts retain their base publication")
+        if not self.ledger_identity or self.publication_id == "":
+            raise InvalidContract("a receipt's identities are never empty")
 
     @property
     def accepted(self) -> bool:

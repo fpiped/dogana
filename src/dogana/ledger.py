@@ -145,16 +145,16 @@ class Region(Wire):
             raise InvalidContract("region dates must be present or absent together")
         return Known(self.complete_as_of, self.deletions_as_of)
 
-    def state(self, now: datetime, *, limit: timedelta | None) -> State:
-        """The region's state at the reader's time; `limit=None` expires no region."""
+    def state(self, now: datetime, *, limit: timedelta) -> State:
+        """The region's state at the reader's time; a region proven longer ago than `limit` is expired."""
         now = utc(now)
-        if limit is not None and (not isinstance(limit, timedelta) or limit < timedelta(0)):
-            raise InvalidContract("freshness limit must be nonnegative")
+        if not isinstance(limit, timedelta) or limit < timedelta(0):
+            raise InvalidContract("the age limit must be a nonnegative duration")
         match self.evidence:
             case Unknown():
                 return State.UNKNOWN
             case Known(complete, deletions):
-                if limit is not None and now - complete > limit:
+                if now - complete > limit:
                     return State.EXPIRED
                 return State.COMPLETE if complete == deletions else State.PATCHED
             case _ as unreachable:
@@ -478,10 +478,10 @@ class Ledger(Wire):
             _cuts=_apply_steps(self._cuts, low, high, delivery),
         )
 
-    def claims(self, now: datetime, *, limit: timedelta | None, window: Window | None = None) -> Claims:
+    def claims(self, now: datetime, *, limit: timedelta, window: Window | None = None) -> Claims:
         """Each region's state at the reader's time `now`, expiring those proven longer ago than `limit`.
 
-        The limit is the reader's: `limit=None` expires no region.
+        The limit is the reader's: `timedelta.max` expires no region.
         """
         now = utc(now)
         return Claims(

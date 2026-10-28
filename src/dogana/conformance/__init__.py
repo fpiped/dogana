@@ -202,7 +202,7 @@ def _after(store: Store, contract: Contract, receipt: Receipt) -> Ledger:
 
 
 def _claims(store: Store, contract: Contract, receipt: Receipt) -> Claims:
-    return _after(store, contract, receipt).claims(receipt.received_at, limit=None)
+    return _after(store, contract, receipt).claims(receipt.received_at, limit=timedelta.max)
 
 
 def _dates(store: Store, contract: Contract, receipt: Receipt) -> tuple[datetime | None, datetime | None]:
@@ -259,6 +259,19 @@ class _StoreScenarios:
 
 
 class StoreConformance(_StoreScenarios):
+    def test_a_store_implements_the_eight_required_methods(self, store: Store) -> None:
+        required = (
+            "digest",
+            "hold",
+            "check",
+            "publish",
+            "abort",
+            "load_ledger",
+            "accepted_receipt",
+            "receipts",
+        )
+        assert all(callable(getattr(store, name, None)) for name in required)
+
     """Required publication, replay and atomicity obligations."""
 
     @pytest.mark.parametrize("rows", [[], [_row(1)], [{**_row(1), "value": None}]])
@@ -341,7 +354,7 @@ class StoreConformance(_StoreScenarios):
                     expected[c.table].values(), key=lambda r: r["id"]
                 )
                 ledger = store.load_ledger(c)
-                claim = ledger.claims(_at(day), limit=None)
+                claim = ledger.claims(_at(day), limit=timedelta.max)
                 if day in (18, 25) or c.table == "stock":
                     assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.COMPLETE,
@@ -351,7 +364,7 @@ class StoreConformance(_StoreScenarios):
                 elif c.table == "moves":
                     assert (claim.complete_as_of, claim.deletions_as_of) == (_at(18), _at(18))
                     assert ledger.claims(
-                        _at(day), limit=None, window=kwargs["window"]
+                        _at(day), limit=timedelta.max, window=kwargs["window"]
                     ).deletions_as_of == _at(day)
                 else:
                     assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
@@ -366,7 +379,11 @@ class StoreConformance(_StoreScenarios):
                 assert store.receipts(c.table) == audit_before
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             surface = Claims(
-                tuple(r for c in contracts for r in store.load_ledger(c).claims(_at(day), limit=None).regions)
+                tuple(
+                    r
+                    for c in contracts
+                    for r in store.load_ledger(c).claims(_at(day), limit=timedelta.max).regions
+                )
             )
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
             assert surface.deletions_as_of == _at(day if day in (18, 25) else 18)
@@ -670,7 +687,7 @@ class StoreConformance(_StoreScenarios):
             assert _dates(store, c, receipt) == (until, start)
             assert self._rows(factory, store, c.table) == visible
         assert late["updated_at"] < start + timedelta(seconds=5) < committed_at
-        assert _after(store, c, receipt).claims(until, limit=None).state is State.PATCHED
+        assert _after(store, c, receipt).claims(until, limit=timedelta.max).state is State.PATCHED
         self._fold(store, c)
 
     def test_a_window_delivery_cannot_move_a_key_out_of_another_window(
@@ -801,9 +818,11 @@ class StoreConformance(_StoreScenarios):
         receipt = self._deliver(factory, store, c, [], "daily", 19, window=(_at(18).date(), _at(18).date()))
         assert receipt.accepted
         assert self._rows(factory, store, c.table) == []
-        assert _after(store, c, receipt).claims(_at(19), limit=None).state is State.UNKNOWN
+        assert _after(store, c, receipt).claims(_at(19), limit=timedelta.max).state is State.UNKNOWN
         day = (_at(18).date(), _at(18).date())
-        assert _after(store, c, receipt).claims(_at(19), limit=None, window=day).deletions_as_of == _at(19)
+        assert _after(store, c, receipt).claims(
+            _at(19), limit=timedelta.max, window=day
+        ).deletions_as_of == _at(19)
 
     def test_a_foreign_manifest_is_audited_under_the_receiving_contract(
         self, factory: StoreFactory, store: Store
@@ -839,8 +858,8 @@ class StoreConformance(_StoreScenarios):
             ).accepted
         assert factory.read_table(store, c.table) == [{"id": 2, "plant": "DE01"}]
         ledger = store.load_ledger(c)
-        assert ledger.claims(_at(20), limit=None, window=("IT01", "IT01")).deletions_as_of == _at(20)
-        assert ledger.claims(_at(20), limit=None, window=("US01", "US01")).state is State.UNKNOWN
+        assert ledger.claims(_at(20), limit=timedelta.max, window=("IT01", "IT01")).deletions_as_of == _at(20)
+        assert ledger.claims(_at(20), limit=timedelta.max, window=("US01", "US01")).state is State.UNKNOWN
 
     def test_push_and_pull_publish_the_same_rows_ledger_and_receipt(
         self, factory: StoreFactory, store: Store
@@ -1341,7 +1360,7 @@ class TogetherConformance(_StoreScenarios):
             "references": True,
         }
         ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
-        assert group.claims(ledgers, _at(18), limit=None).exact_as_of == _at(18)
+        assert group.claims(ledgers, _at(18), limit=timedelta.max).exact_as_of == _at(18)
         second = self._together(
             factory,
             store,
@@ -1354,7 +1373,7 @@ class TogetherConformance(_StoreScenarios):
         )
         assert all(r.accepted for r in second.values()), second
         ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
-        assert group.claims(ledgers, _at(19), limit=None).exact_as_of == _at(19)
+        assert group.claims(ledgers, _at(19), limit=timedelta.max).exact_as_of == _at(19)
         assert [r["id"] for r in self._rows(factory, store, "order_lines")] == [10, 11, 12]
 
     def test_a_line_without_its_order_refuses_the_whole_group(
@@ -1423,10 +1442,10 @@ class TogetherConformance(_StoreScenarios):
         )
         assert all(r.accepted for r in receipts.values()), receipts
         ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
-        assert group.claims(ledgers, _at(19), limit=None).exact_as_of is None
-        assert group.claims(ledgers, _at(19), limit=None, windows={"order_lines": window}).exact_as_of == _at(
-            19
-        )
+        assert group.claims(ledgers, _at(19), limit=timedelta.max).exact_as_of is None
+        assert group.claims(
+            ledgers, _at(19), limit=timedelta.max, windows={"order_lines": window}
+        ).exact_as_of == _at(19)
 
     def test_a_table_failing_its_own_checks_refuses_the_group(
         self, factory: StoreFactory, store: Store
@@ -1541,7 +1560,7 @@ class TogetherConformance(_StoreScenarios):
         )
         assert all(r.accepted for r in receipts.values()), receipts
         ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
-        assert group.claims(ledgers, _at(19), limit=None).exact_as_of is None
+        assert group.claims(ledgers, _at(19), limit=timedelta.max).exact_as_of is None
 
     def test_publish_together_needs_the_stores_own_answer_on_exactly_these_candidates(
         self, factory: StoreFactory, store: Store

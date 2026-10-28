@@ -1,4 +1,4 @@
-from datetime import UTC, date
+from datetime import UTC, date, timedelta
 
 import pytest
 from example_store import DuckDBStore, FileDrop, FilePattern, ingest_together
@@ -49,7 +49,7 @@ def test_a_group_is_read_with_its_evidence_at_one_moment():
         rows, ledgers = store.read_together(GROUP)
         assert rows == {"orders": [order(1)], "order_lines": [line(10, 1)]}
         assert ledgers == {t: fold(r) for t, r in receipts.items()}
-        assert GROUP.claims(ledgers, at(20), limit=None).exact_as_of == at(18)
+        assert GROUP.claims(ledgers, at(20), limit=timedelta.max).exact_as_of == at(18)
 
 
 def test_a_store_that_cannot_publish_together_refuses_before_reading_any_source():

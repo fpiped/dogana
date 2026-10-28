@@ -1,5 +1,7 @@
 """Ordered integer positions: log sequence numbers and offsets."""
 
+from datetime import timedelta
+
 import pytest
 
 from dogana import (
@@ -166,5 +168,5 @@ def test_a_change_feed_by_log_position_repairs_deletion_date_with_its_tombstones
     )
     base = Ledger(c).apply(Manifest(c.table, "full", at(18), generation=100))
     fed = base.apply(Manifest(c.table, "feed", at(19), since=100, generation=120, rows=1, tombstones=1))
-    claims = fed.claims(at(19), limit=None)
+    claims = fed.claims(at(19), limit=timedelta.max)
     assert (fed.generation, claims.complete_as_of, claims.deletions_as_of) == (120, at(19), at(19))

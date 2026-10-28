@@ -325,7 +325,8 @@ class Contract(Wire):
         """Whether both contracts interpret the same table history."""
         if not isinstance(other, Contract):
             raise InvalidContract("history compatibility requires a Contract")
-        if (self.table, self.key, self.window_column) != (other.table, other.key, other.window_column):
+        bound = ("table", "key", "window_column", "deleted_column")
+        if any(getattr(self, name) != getattr(other, name) for name in bound):
             return False
         names = set(self.key)
         if self.window_column is not None:

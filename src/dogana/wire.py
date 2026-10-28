@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -221,14 +222,22 @@ def decode(value: object) -> object:
     if any(type(key) is not str for key in value):
         raise SerializationError("mapping keys must be strings")
     if set(value) == {"$datetime"} and isinstance(value["$datetime"], str):
+        if _DATETIME.fullmatch(value["$datetime"]) is None:
+            raise SerializationError(
+                "a datetime tag is RFC 3339 with an offset and at most six fractional digits"
+            )
         return utc(datetime.fromisoformat(value["$datetime"]))
     if set(value) == {"$date"} and isinstance(value["$date"], str):
+        if _DATE.fullmatch(value["$date"]) is None:
+            raise SerializationError("a date tag is YYYY-MM-DD")
         return date.fromisoformat(value["$date"])
     if set(value) == {"$seconds"} and type(value["$seconds"]) in (int, float):
-        return timedelta(seconds=value["$seconds"])
+        return _duration(value["$seconds"])
     if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, bool):
         if type(value.get("version")) is not int or value["version"] != Wire.version:
-            raise SerializationError("unsupported wire version")
+            raise SerializationError(
+                f"unsupported wire version {value.get('version')!r}: this dogana reads version {Wire.version}"
+            )
         kind = value.get("kind")
         cls = _registry().get(kind) if isinstance(kind, str) else None
         if cls is None:
@@ -358,6 +367,25 @@ def _normalize(value: object, annotation: object) -> object:
             value.encode("utf-8")
         except UnicodeEncodeError as exc:
             raise InvalidContract("strings must contain only Unicode scalar values") from exc
+    return value
+
+
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_DATETIME = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])"
+)
+
+
+def _duration(seconds: int | float) -> timedelta:
+    """A wire duration is nonnegative and exact: it decodes to the timedelta that encodes back to it."""
+    if not math.isfinite(seconds) or seconds < 0:
+        raise SerializationError("a duration is a finite nonnegative number of seconds")
+    try:
+        value = timedelta(seconds=seconds)
+    except OverflowError as exc:
+        raise SerializationError("duration is outside the timedelta range") from exc
+    if _seconds(value) != seconds:
+        raise SerializationError("duration cannot be represented exactly in microseconds")
     return value
 
 

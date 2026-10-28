@@ -180,7 +180,7 @@ def test_accepted_windows_match_an_independent_boundary_oracle(history: History)
         assert partition(ledger) == boundary_oracle(history[:length])
         assert Ledger.from_json(ledger.to_json()) == ledger
         if length == 2:
-            assert ledger.claims(at(1), limit=None, window=(-2, 2)).complete_as_of is None
+            assert ledger.claims(at(1), limit=timedelta.max, window=(-2, 2)).complete_as_of is None
 
 
 def below(left: Evidence, right: Evidence) -> bool:
@@ -195,8 +195,8 @@ def test_accepted_deliveries_raise_covered_evidence_and_preserve_every_other_cel
         after = ledger.apply(manifest)
         cuts = {cut for cut, _ in (*partition(ledger), *partition(after)) if cut is not None}
         for point in {min(cuts, default=0) - 1, *cuts}:
-            before_claim = ledger.claims(manifest.produced_at, limit=None, window=(point, point))
-            after_claim = after.claims(manifest.produced_at, limit=None, window=(point, point))
+            before_claim = ledger.claims(manifest.produced_at, limit=timedelta.max, window=(point, point))
+            after_claim = after.claims(manifest.produced_at, limit=timedelta.max, window=(point, point))
             old, new = evidence(before_claim.regions[0].region), evidence(after_claim.regions[0].region)
             if contains(manifest, point):
                 assert below(old, new)
@@ -324,7 +324,7 @@ def meet(left: Region, right: Region) -> Region:
         tuple(
             r
             for region in (left, right)
-            for r in Ledger(CONTRACT, (region,)).claims(at(200), limit=None).regions
+            for r in Ledger(CONTRACT, (region,)).claims(at(200), limit=timedelta.max).regions
         )
     )
     return Region(complete_as_of=claims.complete_as_of, deletions_as_of=claims.deletions_as_of)

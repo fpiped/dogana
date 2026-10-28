@@ -45,8 +45,9 @@ has, and the declaration counts only what was exported, no check can tell.
 4. A **ledger** holds the two dates and moves them only as far as each accepted file proves.
    Before trusting the rows, a reader asks the ledger.
 5. Related tables, such as orders and their lines, can be read in one snapshot, one read that sees
-   every table at the same instant, and delivered **together**. When both are then exact at that
-   instant, a join between them gives the answer the source would have given.
+   every table at the same instant, and delivered **together**. When both then have both dates
+   equal to that instant, which dogana calls exact, a join between them gives the answer the source
+   would have given.
 
 *Dogana* (doh-GAH-nah) is Italian for customs: goods cross a border with a declaration, an officer
 checks them against it, and they enter with a stamp or are turned back. Here the goods are rows,
@@ -60,7 +61,7 @@ checks: it hands two manifests straight to a ledger, to show how the dates move.
 runs the same steps on real files.
 
 ```python
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from dogana import Contract, Ledger, Shape
 
@@ -75,7 +76,7 @@ ledger = (
     .apply(orders.manifest("changes", monday, since=sunday))
 )
 
-claims = ledger.claims(monday, limit=None)  # no age limit
+claims = ledger.claims(monday, limit=timedelta.max)  # expire nothing
 print(
     f"{claims.state}: complete as of {claims.complete_as_of:%A}, deletions as of {claims.deletions_as_of:%A}"
 )

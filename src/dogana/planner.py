@@ -166,7 +166,7 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
     if ledger.contract.table != requirement.table:
         raise PlanningError("requirement table differs from contract")
     if _satisfies(
-        ledger.claims(requirement.complete_as_of, limit=None, window=requirement.window), requirement
+        ledger.claims(requirement.complete_as_of, limit=timedelta.max, window=requirement.window), requirement
     ):
         return None
     required = max(requirement.complete_as_of, requirement.deletions_as_of or requirement.complete_as_of)
@@ -199,7 +199,7 @@ def plan_delivery(ledger: Ledger, requirement: Requirement) -> ExtractionRequest
                 if insufficient:
                     request = replace(request, since=min(request.since, min(insufficient)))
             after = _apply_request(ledger, request)
-            if _satisfies(after.claims(until, limit=None, window=requirement.window), requirement):
+            if _satisfies(after.claims(until, limit=timedelta.max, window=requirement.window), requirement):
                 candidates.append(request)
         except (PlanningError, InvalidContract):
             continue
@@ -217,7 +217,7 @@ def plan_together(
 ) -> dict[str, ExtractionRequest]:
     """Choose one read per table at one shared boundary, after which every table equals the source then."""
     at_least, windows = utc(at_least), windows or {}
-    exact = group.claims(ledgers, at_least, limit=None, windows=windows).exact_as_of
+    exact = group.claims(ledgers, at_least, limit=timedelta.max, windows=windows).exact_as_of
     if exact is not None and exact >= at_least:
         return {}
     # Past every table's evidence, so each read raises every region it covers to the shared boundary.

@@ -24,8 +24,9 @@ Every one of these passes every check when broken, and makes the dates lie.
    `updated_at`. "Rows updated in the last N days" is `Shape.changes()`, not a window.
 3. **Declare only what the source really does.** A changes read that cannot see physical deletes is
    `deletions="none"`; schedule a periodic `Shape.full()` to heal them. A soft-delete flag is a
-   deleted column only if setting it moves `updated_at`, nothing deletes physically, and the flag is
-   on the table being loaded.
+   deleted column only if setting it moves the cursor column (usually `updated_at`), nothing deletes
+   physically, and the flag is on the table being loaded. Once a table has history, the deleted
+   column is fixed like the key: changing it means a new full delivery into a new store.
 4. **Counts come from the export**, not from re-reading the file: `rows` live rows, `tombstones`
    deleted ones. Always set `content_hash`, the SHA-256 of the file's bytes; tombstone shapes need
    it.
@@ -89,7 +90,7 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 - Never load the consumer's table before acceptance; stage the candidate.
 - `ledger.claims(now, limit=...)` gives `state` (unknown, expired, patched, complete) and the two
   dates. `limit` is required: how long ago `complete_as_of` may be before the region is expired, as
-  a `timedelta`, or `None` for no limit. Pass `window=` for part of the table. A query with
+  a `timedelta`, or `timedelta.max` to expire nothing. Pass `window=` for part of the table. A query with
   `NOT EXISTS` or an anti-join needs the deletions date of the negated table.
 - `plan_delivery(ledger, Requirement(...))` names the cheapest read for the dates a reader needs;
   `next_extraction(ledger, shape, until)` the next regular read.
@@ -102,7 +103,7 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 `deliver_together(store, group, {"invoices": (rows, manifest), ...}, now)`: every file is checked
 alone, all must share one `produced_at`, references are checked when a failure would prove the files
 are not one snapshot, and every table is published or none. A reader trusts a join only when
-`group.claims(ledgers, now, limit=None).exact_as_of` is not `None`, reading rows and ledgers under
+`group.claims(ledgers, now, limit=timedelta.max).exact_as_of` is not `None`, reading rows and ledgers under
 one publication. Later deliveries must bring each table back to equal dates: complete files, or
 changes with tombstones; a table without changes sends an empty file of its tombstone changes shape
 at the same instant.

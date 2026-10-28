@@ -64,7 +64,16 @@ class MemoryFactory:
 class MinimalMemoryFactory(MemoryFactory):
     def make_store(self):
         storage = MemoryStore()
-        operations = ("hold", "check", "publish", "abort", "load_ledger", "receipts", "accepted_receipt")
+        operations = (
+            "digest",
+            "hold",
+            "check",
+            "publish",
+            "abort",
+            "load_ledger",
+            "receipts",
+            "accepted_receipt",
+        )
         return SimpleNamespace(_storage=storage, **{name: getattr(storage, name) for name in operations})
 
     def read_table(self, store, table):

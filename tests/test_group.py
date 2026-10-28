@@ -55,22 +55,47 @@ def test_a_group_names_each_table_once_and_references_only_its_tables():
 
 def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant():
     ledger = full(ORDERS, 18)
-    assert ledger.claims(at(18), limit=None).exact_as_of == at(18)
-    assert Ledger(ORDERS).claims(at(18), limit=None).exact_as_of is None
+    assert ledger.claims(at(18), limit=timedelta.max).exact_as_of == at(18)
+    assert Ledger(ORDERS).claims(at(18), limit=timedelta.max).exact_as_of is None
     patched = ledger.apply(Manifest("orders", "since", at(19), since=at(18), schema_hash=ORDERS.schema_hash))
-    assert patched.claims(at(19), limit=None).exact_as_of is None
+    assert patched.claims(at(19), limit=timedelta.max).exact_as_of is None
     window = (at(19).date(), at(19).date())
     mixed = ledger.apply(Manifest("orders", "daily", at(19), window=window, schema_hash=ORDERS.schema_hash))
-    assert mixed.claims(at(19), limit=None).exact_as_of is None
-    assert mixed.claims(at(19), limit=None, window=window).exact_as_of == at(19)
-    assert full(ORDERS, 18).claims(at(30), limit=None).state is State.COMPLETE
+    assert mixed.claims(at(19), limit=timedelta.max).exact_as_of is None
+    assert mixed.claims(at(19), limit=timedelta.max, window=window).exact_as_of == at(19)
+    assert full(ORDERS, 18).claims(at(30), limit=timedelta.max).state is State.COMPLETE
     assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).state is State.EXPIRED
     assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).exact_as_of == at(18)
 
 
+def test_a_group_expires_by_the_readers_limit_and_judges_only_the_windows_it_is_given():
+    ledgers = {"orders": full(ORDERS, 18), "order_lines": full(LINES, 18)}
+    group = Group((ORDERS, LINES))
+    assert group.claims(ledgers, at(30), limit=timedelta.max).state is State.COMPLETE
+    week = group.claims(ledgers, at(30), limit=timedelta(days=7))
+    assert (week.state, week.exact_as_of) == (State.EXPIRED, at(18))
+    assert group.claims(ledgers, at(25), limit=timedelta(days=7)).state is State.COMPLETE
+    day = (at(19).date(), at(19).date())
+    later = ledgers["order_lines"].apply(
+        Manifest("order_lines", "daily", at(19), window=day, schema_hash=LINES.schema_hash)
+    )
+    mixed = {**ledgers, "order_lines": later}
+    assert group.claims(mixed, at(19), limit=timedelta.max).exact_as_of is None
+    assert group.claims(mixed, at(19), limit=timedelta.max, windows={"order_lines": day}).exact_as_of is None
+    both = group.claims(
+        {"orders": full(ORDERS, 19), "order_lines": later},
+        at(19),
+        limit=timedelta.max,
+        windows={"order_lines": day},
+    )
+    assert both.exact_as_of == at(19)
+
+
 def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     early, late = full(ORDERS, 18), full(LINES, 19)
-    combined = Group((ORDERS, LINES)).claims({"orders": early, "order_lines": late}, at(19), limit=None)
+    combined = Group((ORDERS, LINES)).claims(
+        {"orders": early, "order_lines": late}, at(19), limit=timedelta.max
+    )
     assert (combined.state, combined.complete_as_of, combined.deletions_as_of) == (
         State.COMPLETE,
         at(18),
@@ -79,17 +104,17 @@ def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     assert combined.exact_as_of is None
     group = Group((ORDERS, LINES))
     assert group.claims(
-        {"orders": early, "order_lines": full(LINES, 18)}, at(19), limit=None
+        {"orders": early, "order_lines": full(LINES, 18)}, at(19), limit=timedelta.max
     ).exact_as_of == at(18)
     with pytest.raises(InvalidContract, match="one ledger per table"):
-        group.claims({"orders": early}, at(19), limit=None)
+        group.claims({"orders": early}, at(19), limit=timedelta.max)
     with pytest.raises(InvalidContract, match="one ledger per table"):
-        group.claims({"orders": early, "order_lines": full(ORDERS, 18)}, at(19), limit=None)
+        group.claims({"orders": early, "order_lines": full(ORDERS, 18)}, at(19), limit=timedelta.max)
     with pytest.raises(InvalidContract, match="outside the group"):
         group.claims(
             {"orders": early, "order_lines": late},
             at(19),
-            limit=None,
+            limit=timedelta.max,
             windows={"moves": (at(1).date(), at(2).date())},
         )
 
@@ -141,7 +166,7 @@ def test_planning_together_reads_every_table_at_one_boundary_past_all_evidence()
         t: ledgers[t].apply(Manifest(t, r.shape, r.until, since=r.since, window=r.window))
         for t, r in requests.items()
     }
-    assert group.claims(after, at(21), limit=None).exact_as_of == at(20) + timedelta(microseconds=1)
+    assert group.claims(after, at(21), limit=timedelta.max).exact_as_of == at(20) + timedelta(microseconds=1)
     assert plan_together(group, after, at(20)) == {}
 
 

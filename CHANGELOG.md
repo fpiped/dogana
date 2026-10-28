@@ -11,18 +11,30 @@ the contract declares, so an honest delivery never fails one.
   count the export computes in the same read; a rule on how much a table may shrink is a business
   check.
 - The wire format is version 4, since a version 3 contract carries the shrink limit: stores and
-  documents written by 0.6.0 or earlier are refused, and a table moves to the new version with a
-  new full delivery into a new store.
+  documents written by 0.6.0 or earlier are refused, with a message naming both versions, and a
+  table moves to the new version with a new full delivery into a new store.
 - `freshness` leaves the contract. It never decided whether a file was accepted, only whether a
   region read as expired, and how old is too old is the reader's choice. `Ledger.claims(now,
-  limit=...)` and `Group.claims(ledgers, now, limit=...)` require it, so a call written for an
-  older dogana fails instead of silently never expiring; `limit=None` sets no limit. `dogana
-  claims` takes `--limit-days`.
+  limit=...)`, `Group.claims(ledgers, now, limit=...)` and `Region.state(now, limit=...)` require
+  a nonnegative `timedelta` by keyword, `timedelta.max` to expire nothing. A call written for an
+  older dogana fails: without `limit`, with it in position, or with `limit=None`, which in 0.6.0
+  meant the contract's seven days. `dogana claims` takes `--limit-days`; without it no region
+  expires, where 0.6.0 applied seven days.
+- The deleted column is fixed by history, like the key and the window column, since it decides
+  which rows the dates describe: a contract naming another one is refused, and the table starts
+  again with a full delivery into a new store.
 - `Claims.combine` is gone. The minimum dates across tables guarantee nothing about a query over
-  them; `Group.claims` returns a group's regions together, and `exact_as_of` is the instant that
-  does.
+  them; `Group.claims(ledgers, now, limit=..., windows=...)` returns a group's regions together,
+  with `windows` by keyword, and `exact_as_of` is the instant that does. `Claims(regions)` still
+  builds a value from any regions.
+- The decoder refuses what the schemas refuse, instead of rounding it: a duration below a
+  microsecond or not exactly representable, a negative one, a datetime with more than six
+  fractional digits or outside RFC 3339, a date with a time part, and a receipt with an empty
+  `ledger_identity` or `publication_id`.
 - The example DuckDB store loses `adopt=True`, which took over an existing table without
   certifying a row: an existing table without evidence is refused.
+- The protocol's signatures of `next_extraction`, `plan_together` and `Ledger.reconcile` match the
+  code: `shape_name`, and `window`, `windows`, `repair` and `retained_head` by keyword.
 
 ## 0.6.0 (2026-10-28)
 

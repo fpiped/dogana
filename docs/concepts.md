@@ -106,8 +106,8 @@ a token the source hands out with each read (`generation`), or a position in the
 | One complete file per day or per plant | A window whose two ends are equal | Both dates, for that day or plant |
 | The rows whose `updated_at` is after the last read | `Shape.changes()` | Complete as of the read; the deletions date does not move |
 | The same, plus the keys deleted since | `Shape.changes(deletions="tombstone")` | Both dates, if the read starts no later than the deletions date |
-| A change feed with a sync token | `Shape.feed()` | Both dates, if each read starts from the token the previous one issued |
-| Change data capture batches by log position | `Shape.feed(checkpoint="sequence")`, after a full snapshot | Both dates, if each batch starts where the previous one ended |
+| A change feed with a sync token | `Shape.feed()` | Both dates, if both were already equal (after a full export) and each read starts from the token the previous one issued |
+| Change data capture batches by log position | `Shape.feed(checkpoint="sequence")` | Both dates, if both were already equal (after a full snapshot) and each batch starts where the previous one ended |
 | Events without a key that never change | `Shape.append()` | Both dates, if each read starts where the previous one ended |
 
 Each shape has a **cost**: how expensive that file is to ask the source for. dogana uses it to pick
@@ -137,7 +137,8 @@ tombstones, here one, but never lists the keys.
 A **soft delete** is a flag, such as `is_deleted`, on a row the source does not remove. It can be
 the deleted column only if three things hold:
 
-- setting the flag also moves `updated_at`, so a read of changes picks the row up;
+- setting the flag also moves the cursor column, usually `updated_at`, so a read of changes picks
+  the row up;
 - the source never removes a row physically, not even by archiving or retention purges;
 - the flag is on this table, not on another one.
 
@@ -256,7 +257,8 @@ A **reader** is whoever queries the loaded rows. Before trusting them, it asks t
 | expired | Complete as of a date older than the limit the reader gives. |
 
 A table's state is its worst region's, in the order unknown, expired, patched, complete. Its dates
-are the earliest complete as of and the earliest deletions as of among its regions.
+are the earliest complete as of and the earliest deletions as of among its regions, and it has no
+dates at all while any region is unknown.
 
 Which date a reader needs depends on the question:
 
@@ -264,7 +266,8 @@ Which date a reader needs depends on the question:
   every region the query reads is complete as of the same `c`. They may include orders deleted
   since `d`.
 - A question with "no" or "not" ("customers with no order in October") also needs the deletions
-  date: a deleted order still in the table makes its customer look active.
+  date: a deleted order still in the table makes its customer look active, so the customer is
+  wrongly left out of the answer.
 - An exact count or sum needs both dates.
 - Regions or tables proven at different instants guarantee none of this, as the next section
   shows.

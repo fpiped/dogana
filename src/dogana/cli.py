@@ -4,6 +4,7 @@ print the dates a ledger claims. It hashes files but never parses them."""
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import tempfile
@@ -45,7 +46,7 @@ example:
 LEDGER is a ledger as JSON, as a store returns it from load_ledger(contract).to_json(). Prints one
 line per region: its bounds, its state at TIME (now by default) and its two dates, then the table's
 state and the instant it is exact at, if any. With --limit-days, a region whose complete as of date
-is older than that at TIME is expired."""
+is older than that at TIME is expired; without it, no region expires."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -117,7 +118,10 @@ def _parser() -> argparse.ArgumentParser:
     claims.add_argument("ledger", type=Path, metavar="LEDGER", help="a ledger as JSON")
     claims.add_argument("--at", metavar="TIME", help="the reader's instant, with a UTC offset")
     claims.add_argument(
-        "--limit-days", type=float, metavar="DAYS", help="expire regions proven longer ago than this"
+        "--limit-days",
+        type=float,
+        metavar="DAYS",
+        help="expire regions proven longer ago than this; without it nothing expires",
     )
     claims.add_argument(
         "--window", nargs=2, metavar=("LOW", "HIGH"), help="only this window, regions cut to it"
@@ -199,14 +203,14 @@ def _claims(args: argparse.Namespace) -> int:
         kind = ledger.contract.types[ledger.contract.window_column]
         low, high = (_scalar(bound, kind) for bound in args.window)
         window = (low, high)
-    limit = None
+    limit = timedelta.max
     if args.limit_days is not None:
+        if not (math.isfinite(args.limit_days) and args.limit_days >= 0):
+            raise _UsageError("--limit-days must be a nonnegative number of days")
         try:
             limit = timedelta(days=args.limit_days)
-        except (OverflowError, ValueError):
-            limit = None
-        if limit is None or limit < timedelta(0):
-            raise _UsageError("--limit-days must be a nonnegative number of days")
+        except OverflowError:
+            raise _UsageError("--limit-days is beyond the longest duration") from None
     claims = ledger.claims(at, limit=limit, window=window)
     for claim in claims.regions:
         region = claim.region

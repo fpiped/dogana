@@ -265,7 +265,8 @@ records a declared failure.
 
 A `Receipt` records one decision: the manifest, the contract in force, the checks, `outcome`,
 `received_at`, an optional `source`, `base_publication_id`, the publication identity, and
-`ledger_identity`, the identity of the ledger the decision leaves. `outcome` is `accepted`,
+`ledger_identity`, the identity of the ledger the decision leaves; neither identity is ever
+empty. `outcome` is `accepted`,
 `rejected` or `replayed`; the `accepted` property is true for `accepted` and `replayed`, the
 `replayed` property only for `replayed`. An
 acceptance or a replay carries a `Transition`: the plan, and the regions over the coverage
@@ -285,9 +286,9 @@ cleanup, and a failure after commit cannot revoke an acceptance.
 
 `Ledger.claims(now, *, limit, window=None)` cuts the regions to `window`, if given, and states each
 one at the reader's time `now`. How old is too old is the reader's decision, not the table's, so
-every call names it: `limit` expires a region whose `complete_as_of` is older than `limit` at `now`,
-a region exactly `limit` old is not expired, and `limit=None` expires none. Claims never show a past
-state of the ledger.
+every call names it: `limit`, a nonnegative duration, expires a region whose `complete_as_of` is
+older than `limit` at `now`; a region exactly `limit` old is not expired, and `timedelta.max`
+expires none. Claims never show a past state of the ledger.
 
 | State | Condition |
 |---|---|
@@ -318,12 +319,12 @@ state of the ledger.
    requirement on the whole table needs a whole-table shape. No suitable shape raises
    `PlanningError`. The planned boundary may be later than the required date, because it must be
    later than every covered `complete_as_of`, and the extractor must then read at that boundary.
-5. `next_extraction(ledger, shape, until)` derives a rolling window from `window_size`, extended
-   back to meet the last complete evidence. For a timestamp shape, `since` is the earliest covered
-   `complete_as_of` minus `lookback`; an append needs every covered region to share one
-   `complete_as_of`; a generation request starts from the held generation. Declare `until` as
-   `produced_at` only if the read really saw the source at `until`. Files a sender pushes and reads
-   a receiver pulls pass the same gate.
+5. `next_extraction(ledger, shape_name, until, *, window=None)` derives a rolling window from
+   `window_size`, extended back to meet the last complete evidence. For a timestamp shape, `since`
+   is the earliest covered `complete_as_of` minus `lookback`; an append needs every covered region
+   to share one `complete_as_of`; a generation request starts from the held generation. Declare
+   `until` as `produced_at` only if the read really saw the source at `until`. Files a sender
+   pushes and reads a receiver pulls pass the same gate.
 
 ## Tables together
 
@@ -404,7 +405,7 @@ a tombstone changes shape at `p`. A reader of windows passes them to `Group.clai
 Atomic publication serves availability, not the guarantee: without it a refused table leaves the
 others ahead and the current tables have no common instant; with it, the instant moves in one step.
 
-`plan_together(group, ledgers, at_least, windows=None)` returns nothing when the group is already
+`plan_together(group, ledgers, at_least, *, windows=None)` returns nothing when the group is already
 exact at an instant no earlier than `at_least`, else one request per table with one `until`, later
 than every table's evidence and no earlier than `at_least`, each the cheapest read establishing
 `(until, until)` over its window. `until` is the earliest admissible boundary: the extractor reads
@@ -472,13 +473,13 @@ missing, surviving receipts or stamps show the table is not new. Stores fail clo
 identities; `Ledger.from_receipts(contract, receipts)` folds the accepted ones in order, ignoring
 rejections and refusing missing, reordered or foreign ones. `repair` restores the ledger only when
 the rebuilt head equals the stamp, never relabelling rows; rows need retained store versions.
-`Ledger.reconcile(contract, receipts, current, stamp, repair=True)` diagnoses, and with `repair`
-returns rebuilt evidence only for a matching stamp: `LedgerAhead`, evidence beyond the stamp, needs
-a fresh full replacement; `StampAhead`, rows without matching evidence, needs receipt recovery or
-restoration. Both are `InconsistentPublication`, matched by type. A store that verifies retention
-can pass `retained_head`: diagnosis then checks the current ledger against that receipt's
-`ledger_identity` and its hash against the stamp, without replaying the prefix. Repairs and
-mismatches still fold the whole history.
+`Ledger.reconcile(contract, receipts, current, stamp, *, repair=True, retained_head=None)`
+diagnoses, and with `repair` returns rebuilt evidence only for a matching stamp: `LedgerAhead`,
+evidence beyond the stamp, needs a fresh full replacement; `StampAhead`, rows without matching
+evidence, needs receipt recovery or restoration. Both are `InconsistentPublication`, matched by
+type. A store that verifies retention can pass `retained_head`: diagnosis then checks the current
+ledger against that receipt's `ledger_identity` and its hash against the stamp, without replaying
+the prefix. Repairs and mismatches still fold the whole history.
 
 ## Algebraic guarantees
 
@@ -489,9 +490,11 @@ manifest, not to a batch or a history.
 
 ## Contract evolution
 
-Once a table has history, its `table`, `key`, `window_column` and the types of the key and window
-columns are fixed, and stores refuse a contract that changes them. Everything else may evolve:
-costs, window sizes, lookback, shapes, cursor columns, the column hash. Each
+Once a table has history, its `table`, `key`, `window_column`, `deleted_column` and the types of
+the key and window columns are fixed, and stores refuse a contract that changes them: the deleted
+column decides which rows the dates describe, so a new one makes old dates speak of other rows.
+Everything else may evolve: costs, window sizes, lookback, shapes, cursor columns, the column hash.
+Each
 receipt keeps its contract. Every contract change alters the chain, since the whole contract, with
 normalized numbers, enters it, but only a change to a fixed field refuses the history.
 `Ledger.with_contract(contract)` checks compatibility and keeps regions, generation and head;
@@ -506,10 +509,12 @@ reconstruction uses each receipt's contract, then the requested one.
    are arrays, enums strings, mappings objects. Missing or unknown fields, unknown versions or
    kinds, wrong types, overflowing tags and naive datetimes raise `SerializationError` before
    normalization.
-3. Tags: dates `{"$date":"2026-10-18"}`, UTC datetimes `{"$datetime":"2026-10-18T00:00:00+00:00"}`,
-   without fractional seconds when zero, else six digits; durations `{"$seconds":604800}`, integral
-   or with exactly representable microseconds, else construction fails. Strings reject lone
-   surrogates.
+3. Tags: dates `{"$date":"2026-10-18"}`; datetimes `{"$datetime":"2026-10-18T00:00:00+00:00"}`,
+   RFC 3339 with `Z` or an offset and at most six fractional digits, emitted in UTC without
+   fractional seconds when zero, else with six digits; durations `{"$seconds":604800}`, nonnegative
+   and integral or with exactly representable microseconds. A tag outside its grammar, a duration
+   that would round and a datetime that would lose digits are refused, never truncated. Strings
+   reject lone surrogates.
 4. Canonical JSON has sorted keys, compact separators and ASCII escapes. Identity is SHA-256 of
    [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) (JSON Canonicalization Scheme) over the identity
    form: `version` and fields at their defaults omitted recursively, datetimes in UTC `+00:00`, a
