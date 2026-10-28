@@ -11,7 +11,7 @@ theme:
   # Zensical's classic variant keeps the Material look the colours were chosen for.
   variant: classic
   logo: assets/mascot.png
-  favicon: assets/mascot.png
+  favicon: assets/icon.png
   custom_dir: overrides
   features:
     - content.code.copy
