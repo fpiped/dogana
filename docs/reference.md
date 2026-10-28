@@ -1,104 +1,82 @@
 # Reference
 
-The [protocol](protocol.md) defines required behavior. This page describes the command line, the
-accounting path without a store, the conformance suite a store passes, and the example store and
-file drop in the repository's `examples/duckdb`. The example is not installed with dogana: install
-it from a checkout with `uv pip install -e . -e examples/duckdb`, copy it, or write a store for your own
-database.
+The [protocol](protocol.md) defines required behavior. This page covers the command line, the
+accounting path without a store, the conformance suite, and the example store and file drop in the
+repository's `examples/duckdb`, which are not installed with dogana: install them from a checkout
+with `uv pip install -e . -e examples/duckdb`, copy them, or write a store for your own database.
 
 ## Column types and hashes
 
-The data contract owns the columns. `Contract.types` maps exactly the union of key, window, cursor
-and deleted column names to logical types, with no extras; it is empty only when none are bound.
-Key and window columns use `int`, `str`, `date` or `datetime`; a cursor uses `datetime` or `int`;
-the deleted column uses `bool`. The deleted column marks tombstones in a delivered file and is never
-published, so the column hash leaves it out.
-`Contract.schema_hash` is an optional opaque string supplied by the data contract. The core
-neither holds a full column schema nor computes its hash. When the hash is present, the gate
-requires both the manifest and the store's candidate hash to match it. Without a contract hash,
-`schema_hash` is not applicable and no schema-check outcome is required, including for accounting alone.
-
-For an ODCS schema object, traverse its `properties` in declared column order. Normalize each
-property's `logicalType` to `int`, `float`, `str`, `bool`, `date` or `datetime`, then pair its `name`
-with that type. Resolve physical or nested types explicitly in the receiver. Hash these ordered
-`[name, type]` pairs with SHA-256 over
-`json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")`.
-This excludes document metadata. The example store and file drop use this recipe; other stores must agree with their receivers
-on the opaque hash. The [quick start](quickstart.md) uses a hand-written ordered column mapping.
+`Contract.types` maps exactly the key, window, cursor and deleted columns to logical types: `int`,
+`str`, `date` or `datetime` for key and window, `datetime` or `int` for a cursor, `bool` for the
+deleted column. The optional, opaque `schema_hash` comes from the data contract that owns the
+columns, computed with the [protocol's recipe](protocol.md#contract-and-shapes); when present, the
+gate requires the manifest's hash and the candidate's to equal it. The deleted column is never
+published, so the hash leaves it out. The example store uses the recipe; the
+[quick start](quickstart.md) hashes a hand-written column mapping.
 
 ## Example store on DuckDB
 
 `DuckDBStore(path, adopt=False)` accepts a CSV or Parquet path, an iterable of row dictionaries,
 or an Arrow table when PyArrow is installed. A path is opened once, without following a final
-symbolic link, and copied into the store's private temporary folder while it is hashed; every read
-uses that copy, so a file changed or replaced afterwards is never read.
-`hold(source, manifest, contract)` stages the candidate and inspects its column names and types.
-Bare CSV paths and row dictionaries use inferred types; `Contract.types` is not a full input schema.
-Row mappings cannot infer types from an empty input or an all-null column; `Rows(rows, columns)`
-from `example_store` supplies the types, so an empty API poll is still a delivery. Row
-mappings are inserted in batches of parameterized statements, far slower than a file: deliver large
-batches as CSV, Parquet or an Arrow table. For typed CSV,
-use `FileDrop(store, contract, columns=columns)`: its ordered mapping supplies the parsing types,
-including for files with only nulls or no rows. Parquet retains its physical schema for validation.
-Successful candidates normalize to
-BIGINT, DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMPTZ and DECIMAL. A payload column declared
-`decimal(p,s)` in `columns` (precision up to 38) stays exact: a Parquet DECIMAL of that precision and
-scale, a CSV value with at most `s` fraction digits and no exponent, or a Python `Decimal` row value.
-A DECIMAL is never read as a float, so a column declared `float` refuses one. Key, window and cursor
-columns keep the contract's six types. When the candidate has the contract's
-deleted column, its tombstone rows move to a separate staging table holding only their keys, and
-the deleted column is dropped: every later check and the published table see live rows only, and
-the plan's `tombstone` action deletes the published rows with those keys. Tombstone rows usually
-leave their other columns empty; a CSV read without `columns` infers an all-empty column as text, so
-deliver tombstones through `FileDrop(..., columns=...)` or another typed source. CSV is read with one pinned grammar, the protocol's: comma, double quote, UTF-8, header row, no
-comment lines and no dialect detection, so a `'` or a leading `#` is data. A quoted empty field is
-the empty string and an unquoted empty field is null. A `datetime` value needs its offset (`Z` or
-`+02:00`); without one the candidate fails `schema_hash`, as does a Parquet `TIMESTAMP` without a
-time zone. A file DuckDB cannot read (not UTF-8, compressed, corrupt, a value out of range) is
-a recorded rejection, like any other failed check.
+symbolic link, and copied into the store's private folder while it is hashed; every read uses that
+copy, so a file replaced afterwards is never read.
 
-Call `dogana.deliver(store, contract, source, manifest, now)` with the actual receiver time.
-The store's `deliver` convenience uses the same core sequence. Rows, ledger, stamp and receipt commit
-in one transaction. A rejected receipt changes none of the published rows or evidence. `StoreError`
-means storage failed; it is not a rejection of the declaration. Unexpected failures roll back and
-release candidates. If a commit succeeded before cleanup failed, retry finds the committed receipt.
+`hold(source, manifest, contract)` stages the candidate. Bare CSV paths and row dictionaries infer
+types; for typed CSV use `FileDrop(store, contract, columns=columns)`, which also types files with
+only nulls or no rows. Row mappings cannot infer types from an empty input or an all-null column:
+`Rows(rows, columns)` supplies them, so an empty API poll is still a delivery. Row mappings load far
+slower than a file; deliver large batches as CSV, Parquet or Arrow. Candidates normalize to BIGINT,
+DOUBLE, VARCHAR, BOOLEAN, DATE, TIMESTAMPTZ and DECIMAL. A column declared `decimal(p,s)` in
+`columns` (precision up to 38) stays exact: a Parquet DECIMAL of that precision and scale, a CSV
+value with at most `s` fraction digits and no exponent, or a Python `Decimal`; a DECIMAL is never
+read as a float. Key, window and cursor columns keep the contract's types.
 
-An existing destination table without publication evidence is refused unless `adopt=True` is
-explicitly chosen. Adoption does not certify its existing rows; establish evidence with a complete
-read. The `__dogana_` prefix is reserved regardless of case. Registered table spelling must remain
-consistent because DuckDB identifiers are case-insensitive while protocol identities are not.
+Tombstone rows move to a staging table of their keys, and the deleted column is dropped, so every
+later check and the published table see live rows only. A CSV read without `columns` infers an
+all-empty column as text, so deliver tombstones through a typed source. CSV follows the protocol's
+one grammar, so a `'` or a leading `#` is data; a quoted empty field is the empty string, an
+unquoted one null. A `datetime` without an offset fails `schema_hash`, as does a Parquet `TIMESTAMP`
+without a time zone. A file DuckDB cannot read (not UTF-8, compressed, corrupt, out of range) is a
+recorded rejection.
 
-Stores on the same database file share a process-local lock, whatever path names it: the store keys
-the lock by the file DuckDB opened, and refuses a second name for an open file, such as a hard link,
-which DuckDB would open as a second database. Checks and publication serialize; reads cannot observe
-an unfinished transaction. After a rollback that could not be resolved, the store stays locked and
-refuses reads until it is closed; close it from the thread that used it, since the lock belongs to
-that thread. Use one writer process per DuckDB file. External
-SQL writers must coordinate with the store. A direct row edit that leaves the stamp unchanged is
-not detectable by stamp comparison.
+`deliver(store, contract, source, manifest, now)` commits rows, ledger, stamp and receipt in one
+transaction; a rejection changes nothing published. `StoreError` means storage failed, not the
+declaration. Unexpected failures roll back; if a commit succeeded before cleanup failed, a retry
+finds its receipt.
 
-`read(table, publication_id=None)` returns row dictionaries; pass a receipt's publication identity
-to read its version. Pair that version with the receipt's ledger, recomputing claims with today's
-`now`. Loading current rows and current claims separately can cross a publication boundary.
-`receipts(table=None)` returns persisted decisions in order, including rejections. A returned replay
-has `outcome="replayed"` and preserves original identity and `received_at`; it is not another commit.
-This is a decision history, not a journal of every call or operational exception.
+An existing table without publication evidence is refused unless `adopt=True`, which certifies
+none of its rows: establish evidence with a complete read. The `__dogana_` prefix is reserved in any
+case, and a table's spelling must stay the same, because DuckDB identifiers ignore case and
+protocol identities do not.
+
+Stores on one database file share a process-local lock, keyed by the file DuckDB opened, and a
+second name for an open file, such as a hard link, is refused. Checks and publication serialize;
+reads never see an unfinished transaction. After a rollback that could not be resolved, the store
+refuses reads until it is closed, from the thread that used it. Use one writer process per file;
+external SQL writers must coordinate with the store, and a row edit that leaves the stamp unchanged
+is undetectable.
+
+`read(table, publication_id=None)` returns row dictionaries, of a past version when given its
+publication identity. `read_publication(contract)` returns the current rows with their ledger under
+one publication; reading rows and claims separately can straddle one. `receipts(table=None)` returns
+the stored decisions in order, rejections included: a history of decisions, not of every call. A
+replay is answered from its stored receipt, with its original identity and `received_at`, and is
+not stored again.
 
 The store implements the [together tier](protocol.md#tables-together). `check_references(group,
-candidates)` asks `Group.unchecked` which references the delivery can test, applies every
-candidate's plan inside a transaction it rolls back, and for each tested reference counts the child
-rows in the child's coverage that name no parent row, giving up to three of the values they name. A
-reference fails when its columns are missing, or when a reference column and its parent key column
-have different types, other than int and float, and some row names a parent. A float names an int
-key only with its exact integer value. A new check of any candidate discards the answer. The trial applies every plan a second time and scans the child,
-which costs about as much as the delivery itself. `publish_together(group,
-entries)` writes every table's rows, history, receipt, stamp and ledger in one transaction. `read_together(group)` returns `(rows, ledgers)`, two mappings
-by table, read under one lock, so no publication falls between two tables; pass the ledgers to
-`group.claims(ledgers, now)` for the common instant.
+candidates)` applies every candidate's plan in a transaction it rolls back and, for each reference
+`Group.unchecked` leaves to test, counts the child rows in the child's coverage that name no parent,
+reporting up to three values. A reference fails when its columns are missing; a reference column whose type differs from its parent key column's,
+other than int and float, fails as soon as a row names a parent; a float names an int key only with
+its exact integer value. A new check of any candidate discards the answer, and the trial costs
+about as much as the delivery. `publish_together(group,
+entries)` publishes every table in one transaction, and `read_together(group)` returns `(rows,
+ledgers)` under one lock; pass the ledgers to `group.claims(ledgers, now)` for the common instant.
 
 ## Internal tables and ledger JSON
 
-These tables are implementation details, useful for inspection and SQL consumers:
+These tables are implementation details, useful for inspection and SQL:
 
 | Table | Columns | Purpose |
 |---|---|---|
@@ -108,14 +86,13 @@ These tables are implementation details, useful for inspection and SQL consumers
 | `__dogana_commits` | `publication_id`, `table_name`, `manifest_id`, `base_publication_id`, `receipt_id`, `sequence`, `history_table`, `columns` | Accepted publication order and row-version metadata. |
 | `__dogana_history_<table>`, `__dogana_layout_<hash>` | Declared row columns, `__dogana_from`, `__dogana_until` | Row versions, with inclusive start and exclusive end publication sequences. |
 
-`document` in the ledger table contains `version`, `kind`, `contract`, `regions`, `generation` and
-`publication_id`. It has no accepted-identity array. Every region contains `low`, `high`, `low_open`,
-`high_open`, `complete_as_of` and `deletions_as_of`. Unknown dates and unbounded endpoints are JSON null;
-a datetime is `{"$datetime":"2026-10-18T00:00:00+00:00"}` and a date is
-`{"$date":"2026-10-18"}`. Contract and region values also carry `version` and `kind`.
-The [complete ledger fixture](examples/ledger.json) is executable JSON.
+The ledger `document` holds `version`, `kind`, `contract`, `regions`, `generation` and
+`publication_id`. Every region holds `low`, `high`, `low_open`, `high_open`, `complete_as_of` and
+`deletions_as_of`; unknown dates and unbounded ends are null, a datetime is
+`{"$datetime":"2026-10-18T00:00:00+00:00"}` and a date `{"$date":"2026-10-18"}`. See the
+[ledger fixture](examples/ledger.json).
 
-Create this DuckDB view to expose dates without discarding unknown regions or endpoint flags:
+This view exposes the dates without dropping unknown regions or endpoint flags:
 
 ```sql
 create or replace view dogana_regions as
@@ -132,49 +109,41 @@ from __dogana_ledgers l,
      json_each(l.document, '$.regions') r;
 ```
 
-The view reads current ledger evidence. It does not fix a publication for later queries or calculate
-freshness. SQL `min` ignores nulls, so require every region's date to be non-null before aggregating.
-The [dbt recipes](integrations.md#dbt) use that rule and refuse a missing ledger too.
+It reads current evidence, without pinning a publication or computing freshness. SQL `min` ignores
+nulls, so require every region's date to be non-null before aggregating, as the
+[dbt recipes](integrations.md#dbt) do.
 
-Evolved schemas use layout tables named by a hash of the table and physical columns.
-History stores changed row versions instead of copying the whole table on every publication.
-Keyed updates compare rows with null-safe equality; unchanged rows keep their version. Equal
-keyless events retain their multiplicity. History grows with changes and has no automatic retention
-policy; comparison still scans published rows. A receipt names the ledger it leaves by identity,
-so its size follows its delivery's coverage, not the table's history.
+History stores changed row versions, not a copy per publication: keyed updates compare rows with
+null-safe equality and unchanged rows keep their version; equal keyless events keep their
+multiplicity. History has no retention policy. Evolved schemas use layout tables named by a hash of
+the table and its columns. A receipt names the ledger it leaves by identity, so it grows with its
+delivery's coverage, not the table's history.
 
 ## Recovery and contract changes
 
-`load_ledger` raises `InconsistentPublication` when ledger, retained receipts and row stamp disagree.
-`repair(contract)` folds accepted receipts and restores a missing or stale ledger only if the
-reconstructed head equals the stamp. Missing accepted receipts or an unknown stamp require
-investigation. A newer complete whole-table read can replace untrusted rows while continuing a
-recoverable history; a window or replay cannot repair them. Never edit a stamp to make it agree.
-Rebuilding a receipt prefix restores evidence only, not the historical rows.
+`load_ledger` raises `InconsistentPublication` when ledger, receipts and row stamp disagree.
+`repair(contract)` folds the accepted receipts and restores the ledger only if the rebuilt head
+equals the stamp; missing receipts or an unknown stamp need investigation. A newer complete
+whole-table read can replace untrusted rows; a window or a replay cannot. Never edit a stamp to make
+it agree. Rebuilding receipts restores evidence, not historical rows.
 
-Use a compatible new `Contract` to change freshness, shrink policy, costs or other nonbinding fields.
-`Ledger.with_contract` enforces unchanged table, key and window bindings, including their types.
-Receipts preserve the contract used for each decision. Establish changed row schemas with a complete
-whole-table delivery so retained rows have defined values under the new schema. DuckDB refuses a
-layout change if any previously published rows remain after the accepted plan's deletions. A source restoration
-can invalidate an unchanged timestamp checkpoint: request a genuinely complete read instead of
-continuing from its old numeric value. Opaque generation tokens must distinguish source incarnations.
+A compatible new `Contract` may change freshness, shrink policy, costs and other nonbinding fields;
+`Ledger.with_contract` refuses a changed table, key or window binding, types included. Establish a changed row
+schema with a complete whole-table delivery; DuckDB refuses a layout change while earlier rows
+remain after the plan's deletions. A source restored from backup can invalidate a timestamp
+checkpoint: request a complete read. Generation tokens must distinguish source incarnations.
 
 ## File drop
 
-`FileDrop(store, contract, pattern=None, *, columns, root=None).ingest(path, *, now=None)` accepts CSV
-or Parquet files. Required keyword-only `columns` is an ordered mapping of every data column name
-to its logical type, for example `{"id": "int", "day": "date", "amount": "int"}`. It supplies typed
-CSV parsing and the reference column hash without adding columns to the delivery contract.
-The mapping must agree with `Contract.types` and, when present, `Contract.schema_hash`. It may
-include the contract's deleted column as `bool`; files of a mapping without it deliver no tombstones.
-The gate checks the candidate hash only when that hash is present.
-The sidecar is `<file>.json`, for example `orders.csv.json`. Without it, `FilePattern` derives a
-manifest using a full-match filename expression. It requires `produced_at` and either a named
-`shape` group or a fixed `shape` argument. Optional groups include `rows`, `tombstones`, `low`,
-`high`, `since`, `generation` and `schema_hash`. The file drop supplies receiver time at ingestion unless `now` is explicitly supplied.
-
-For filenames such as `orders_2026-10-19.csv`, declare the timezone instead of assuming one:
+`FileDrop(store, contract, pattern=None, *, columns, root=None).ingest(path, *, now=None)` delivers a
+CSV or Parquet file. `columns` maps every data column to its logical type in order, for example
+`{"id": "int", "day": "date", "amount": "int"}`: it types CSV parsing and gives the column hash. It
+must agree with `Contract.types`, which is not a full input schema, and `schema_hash`; it may
+include the deleted column as `bool`, and a mapping without it delivers no tombstones.
+The manifest is the sidecar `<file>.json`, for example `orders.csv.json`; without one, a
+`FilePattern` derives it from the file name with a full-match expression that names `produced_at`
+and a `shape` group or argument, and optionally `rows`, `tombstones`, `low`, `high`, `since`,
+`generation` and `schema_hash`. `now` defaults to the time of ingestion.
 
 ```python
 from datetime import UTC
@@ -183,39 +152,31 @@ from example_store import FilePattern
 pattern = FilePattern(r"orders_(?P<produced_at>\d{4}-\d{2}-\d{2})\.csv", shape="daily", timezone=UTC)
 ```
 
-Naive filename timestamps without a declared timezone are refused. Ambiguous or nonexistent local
-times need an explicit offset. DATE windows use UTC calendar dates. Missing bounds derive a closed
-window from the shape's `window_size`; explicit bounds must appear as a pair and match the window
-column's entry in `Contract.types`.
-Thirty DATE days ending October 19 start September 20. A window lacking both bounds and duration
-is refused. The duration is not a restriction on explicitly declared push windows.
+A file-name time without a declared timezone is refused, and an ambiguous or nonexistent local time
+needs an explicit offset. Without bounds, a closed window is derived from the shape's
+`window_size`, DATE windows on UTC calendar dates; explicit bounds come in pairs typed by the window
+column.
 
-Without a `rows` group, the file is counted: its live rows and its tombstones, the rows whose
-deleted column is true. CSV records are counted including quoted newlines, Parquet rows through
-DuckDB. With a `rows` group the filename declares the counts, `rows` and `tombstones`
-(zero when the group is absent), and the file is not read for them. Path-based receipts identify
-the source. A manifest without a digest, derived or from a sidecar, gets the SHA-256 of the received
-file, so a changed file under the same manifest is a new delivery, not a replay.
-Count and hash describe the received file, not whether it contains all source rows. A file counted
-while its sender is still writing it describes half a file: senders write under another name, or
-outside the folder, and rename the finished file into place.
-Literal regular files are required; glob characters are refused. Resolved files and sidecars must
-remain inside the drop root, including through symlinks, and the store opens the file it checked.
-With no root, the submitted file's parent is the boundary. These checks are not a sandbox or a
-resource quota: limit input size and memory at the caller. Compressed Parquet can expand far beyond
-its file size. There is no watcher or mover.
+Without a `rows` group, the drop counts the file: live rows and tombstones, CSV records including
+quoted newlines. With one, the name declares the counts (`tombstones` zero when absent). A manifest
+without a digest gets the SHA-256 of the received file, so a changed file under the same manifest is
+a new delivery, not a replay. Count and hash describe the received file, not the source, and the drop cannot tell a
+half-written file: senders write under another name and rename the finished file into the folder.
+
+Files must be literal regular files inside the drop root (by default the file's parent), including
+through symlinks, and the store opens the file it checked. These checks are not a sandbox: limit
+input size and memory at the caller, since compressed Parquet can expand far beyond its size. There
+is no watcher or mover.
 
 `ingest_together(group, files, *, now=None)` delivers one file per table of a group through
-`deliver_together`. `files` pairs each table's `FileDrop` with its path; every drop must use the same
-store and its table's contract in the group. Each manifest comes from its sidecar or pattern as for
-`ingest`, and every file must carry the instant of the one consistent read that produced all of
-them: written by that one export job into every sidecar, or as a full timestamp in every filename.
-A date-only pattern gives separate export jobs the same instant and voids the guarantee.
+`deliver_together`, pairing each table's `FileDrop` (one store, the group's contracts) with its
+path. Every file must carry the instant of the one read that produced them all, in every sidecar or
+as a full timestamp in every name: a date-only pattern gives separate jobs one instant and voids the
+guarantee.
 
 ## Command line
 
-`dogana` is installed with the package and runs as `python -m dogana` too. It hashes files but
-never parses them.
+`dogana`, also `python -m dogana`, hashes files but never parses them.
 
 ```text
 dogana manifest FILE --contract PATH --shape NAME --produced-at TIME --rows N [options]
@@ -223,28 +184,22 @@ dogana check FILE --contract PATH [--manifest PATH]
 dogana claims LEDGER [--at TIME] [--window LOW HIGH]
 ```
 
-`manifest` writes the sidecar a file drop reads, `FILE.json`, validated against the contract.
-`--rows` declares the live rows of FILE and, for a tombstone shape, `--tombstones` the rows whose
-deleted column is true: the export that wrote FILE knows them, and the receiver's store counts them
-again. It hashes the bytes with SHA-256 and takes the schema hash from the contract. Values
-are typed by the contract: `--window LOW HIGH` by the window column, omitted for a rolling shape
-whose window ends at `--produced-at`; `--since` as a time, an integer position or a generation
-token by the shape's checkpoint; `--generation` by the table's kind of position.
-Times need a UTC offset. `--produced-at` is the source read boundary, never the time the command
-runs. The file is replaced only with `--force`, and atomically, so a receiver polling the folder
-never reads half a manifest; it is readable by the receiver's account under the usual umask; `-o -` writes to standard output instead.
+`manifest` writes `FILE.json`, validated against the contract. `--rows` declares the live rows and,
+for a tombstone shape, `--tombstones` the deleted ones: the export knows them, and the receiver's
+store counts them again. It adds the SHA-256 of the bytes and the contract's schema hash. Values are
+typed by the contract: `--window LOW HIGH` by the window column, omitted for a rolling shape ending
+at `--produced-at`; `--since` by the shape's checkpoint; `--generation` by the table's kind of
+position. Times need a UTC offset,
+and `--produced-at` is the source read, never when the command runs. An existing file is replaced
+only with `--force`, atomically; `-o -` writes to standard output.
 
-`check` validates FILE's manifest against the contract, its schema hash included, and compares the
-SHA-256 of FILE with the manifest's `content_hash`. A sender runs it before handing a file over. It refuses a manifest
-without a hash. Counts, keys, windows and column types are checked by the receiver's store, which
-reads the rows.
+`check` validates FILE's manifest against the contract, schema hash included, and FILE's SHA-256
+against its `content_hash`, refusing a manifest without one. A sender runs it before handing a file
+over; counts, keys, windows and types are checked by the receiver's store.
 
-`claims` prints what a ledger claims at `--at`, now by default. LEDGER is the ledger as JSON, as a
-store returns it: `store.load_ledger(contract).to_json()`. One line per region gives its bounds, its
-state and its two dates, then one line the table's state and the instant it is exact at, if any.
-`--window LOW HIGH`, typed by the window column, prints the regions within that window, cut to its
-bounds. Date and
-integer bounds print closed.
+`claims` prints what a ledger, as JSON (`store.load_ledger(contract).to_json()`), claims at `--at`,
+now by default: one line per region, then the table's state and the instant it is exact at, if any.
+`--window LOW HIGH` cuts the regions to that window. Date and integer bounds print closed.
 
 ```text
 orders (-inf, 2026-09-26]: unknown; complete as of unknown; deletions as of unknown
@@ -254,12 +209,12 @@ orders: unknown; exact at no single instant
 ```
 
 Exit status is 0 on success, 1 when dogana refuses (an invalid contract, manifest or ledger, a
-mismatch, an unreadable file, an existing manifest) and 2 when the command cannot describe the delivery as called.
+mismatch, an unreadable file, an existing manifest) and 2 when the command is called wrongly.
 
 ## Without a Store
 
-An existing loader can use the gate without implementing `Store`. For a new, structurally valid
-manifest after accepted-receipt lookup, the publication path is six calls:
+An existing loader can use the gate without implementing `Store`. After returning an existing
+accepted receipt on replay, a new manifest takes six calls:
 
 ```python
 ledger = load_consistent_ledger(contract)
@@ -270,36 +225,28 @@ pending_rows = execute_if_accepted(source, receipt)
 commit_or_record(pending_rows, receipt)
 ```
 
-`Gate` comes from `dogana`; the other functions are your loader's primitives. Load a ledger whose
-head matches the rows, check the candidate against that base, and execute only an accepted plan.
-`commit_or_record` compares the current head with `receipt.base_publication_id` and commits rows,
-ledger, stamp and acceptance together, or persists the rejection without changing published state.
-Preflight malformed declarations with `Gate.preflight(ledger, manifest, now=now)` and record their
-rejection through `Gate.evaluate`. Abort open work on errors. Before this path, return an existing
-accepted receipt on replay without executing its plan again. Using the core for accounting without
-an atomic publication mechanism gives no guarantee that the evidence describes the visible rows.
+`Gate` comes from `dogana`; the rest are your loader's. Load a ledger whose head matches the rows,
+check the candidate against that base, and execute only an accepted plan. `commit_or_record`
+compares the current head with `receipt.base_publication_id`, then commits rows, ledger, stamp and
+receipt together, or records the rejection alone. `Gate.preflight(ledger, manifest, now=now)`
+catches a malformed declaration before any row is read. Without atomic publication, nothing
+guarantees the dates describe the visible rows.
 
 ## Check a store
 
-Install pytest and run `dogana.conformance.StoreConformance` against a `StoreFactory`. The suite
-depends on pytest, not DuckDB; the example store's factory is in the repository's
-`tests/test_conformance.py`. Required factory hooks are `make_store`, `write_source`,
-`read_table`, `read_publication`, `fail_after_rows` and `pause_after_rows`. The latter two exercise
-one `_publication_point()` hook inside publication after provisional row changes and before commit.
+Run `dogana.conformance.StoreConformance`, which needs pytest, against a `StoreFactory` with
+`make_store`, `write_source`, `read_table`, `read_publication`, `fail_after_rows` and
+`pause_after_rows`; the last two drive one `_publication_point()` hook, after provisional row
+changes and before commit. The example's factory is in `tests/test_conformance.py`.
 
-Stores exposing both `publication_stamp` and `repair` can also inherit `StampedLedgerConformance`;
-its `StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger` for recovery scenarios.
-Stores without that tier still run every required publication scenario. Diagnosis matches
-`LedgerAhead` and `StampAhead`, never exception text. Stores exposing `check_references` and
-`publish_together` can inherit `TogetherConformance`: one instant for a group, a refused table or
-reference refusing every table, an untested reference, different read boundaries, a failure after
-rows, a table published alone between the check and the publication, receipts without the store's
-own references answer, and whole replay.
+A store with `publication_stamp` and `repair` can also run `StampedLedgerConformance`, whose
+`StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger`; diagnosis matches
+`LedgerAhead` and `StampAhead` by type. A store with `check_references` and `publish_together` can
+run `TogetherConformance`: one instant for a group, a refusal refusing every table, an untested
+reference, different read boundaries, a failure after rows, a table published alone between check
+and publication, receipts without the store's own references answer, and whole replay.
 
-Scenarios cover full and window deliveries, feeds, contradictions, checks, replays, stale accepted
-and rejected bases, atomic failures, malformed receipt persistence and reconstruction. A refusal
-whose receipt cannot round-trip raises `SerializationError` before the log changes. The DuckDB
-reference also refuses a destination with unexpected column order or types before publication.
-Passing provides evidence for these cases, not a proof under every storage failure or of source truth.
-The core port requires eight storage primitives, not a `deliver` or `read` method; factories adapt
-transport and read APIs to the suite. Ordered writes are not a conforming alternative.
+The scenarios cover full and window deliveries, feeds, contradictions, replays, stale bases, atomic
+failures, receipt persistence and reconstruction. Passing is evidence for them, not a proof under
+every storage failure. The port is eight storage methods; factories adapt reads and transport to the
+suite, and ordered writes do not conform.

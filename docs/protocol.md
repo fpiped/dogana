@@ -30,10 +30,11 @@ not authenticate senders, verify business values or certify a query's answer.
 
 A store reads a delivered file once, into a copy only it can reach, and hashes those bytes while it
 copies them, so the rows it checks and publishes are the bytes `content_hash` names. A CSV file is
-RFC 4180: comma separators, double quotes escaped by doubling, UTF-8, a header row, no comments and
-no other dialect; a sender counting rows must parse that grammar. A `datetime` value carries its UTC
-offset, in the file as in the manifest: a time without one names no instant and is refused. A file
-that does not parse is the sender's failure, recorded as a rejection, never a storage error.
+[RFC 4180](https://www.rfc-editor.org/rfc/rfc4180): comma separators, double quotes escaped by
+doubling, UTF-8, a header row, no comments and no other dialect; a sender counting rows must parse
+that grammar. A `datetime` value carries its UTC offset, in the file as in the manifest: a time
+without one names no instant and is refused. A file that does not parse is the sender's failure,
+recorded as a rejection, never a storage error.
 
 `produced_at` is the source snapshot or read boundary. The extractor guarantees all changes through
 that boundary, including its endpoint. Download completion, arrival time and a scheduler's logical
@@ -50,11 +51,10 @@ optional `deleted_column`, `types`, optional `schema_hash`, `max_shrink_fraction
 columns; it is empty only when none are bound. Keys and window bounds use ordered scalar types; a
 cursor uses `datetime` or `int`; the deleted column uses `bool`.
 
-The data contract defines the columns. The delivery contract references it by an opaque
-`schema_hash`, keeping column ownership in one place. The receiver obtains this string from its
-ODCS (Open Data Contract Standard) document, dbt model or hand-written column list. When present, the manifest must carry the
-same hash and the store checks its candidate against it. When absent, no schema check is required,
-including for accounting-only contracts, where `schema_hash` is not applicable.
+The data contract owns the columns; the delivery contract references them by an opaque
+`schema_hash`, from an ODCS (Open Data Contract Standard) document, a dbt model or a column list.
+When present, the manifest carries the same hash and the store checks its candidate against it;
+when absent, no schema check is required.
 
 For an ODCS schema object, traverse its properties in declared column order, map each property's
 name and logical type to an ordered `[name, type]` pair, then compute SHA-256 of
@@ -134,25 +134,11 @@ uses the window column's declared type in `types`.
 `lookback` is nonnegative and allowed only on timestamp shapes in keyed contracts; it extends a planned read back
 from the weakest covered completeness boundary. Keyless appends cannot overlap.
 
-## Choosing a shape
-
-| Source behavior | Shape | What it cannot express |
-|---|---|---|
-| Exhaustive table export | `Shape.full()` | Completeness inferred from a received count alone. |
-| Exhaustive rolling window | `Shape.window(size=...)` | Mutable window membership or more than one window column. |
-| One complete partition per file | Complete singleton window | A finite registered domain; space outside delivered partitions remains unknown. |
-| Every changed row since a timestamp | `Shape.changes(checkpoint="timestamp", deletions="none")` | Deletions or repair of a missed full export without another full export. |
-| Rows updated in the last N days, by update time | `Shape.changes()` with `since` N days back | Deletions; it is not a window. |
-| Every changed row and deleted key since a timestamp, including a soft delete that moves the update time | `Shape.changes(checkpoint="timestamp", deletions="tombstone")` | A missing base; deletion gaps heal only when the read reaches back through them. |
-| Continuous opaque-cursor feed with deleted keys | `Shape.feed()` | Window-local cursors, missing generations or repair of an unknown base. |
-| Every change after a commit-ordered position (log sequence number, CDC or Kafka offset) | `Shape.changes(checkpoint="sequence")` or `Shape.feed(checkpoint="sequence")` | Positions assigned before commit, such as auto-increment ids under concurrent writers; updates that do not advance the position; positions beyond 2^53. |
-| Immutable events retained from a declared start | `Shape.append()` | Updates, deletion or overlapping keyless intervals. |
-| CDC stream in offset batches | `Shape.feed(checkpoint="sequence")` after a full snapshot issuing its offset | Missing offset ranges or source completeness inferred from offsets alone. |
-| Immutable event stream in arrival-order intervals | `Shape.append()` with `start_at` | Event-time completeness or deduplication of a re-emitted event in a new batch. |
-
 Shape constructors take keywords; `Contract` and `Manifest` require keywords after `shapes` and
 `produced_at`, respectively. `Contract.manifest(shape, produced_at, ...)` supplies the table and
 the contract's optional schema hash. `Shape.window_ending_at` centralizes inclusive DATE and elapsed datetime window arithmetic.
+
+[Concepts](concepts.md#what-a-file-can-prove-shapes) maps common source behaviors to shapes.
 
 ## Manifest
 
@@ -495,8 +481,9 @@ means accepted evidence exceeds the row stamp and needs a fresh full replacement
 means rows lack matching current evidence and need receipt recovery or external restoration.
 Both subclass `InconsistentPublication`, so stores and conformance tests match types, not messages.
 For consistent reads a store that verifies receipt retention can supply `retained_head`; diagnosis
-then checks that receipt's ledger and hash against the stamp without replaying its prefix. Repairs
-and all mismatches still fold the full retained history.
+then checks the current ledger against that receipt's `ledger_identity`, and its hash against the
+stamp, without replaying its prefix. Repairs and all mismatches still fold the full retained
+history.
 
 ## Algebraic guarantees
 
@@ -545,7 +532,8 @@ Compatible future optional fields at defaults preserve identity; semantic change
 migration. Unknown wire versions are refused even when their identity form would be compatible.
 
 `to_dict/from_dict` and `to_json/from_json` round-trip nested values. A ledger embeds contract,
-regions, generation and publication head; a receipt embeds its decision and resulting ledger.
+regions, generation and publication head; a receipt embeds its decision and names the ledger it
+leaves by `ledger_identity`.
 [Contract](examples/contract.json), [manifest](examples/manifest.json), [ledger](examples/ledger.json)
 and [receipt](examples/receipt.json) are executable wire examples.
 [Identity vectors](examples/identity-vectors.json) specify exact canonical forms and hashes for independent implementations.

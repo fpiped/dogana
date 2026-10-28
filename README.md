@@ -19,36 +19,34 @@ dogana is a Python library for tables loaded from exports. It checks each delive
 its sender's manifest and the receiver's contract, and keeps in a ledger what every delivery shows
 about the table.
 
-Not every source has change data capture, a log of every insert, update and delete. Most data still arrives as exports: a full dump on
-Sunday, the orders of the last 30 days by order date every night, the rows changed since yesterday.
-Each export says something different, almost none says what was deleted, and once the rows are
-loaded nobody remembers which proved what.
+Most data still arrives as exports, not as change data capture: a full dump on Sunday, the orders
+of the last 30 days every night, the rows changed since yesterday. Each says something different,
+almost none says what was deleted, and once loaded nobody remembers which proved what.
 
-dogana remembers, as two dates for every part of a table (the whole table, or a range of its order
-date or another date that never changes):
+dogana remembers, as two dates for every part of a table (the whole table, or a range of a date
+that never changes, such as the order date):
 
 - **complete as of**: every row the source had then is here;
 - **deletions as of**: no row the source deleted before then is still here.
 
-A delivery never raises a date beyond what its manifest declares and the checks confirm. dogana
-checks every file against its declaration; that the source exported every row it should have is the
-sender's word, which no file can prove.
+A delivery never raises a date beyond what its manifest declares and the checks confirm. That the
+source exported every row it should have is the sender's word, which no file can prove.
 
 ## How it works
 
-1. The receiver writes a **contract** for each table: its key and the kinds of delivery it accepts.
-2. Every file arrives with a **manifest**: which kind it is, as of when, how many rows and deletions,
-   the SHA-256 of its bytes. Deleted keys travel in the file, as rows marked deleted.
-3. A **gate** checks the file against both, and rejects the whole file if any check fails.
-4. A **ledger** moves the two dates only as far as the checked delivery reaches, and anyone reading the
-   table can ask it how far to trust the rows.
-5. Tables that depend on each other, such as orders and their lines, can be delivered **together**
-   from one consistent read: one decision, one publication, and a date that says when a join
-   between them answers as the source would have.
+1. The receiver writes a **contract** per table: its key and the kinds of file it accepts.
+2. Every file arrives with a **manifest**: its kind, the instant the source was read, its rows and
+   deletions, the SHA-256 of its bytes.
+3. A **gate** checks the file against both, and rejects it whole if any check fails.
+4. A **ledger** moves the two dates only as far as the delivery reaches; readers ask it how far to
+   trust the rows.
+5. Related tables, such as orders and their lines, read from one snapshot are delivered
+   **together**: one decision, and an instant at which a join between them answers as the source
+   would have.
 
 *Dogana* (doh-GAH-nah) is Italian for customs: goods cross a border with a declaration, an officer
-checks them against it, and they enter stamped or are held at the border. Here the goods are rows,
-the declaration is the manifest, the officer is the gate and the stamped declaration is the receipt.
+checks them against it, and they enter stamped or are held. Here the goods are rows, the
+declaration the manifest, the officer the gate and the stamp the receipt.
 
 ## In thirty seconds
 
@@ -80,24 +78,23 @@ print(
 patched: complete as of Monday, deletions as of Sunday
 ```
 
-Monday's changes brought every new and updated row, but no deletions: a row physically deleted at
-the source since Sunday may still be here. That is what patched means. That sentence, for every table, is what dogana is for.
+Monday's changes brought every new and updated row, but no deletions: a row deleted at the source
+since Sunday may still be here. That is what patched means, and that sentence, for every table, is
+what dogana is for.
 
 ## Use it
 
-dogana runs inside whatever already loads your tables: a cron job, an Airflow task, a dlt
-pipeline. The package is pure Python with no dependencies and never parses a data file: your
-loader checks the rows and hands dogana the results, or a store you write for your database
-publishes rows and dates in one transaction, tested by the conformance suite. The repository's
+`pip install dogana`: pure Python, no dependencies, and it never parses a data file. It runs
+inside whatever loads your tables (a cron job, an Airflow task, a dlt pipeline): your loader checks
+the rows and hands dogana the results, or a store you write for your database publishes rows and
+dates in one transaction, tested by the conformance suite.
 [`examples/duckdb`](https://github.com/fpiped/dogana/tree/main/examples/duckdb) holds one such
-store on DuckDB and a file drop that feeds it, outside the package; the quick start runs on them. A
-sender writes its manifest as JSON, in any language, or with `dogana manifest`.
+store and a file drop, outside the package; the quick start runs on them. A sender writes its
+manifest as JSON in any language, or with `dogana manifest`.
 
-dogana is in beta: the manifest and ledger format may still change before 1.0.
-Install it with `pip install dogana`.
-
-If all your sources have change data capture with deletes, you already know which rows to trust.
-dogana is for everything else.
+dogana is in beta: the manifest and ledger format may still change before 1.0. If all your sources
+have change data capture with deletes, you already know which rows to trust; dogana is for
+everything else.
 <!-- --8<-- [end:body] -->
 
 ## Learn more
