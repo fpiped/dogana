@@ -99,7 +99,7 @@ def test_a_minimum_requirement_can_use_a_snapshot_later_than_newer_local_evidenc
     assert request.shape == "full"
     assert request.until == at(20) + timedelta(microseconds=1)
     after = ledger.apply(Manifest(request.table, request.shape, request.until))
-    assert after.claims(request.until).deletions_as_of >= at(19)
+    assert after.claims(request.until, limit=None).deletions_as_of >= at(19)
 
 
 def test_an_admissible_boundary_considers_only_the_chosen_shapes_coverage():
@@ -128,7 +128,10 @@ def test_a_delayed_date_window_covers_every_date_since_the_previous_window():
     request = next_extraction(ledger, "daily", later)
     assert request.window == (at(20).date(), later.date())
     after = ledger.apply(Manifest(c.table, request.shape, request.until, window=request.window))
-    assert after.claims(later, window=(first.window[0], request.window[1])).complete_as_of is not None
+    assert (
+        after.claims(later, limit=None, window=(first.window[0], request.window[1])).complete_as_of
+        is not None
+    )
 
 
 def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microsecond():
@@ -138,7 +141,7 @@ def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microseco
     request = next_extraction(ledger, "daily", at(21, 1))
     assert request.window == (at(19) + timedelta(microseconds=1), at(21, 1))
     after = ledger.apply(Manifest(c.table, "daily", request.until, window=request.window))
-    assert after.claims(request.until, window=(at(18), at(21, 1))).complete_as_of is not None
+    assert after.claims(request.until, limit=None, window=(at(18), at(21, 1))).complete_as_of is not None
 
 
 def test_rolling_windows_use_coverage_bounds_rather_than_the_previous_read_time():
@@ -234,7 +237,7 @@ def test_timestamp_tombstones_can_repair_deletion_date_by_rereading_the_missing_
     assert request.shape == "deletes"
     assert request.since == min(at(18), at(19) - (lookback or timedelta(0)))
     after = ledger.apply(Manifest(c.table, request.shape, request.until, since=request.since))
-    assert after.claims(request.until).deletions_as_of == at(20)
+    assert after.claims(request.until, limit=None).deletions_as_of == at(20)
 
 
 def test_sufficient_deletion_date_does_not_force_timestamp_tombstones_to_reread_older_history():
@@ -407,4 +410,4 @@ def test_an_initial_append_plan_can_advance_past_the_retained_history_start(requ
     assert request.until == max(required, at(18) + timedelta(microseconds=1))
     assert request.since == at(18)
     after = Ledger(c).apply(Manifest(c.table, request.shape, request.until, since=request.since))
-    assert after.claims(request.until).deletions_as_of >= required
+    assert after.claims(request.until, limit=None).deletions_as_of >= required

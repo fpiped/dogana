@@ -103,8 +103,9 @@ def show(label, claims):
 
 
 ledger = store.load_ledger(orders)
-show("Sep 20 to Oct 19", ledger.claims(monday.received_at, window=window))
-show("before Sep 20", ledger.claims(monday.received_at, window=(date.min, date(2026, 9, 19))))
+show("Sep 20 to Oct 19", ledger.claims(monday.received_at, limit=None, window=window))
+before = (date.min, date(2026, 9, 19))
+show("before Sep 20", ledger.claims(monday.received_at, limit=None, window=before))
 ```
 
 ```text
@@ -117,8 +118,9 @@ The 30 days ending October 19 start on September 20, both ends included. The fil
 dated in those days. Order 2, dated October 18, is missing from it, so it was deleted at the source
 and dogana removes it. Order 1, dated September 1, is outside the window and stays. The window is
 now proven as of Monday, October 19, and the rest of the table as of Sunday, October 18.
-`ledger.claims(now, window=...)` returns what the ledger proves about a range of days at the
-instant `now`: the two dates and a state.
+`ledger.claims(now, limit=None, window=...)` returns what the ledger proves about a range of days
+at the instant `now`: the two dates and a state. `limit` is how old the reader allows the dates to
+be; `None` sets no limit.
 
 ## 4. A truncated file
 
@@ -142,10 +144,10 @@ from the export, computed in the same read, never from counting the file.
 send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
 again = send("next-sunday", "full", 25, [(3, "2026-10-19", 300)])
 ledger = store.load_ledger(orders)
-claims = ledger.claims(again.received_at)
+claims = ledger.claims(again.received_at, limit=None)
 print(f"whole table: complete as of {claims.complete_as_of.date()}, {claims.state.value}")
 week = timedelta(days=7)
-print(f"eight days later: {ledger.claims(again.received_at + timedelta(days=8), week).state.value}")
+print(f"eight days later: {ledger.claims(again.received_at + timedelta(days=8), limit=week).state.value}")
 ```
 
 ```text
@@ -203,7 +205,7 @@ assert deliver(store, stock, [{"id": 1, "qty": 5}, {"id": 2, "qty": 7}], full, n
 changes = [{"id": 2, "qty": 9, "deleted": False}, {"id": 1, "qty": None, "deleted": True}]
 feed = stock.manifest("feed", monday, since="g1", generation="g2", rows=1, tombstones=1)
 receipt = deliver(store, stock, changes, feed, now=monday)
-claims = store.load_ledger(stock).claims(receipt.received_at)
+claims = store.load_ledger(stock).claims(receipt.received_at, limit=None)
 print(f"feed: {receipt.outcome.value}, stock {store.read('stock')}")
 print(f"stock: {claims.state.value}, both dates {claims.complete_as_of:%A}")
 ```
@@ -240,7 +242,7 @@ def together(day, heads, items):
     }
     receipt = deliver_together(store, group, deliveries, now=read_at)["invoices"]
     rows, ledgers = store.read_together(group)
-    instant = group.claims(ledgers, read_at).exact_as_of
+    instant = group.claims(ledgers, read_at, limit=None).exact_as_of
     print(
         f"{receipt.outcome.value}: lines {[r['id'] for r in rows['invoice_lines']]}, exact as of {instant:%A}"
     )

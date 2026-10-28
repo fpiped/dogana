@@ -81,8 +81,9 @@ class Group:
         self,
         ledgers: Mapping[str, Ledger],
         now: datetime,
+        *,
+        limit: timedelta | None,
         windows: Mapping[str, Window] | None = None,
-        limit: timedelta | None = None,
     ) -> Claims:
         """Every table's claims at now, clipped to its window; `exact_as_of` is the group's common instant."""
         windows = windows or {}
@@ -94,6 +95,6 @@ class Group:
             tuple(
                 region
                 for t in self.tables
-                for region in ledgers[t].claims(now, limit, windows.get(t)).regions
+                for region in ledgers[t].claims(now, limit=limit, window=windows.get(t)).regions
             )
         )

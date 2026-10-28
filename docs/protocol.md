@@ -283,11 +283,11 @@ cleanup, and a failure after commit cannot revoke an acceptance.
 
 ## Claims and planning
 
-`Ledger.claims(now, limit=None, window=None)` cuts the regions to `window`, if given, and states
-each one at the reader's time `now`. How old is too old is the reader's decision, not the table's:
-`limit`, when given, expires a region whose `complete_as_of` is older than `limit` at `now`, and a
-region exactly `limit` old is not expired. Without `limit` no region expires. Claims never show a
-past state of the ledger.
+`Ledger.claims(now, *, limit, window=None)` cuts the regions to `window`, if given, and states each
+one at the reader's time `now`. How old is too old is the reader's decision, not the table's, so
+every call names it: `limit` expires a region whose `complete_as_of` is older than `limit` at `now`,
+a region exactly `limit` old is not expired, and `limit=None` expires none. Claims never show a past
+state of the ledger.
 
 | State | Condition |
 |---|---|
@@ -349,11 +349,11 @@ under one publication (obligation 6), are consistent however they were published
 
 **Group and reference.** `Group(contracts, references=())` names tables read together, each once
 whatever its letter case. A table belongs to one group, since a table accepted in one group does not
-replay in another: a parent with several children is one group. `Group.claims(ledgers, now,
-windows=None, limit=None)` returns every table's regions together, each table clipped to its
-window. `Reference(table, columns,
-parent)` states that every live row of `table` whose `columns` are all non-null names, in order, the
-key of a `parent` row; it has one column per parent key column, and both tables are in the group.
+replay in another: a parent with several children is one group. `Group.claims(ledgers, now, *,
+limit, windows=None)` returns every table's regions together, each table clipped to its window.
+`Reference(table, columns, parent)` states that every live row of `table` whose `columns` are all
+non-null names, in order, the key of a `parent` row; it has one column per parent key column, and
+both tables are in the group.
 
 **Delivery.** `deliver_together(store, group, deliveries, now)` takes one `(source, manifest)` per
 table and decides them as one:

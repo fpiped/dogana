@@ -85,7 +85,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 assert replayed == ledger
                 assert ledger == Ledger.from_json(ledger.to_json())
                 assert store.receipts(c.table)[-1] == Receipt.from_json(receipt.to_json())
-                claim = ledger.claims(at(day))
+                claim = ledger.claims(at(day), limit=None)
                 if day in (18, 25) or c.table == "stock":
                     assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.COMPLETE,
@@ -94,7 +94,9 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                     )
                 elif c.table == "moves":
                     assert (claim.complete_as_of, claim.deletions_as_of) == (at(18), at(18))
-                    assert ledger.claims(at(day), window=kwargs["window"]).deletions_as_of == at(day)
+                    assert ledger.claims(at(day), limit=None, window=kwargs["window"]).deletions_as_of == at(
+                        day
+                    )
                 else:
                     assert (claim.state, claim.complete_as_of, claim.deletions_as_of) == (
                         State.PATCHED,
@@ -111,7 +113,7 @@ def test_a_week_of_erp_files_for_three_tables_preserves_rows_dates_receipts_and_
                 assert sum(r.accepted for r in store.receipts(c.table)) == day - 17
             assert len(store.receipts()) == receipt_count
             surface = Claims(
-                tuple(r for c in contracts for r in store.load_ledger(c).claims(at(day)).regions)
+                tuple(r for c in contracts for r in store.load_ledger(c).claims(at(day), limit=None).regions)
             )
             assert surface.state is (State.COMPLETE if day in (18, 25) else State.PATCHED)
             assert surface.deletions_as_of == at(day if day in (18, 25) else 18)
@@ -199,7 +201,7 @@ def test_a_source_restore_is_refused_and_a_new_full_export_reanchors_the_tombsto
         accepted = FileDrop(store, c, columns=MARKED).ingest(path, now=at(30))
         assert accepted.accepted
         assert store.read(c.table) == [row(3), row(4)]
-        assert store.load_ledger(c).claims(accepted.received_at).deletions_as_of == at(21)
+        assert store.load_ledger(c).claims(accepted.received_at, limit=None).deletions_as_of == at(21)
 
 
 def test_parquet_and_csv_use_the_same_gate_and_deletions_by_absence(tmp_path):
@@ -252,8 +254,10 @@ def test_an_empty_plant_file_decommissions_only_that_partition_and_leaves_undeli
             receipt = FileDrop(store, c, columns=columns).ingest(path, now=at(30))
             assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 2, "plant": "DE01"}]
-        assert store.load_ledger(c).claims(at(20), window=("IT01", "IT01")).deletions_as_of == at(20)
-        assert store.load_ledger(c).claims(at(20), window=("US01", "US01")).state is State.UNKNOWN
+        assert store.load_ledger(c).claims(at(20), limit=None, window=("IT01", "IT01")).deletions_as_of == at(
+            20
+        )
+        assert store.load_ledger(c).claims(at(20), limit=None, window=("US01", "US01")).state is State.UNKNOWN
 
 
 def test_a_failure_after_row_changes_rolls_back_rows_ledger_and_receipt_together(tmp_path, monkeypatch):
@@ -361,7 +365,7 @@ def test_a_keyless_table_is_replaced_whole_or_by_window_without_key_matching(tmp
             {"plant": "A", "qty": 5},
             {"plant": "B", "qty": 2},
         ]
-        assert store.load_ledger(c).claims(at(19), window=("B", "B")).deletions_as_of == at(18)
+        assert store.load_ledger(c).claims(at(19), limit=None, window=("B", "B")).deletions_as_of == at(18)
 
 
 def test_a_window_tombstone_cannot_delete_a_key_from_a_different_region(tmp_path):
@@ -447,11 +451,11 @@ def test_a_pull_extractor_reads_updated_at_from_the_ledgers_interval_and_keeps_u
         receipt = store.deliver(c, source_file, manifest, now=at(30))
         assert receipt.accepted, receipt.checks
         assert store.read(c.table) == [{"id": 1, "updated_at": at(17), "value": "old"}, *source]
-        claims = store.load_ledger(c).claims(receipt.received_at, timedelta(days=7))
+        claims = store.load_ledger(c).claims(receipt.received_at, limit=timedelta(days=7))
         assert claims.complete_as_of == at(19)
         assert claims.deletions_as_of == at(18)
         assert claims.state is State.EXPIRED
-        assert store.load_ledger(c).claims(at(19)).state is State.PATCHED
+        assert store.load_ledger(c).claims(at(19), limit=None).state is State.PATCHED
 
 
 def test_different_spelling_cannot_create_two_ledgers_for_one_duckdb_table(tmp_path):

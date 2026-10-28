@@ -55,22 +55,22 @@ def test_a_group_names_each_table_once_and_references_only_its_tables():
 
 def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant():
     ledger = full(ORDERS, 18)
-    assert ledger.claims(at(18)).exact_as_of == at(18)
-    assert Ledger(ORDERS).claims(at(18)).exact_as_of is None
+    assert ledger.claims(at(18), limit=None).exact_as_of == at(18)
+    assert Ledger(ORDERS).claims(at(18), limit=None).exact_as_of is None
     patched = ledger.apply(Manifest("orders", "since", at(19), since=at(18), schema_hash=ORDERS.schema_hash))
-    assert patched.claims(at(19)).exact_as_of is None
+    assert patched.claims(at(19), limit=None).exact_as_of is None
     window = (at(19).date(), at(19).date())
     mixed = ledger.apply(Manifest("orders", "daily", at(19), window=window, schema_hash=ORDERS.schema_hash))
-    assert mixed.claims(at(19)).exact_as_of is None
-    assert mixed.claims(at(19), window=window).exact_as_of == at(19)
-    assert full(ORDERS, 18).claims(at(30)).state is State.COMPLETE
-    assert full(ORDERS, 18).claims(at(30), timedelta(days=7)).state is State.EXPIRED
-    assert full(ORDERS, 18).claims(at(30), timedelta(days=7)).exact_as_of == at(18)
+    assert mixed.claims(at(19), limit=None).exact_as_of is None
+    assert mixed.claims(at(19), limit=None, window=window).exact_as_of == at(19)
+    assert full(ORDERS, 18).claims(at(30), limit=None).state is State.COMPLETE
+    assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).state is State.EXPIRED
+    assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).exact_as_of == at(18)
 
 
 def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     early, late = full(ORDERS, 18), full(LINES, 19)
-    combined = Group((ORDERS, LINES)).claims({"orders": early, "order_lines": late}, at(19))
+    combined = Group((ORDERS, LINES)).claims({"orders": early, "order_lines": late}, at(19), limit=None)
     assert (combined.state, combined.complete_as_of, combined.deletions_as_of) == (
         State.COMPLETE,
         at(18),
@@ -78,13 +78,20 @@ def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     )
     assert combined.exact_as_of is None
     group = Group((ORDERS, LINES))
-    assert group.claims({"orders": early, "order_lines": full(LINES, 18)}, at(19)).exact_as_of == at(18)
+    assert group.claims(
+        {"orders": early, "order_lines": full(LINES, 18)}, at(19), limit=None
+    ).exact_as_of == at(18)
     with pytest.raises(InvalidContract, match="one ledger per table"):
-        group.claims({"orders": early}, at(19))
+        group.claims({"orders": early}, at(19), limit=None)
     with pytest.raises(InvalidContract, match="one ledger per table"):
-        group.claims({"orders": early, "order_lines": full(ORDERS, 18)}, at(19))
+        group.claims({"orders": early, "order_lines": full(ORDERS, 18)}, at(19), limit=None)
     with pytest.raises(InvalidContract, match="outside the group"):
-        group.claims({"orders": early, "order_lines": late}, at(19), {"moves": (at(1).date(), at(2).date())})
+        group.claims(
+            {"orders": early, "order_lines": late},
+            at(19),
+            limit=None,
+            windows={"moves": (at(1).date(), at(2).date())},
+        )
 
 
 def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own():
@@ -134,7 +141,7 @@ def test_planning_together_reads_every_table_at_one_boundary_past_all_evidence()
         t: ledgers[t].apply(Manifest(t, r.shape, r.until, since=r.since, window=r.window))
         for t, r in requests.items()
     }
-    assert group.claims(after, at(21)).exact_as_of == at(20) + timedelta(microseconds=1)
+    assert group.claims(after, at(21), limit=None).exact_as_of == at(20) + timedelta(microseconds=1)
     assert plan_together(group, after, at(20)) == {}
 
 

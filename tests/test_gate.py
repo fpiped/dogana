@@ -64,7 +64,7 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
     assert all(c.passed for c in receipt.checks)
     assert receipt.transition.regions == fold(receipt).regions == (Region(None, None, at(18), at(18)),)
     assert receipt.ledger_identity == Ledger(c).apply(m).identity
-    assert fold(receipt).claims(receipt.received_at).deletions_as_of == at(18)
+    assert fold(receipt).claims(receipt.received_at, limit=None).deletions_as_of == at(18)
     assert Receipt.from_json(receipt.to_json()) == receipt
     changed = replace(m, rows=3)
     assert changed.identity != m.identity
@@ -143,7 +143,7 @@ def test_delayed_full_delivery_receipt_records_expiry_at_receiver_time_and_sourc
     manifest = Manifest(c.table, "full", at(17))
     receipt = Gate.evaluate(Ledger(c), manifest, outcomes(c, manifest), now=at(25), source="stock.csv")
     assert receipt.accepted
-    assert fold(receipt).claims(receipt.received_at, timedelta(days=7)).state is State.EXPIRED
+    assert fold(receipt).claims(receipt.received_at, limit=timedelta(days=7)).state is State.EXPIRED
     assert receipt.received_at == at(25)
     assert receipt.source == "stock.csv"
     assert not receipt.replayed

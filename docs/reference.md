@@ -102,7 +102,7 @@ transaction; a refusal changes nothing published, and `StoreError` means storage
   coordinate, and a row edit that keeps the stamp is undetectable.
 - **Reads.** `read(table, publication_id=None)` returns row dictionaries, of a past version when
   given one; `read_publication(contract)` returns rows with their ledger under one publication, and
-  `read_together(group)` every table of a group under one lock, for `group.claims(ledgers, now)`.
+  `read_together(group)` every table of a group under one lock, for `group.claims(ledgers, now, limit=...)`.
   `receipts(table)` lists stored decisions in order, rejections included; a replay is answered from
   its stored receipt.
 - **Groups.** `check_references` tries every candidate's plan in a transaction it rolls back and

@@ -7,9 +7,9 @@ description: How to use dogana to load tables from exports with dates that say h
 
 dogana tracks how far a table loaded from exported files matches its source. It checks each file
 against the declaration that comes with it (the manifest) and the receiver's description of the
-table (the contract), and keeps per table two dates: **complete as of** (every row the source had then is here) and
-**deletions as of** (no row the source deleted before then is still here). The core is pure
-Python with no dependencies and never parses a data file. Docs: https://fpiped.github.io/dogana/,
+table (the contract), and keeps per table two dates: **complete as of** (every row the source had
+then is here) and **deletions as of** (no row the source deleted before then is still here). The
+core is pure Python with no dependencies and never parses a data file. Docs: https://fpiped.github.io/dogana/,
 the specification is `docs/protocol.md`.
 
 ## The rules code cannot check
@@ -87,9 +87,10 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
   dates and receipt in one transaction or records a rejection; check `receipt.outcome`. The same
   manifest again is a replay: retry with the same manifest and the same bytes, never re-extract.
 - Never load the consumer's table before acceptance; stage the candidate.
-- `ledger.claims(now)` gives `state` (unknown, expired, patched, complete) and the two dates; pass
-  `window=` for part of the table. A query with `NOT EXISTS` or an anti-join needs the deletions
-  date of the negated table.
+- `ledger.claims(now, limit=...)` gives `state` (unknown, expired, patched, complete) and the two
+  dates. `limit` is required: how long ago `complete_as_of` may be before the region is expired, as
+  a `timedelta`, or `None` for no limit. Pass `window=` for part of the table. A query with
+  `NOT EXISTS` or an anti-join needs the deletions date of the negated table.
 - `plan_delivery(ledger, Requirement(...))` names the cheapest read for the dates a reader needs;
   `next_extraction(ledger, shape, until)` the next regular read.
 - Without a store, a loader calls `Gate.requirements`, answers the checks, `Gate.evaluate`, and
@@ -101,9 +102,10 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 `deliver_together(store, group, {"invoices": (rows, manifest), ...}, now)`: every file is checked
 alone, all must share one `produced_at`, references are checked when a failure would prove the files
 are not one snapshot, and every table is published or none. A reader trusts a join only when
-`group.claims(ledgers, now).exact_as_of` is not `None`, reading rows and ledgers under one
-publication. Later deliveries must bring each table back to equal dates: complete files, or changes
-with tombstones; a table without changes sends an empty changes file at the same instant.
+`group.claims(ledgers, now, limit=None).exact_as_of` is not `None`, reading rows and ledgers under
+one publication. Later deliveries must bring each table back to equal dates: complete files, or
+changes with tombstones; a table without changes sends an empty file of its tombstone changes shape
+at the same instant.
 
 ## Stores
 

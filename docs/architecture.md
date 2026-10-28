@@ -28,7 +28,7 @@ imports a reader of data files (csv, DuckDB, Arrow).
   column, and the evidence from each point to the next: unknown, or the two dates. `Region` is the
   view of the pieces between points. `Ledger.apply(manifest)` runs the guards (no gap, no stale
   overwrite, a proven base for changes) and returns a new ledger; values are never modified.
-  `Ledger.claims(now)` reads it at the reader's time.
+  `Ledger.claims(now, limit=...)` reads it at the reader's time, with the reader's age limit.
 - **`gate.py`**: `Gate.requirements` names the row checks a store must answer for a manifest;
   `Gate.preflight` checks the manifest and its transition without rows; `Gate.evaluate` turns the
   checks into a `Receipt` with an `ApplyPlan`, the row operations to execute. The core describes

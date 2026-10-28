@@ -14,9 +14,10 @@ the contract declares, so an honest delivery never fails one.
   documents written by 0.6.0 or earlier are refused, and a table moves to the new version with a
   new full delivery into a new store.
 - `freshness` leaves the contract. It never decided whether a file was accepted, only whether a
-  region read as expired, and how old is too old is the reader's choice: `Ledger.claims(now,
-  limit)` and `Group.claims(..., limit=...)` take it, and without a limit no region expires.
-  `dogana claims` takes `--limit-days`.
+  region read as expired, and how old is too old is the reader's choice. `Ledger.claims(now,
+  limit=...)` and `Group.claims(ledgers, now, limit=...)` require it, so a call written for an
+  older dogana fails instead of silently never expiring; `limit=None` sets no limit. `dogana
+  claims` takes `--limit-days`.
 - `Claims.combine` is gone. The minimum dates across tables guarantee nothing about a query over
   them; `Group.claims` returns a group's regions together, and `exact_as_of` is the instant that
   does.

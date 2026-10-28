@@ -75,7 +75,7 @@ ledger = (
     .apply(orders.manifest("changes", monday, since=sunday))
 )
 
-claims = ledger.claims(monday)
+claims = ledger.claims(monday, limit=None)  # no age limit
 print(
     f"{claims.state}: complete as of {claims.complete_as_of:%A}, deletions as of {claims.deletions_as_of:%A}"
 )

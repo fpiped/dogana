@@ -207,7 +207,7 @@ def _claims(args: argparse.Namespace) -> int:
             limit = None
         if limit is None or limit < timedelta(0):
             raise _UsageError("--limit-days must be a nonnegative number of days")
-    claims = ledger.claims(at, limit, window)
+    claims = ledger.claims(at, limit=limit, window=window)
     for claim in claims.regions:
         region = claim.region
         print(

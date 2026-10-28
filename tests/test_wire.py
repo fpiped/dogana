@@ -152,7 +152,7 @@ checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
 ledger = Ledger(c).follow(receipt)
-assert ledger.claims(receipt.received_at).state is State.COMPLETE
+assert ledger.claims(receipt.received_at, limit=None).state is State.COMPLETE
 assert Ledger.from_json(ledger.to_json()) == ledger
 """
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
@@ -203,7 +203,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
     checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
-    claims = ledger.claims(receipt.received_at)
+    claims = ledger.claims(receipt.received_at, limit=None)
     values = (
         FULL,
         c,
