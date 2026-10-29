@@ -25,8 +25,8 @@ vendors; sometimes they are one script. Either way, what the reader knew is gone
 land, unless it is written down.
 
 dogana makes the reader write it down, in a **manifest**, and makes the writer check it and
-remember it, in a **ledger** of two dates per table, or per range of a column that never changes on
-a row, such as the order date:
+remember it, in a **ledger**. The ledger keeps two dates per table, or per range of a column that
+never changes on a row, such as the order date:
 
 - **complete as of**: every row the source had at that instant is here;
 - **deletions as of**: no row the source deleted before that instant is still here.
