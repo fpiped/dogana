@@ -131,8 +131,8 @@ With the flag as the deleted column, dates speak of the rows whose flag is false
    it.
 4. `window_size`, optional and positive, is a planning hint, not a limit on pushed windows. Rolling
    durations need date or datetime windows, typed as in `types`: DATE widths are whole UTC calendar
-   days including both ends (thirty days ending October 19 start September 20), datetime widths an
-   elapsed UTC duration including both ends, at microsecond resolution.
+   days including both ends (thirty days ending October 19 start September 20). Datetime widths are
+   an elapsed UTC duration including both ends, at microsecond resolution.
 5. `lookback`, nonnegative, is allowed only on timestamp shapes of keyed contracts. It starts a
    planned read that much earlier than the oldest `complete_as_of` it covers, so consecutive reads
    overlap. Keyless appends cannot overlap, since a reread event would count twice.
@@ -230,7 +230,7 @@ belong to store delivery.
 ## Plans, checks and receipts
 
 An `ApplyPlan` holds ordered `Action`s: `replace_all` replaces the table; `replace_window` removes
-the rows in its closed window and earlier copies of candidate keys, then inserts the candidate;
+the rows in its closed window and earlier copies of candidate keys, then inserts the candidate.
 `upsert` replaces published rows sharing a key with a live candidate row; `tombstone` deletes the
 published rows the tombstones name; `append` inserts without matching. Keyless replacement matches
 no keys. The core describes operations and never reads rows.
@@ -286,8 +286,8 @@ cleanup, and a failure after commit cannot revoke an acceptance.
 
 `Ledger.claims(now, *, limit, window=None)` cuts the regions to `window`, if given, and states each
 one at the reader's time `now`. How old is too old is the reader's decision, not the table's, so
-every call names it: `limit`, a nonnegative duration, expires a region whose `complete_as_of` is
-older than `limit` at `now`; a region exactly `limit` old is not expired, and `timedelta.max`
+every call names it. `limit`, a nonnegative duration, expires a region whose `complete_as_of` is
+older than `limit` at `now`. A region exactly `limit` old is not expired, and `timedelta.max`
 expires none. Claims never show a past state of the ledger.
 
 | State | Condition |
@@ -304,7 +304,7 @@ expires none. Claims never show a past state of the ledger.
 2. The claims of several tables, as `Group.claims` returns them, take the same minima across
    tables. They are lower bounds on each input's dates, not a statement about one snapshot or a
    joined result. Without a common instant they
-   guarantee no row of a query over several tables or regions, even a query without negation: a
+   guarantee no row of a query over several tables or regions, even a query without negation. A
    later read can miss a row deleted after an earlier read, and carry a later version of a row.
 3. Negation (`NOT EXISTS`, anti-joins, difference) swaps the two requirements for the negated
    input. Take items exact at `p` and movements complete as of `p` but patched: "items with no
@@ -323,7 +323,7 @@ expires none. Claims never show a past state of the ledger.
    `window_size`, extended back to meet the last complete evidence. For a timestamp shape, `since`
    is the earliest covered `complete_as_of` minus `lookback`; an append needs every covered region
    to share one `complete_as_of`; a generation request starts from the held generation. Declare
-   `until` as `produced_at` only if the read really saw the source at `until`. Files a sender
+   `until` as `produced_at` only if the read saw the source at `until`. Files a sender
    pushes and reads a receiver pulls pass the same gate.
 
 ## Tables together
@@ -334,9 +334,10 @@ since they are minima: a window proven later than the rest of its table gives eq
 common instant. Freshness does not affect it; `state` still reports expiry.
 
 **Theorem.** If every region a query reads, in every table, is exact at the same `p`, the query
-answers as the source would have at `p` (filters, joins, unions, negation and exact aggregates),
-provided both sides compare and compute alike (collation, nulls, the order of a floating-point sum)
-and every rule the source keeps between its tables holds between the published ones.
+answers as the source would have at `p` (filters, joins, unions, negation and exact aggregates).
+This requires that both sides compare and compute alike (collation, nulls, the order of a
+floating-point sum) and every rule the source keeps between its tables holds between the published
+ones.
 
 **Premise.** Every file comes from one consistent read of the source at `p`, stamped `p`, which
 dogana cannot verify. One read is one snapshot of every table. READ COMMITTED, the default of
@@ -391,7 +392,7 @@ a tombstone changes shape at `p`. A reader of windows passes them to `Group.clai
 
 1. A group replays whole or is refused whole: when every manifest was accepted in one delivery of
    these files under these references, every receipt replays, provided every declared hash still
-   matches the bytes; when any was accepted alone, in another delivery or under other references,
+   matches the bytes. When any was accepted alone, in another delivery or under other references,
    every table is refused, and the group needs a new read.
 2. A failure after the group's commit returns the committed receipts. If another delivery accepts
    the same manifests in the meantime, this one is decided by rule 1, as if the other came first, so
@@ -406,10 +407,11 @@ Atomic publication serves availability, not the guarantee: without it a refused 
 others ahead and the current tables have no common instant; with it, the instant moves in one step.
 
 `plan_together(group, ledgers, at_least, *, windows=None)` returns nothing when the group is already
-exact at an instant no earlier than `at_least`, else one request per table with one `until`, later
-than every table's evidence and no earlier than `at_least`, each the cheapest read establishing
-`(until, until)` over its window. `until` is the earliest admissible boundary: the extractor reads
-every table in one snapshot taken at or after it and stamps every manifest with its instant.
+exact at an instant no earlier than `at_least`. Otherwise it returns one request per table with one
+`until`, later than every table's evidence and no earlier than `at_least`, each the cheapest read
+establishing `(until, until)` over its window. `until` is the earliest admissible boundary: the
+extractor reads every table in one snapshot taken at or after it and stamps every manifest with its
+instant.
 
 `TogetherStore` adds `check_references(group, candidates)` and `publish_together(group, entries)`,
 `candidates` mapping each table to its checked candidate and `entries` pairing one candidate per
@@ -418,7 +420,7 @@ table with its accepted receipt. The store must:
 1. answer the references check on the rows the candidates would produce, without changing published
    rows, only for candidates that passed their own checks and references `Group.unchecked` leaves;
 2. verify that each receipt agrees with its checks, that the `together` check equals the one
-   recomputed from the receipts and the references, and, when there are references, that the
+   recomputed from the receipts and the references. When there are references, verify that the
    `references` answer is the one it gave itself for exactly these candidates after their last
    check. Without that answer it refuses to publish;
 3. publish every entry or none in one atomic step, under the six obligations of a single
@@ -491,7 +493,7 @@ manifest, not to a batch or a history.
 ## Contract evolution
 
 Once a table has history, its `table`, `key`, `window_column`, `deleted_column` and the types of
-the key and window columns are fixed, and stores refuse a contract that changes them: the deleted
+the key and window columns are fixed, and stores refuse a contract that changes them. The deleted
 column decides which rows the dates describe, so a new one makes old dates speak of other rows.
 Everything else may evolve: costs, window sizes, lookback, shapes, cursor columns, the column hash.
 Each

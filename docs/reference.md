@@ -69,12 +69,12 @@ Without atomic publication, nothing guarantees the dates describe the visible ro
 changes and commit. The example's factory is in `tests/test_conformance.py`.
 
 `StampedLedgerConformance` adds recovery scenarios for stores with `publication_stamp` and `repair`
-(`StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger`); `TogetherConformance`
-adds groups for stores with `check_references` and `publish_together`: one instant, a refusal
-refusing every table, untested references, different read boundaries, failures after rows, a table
-published alone between check and publication, receipts whose `references` answer the store did not
-compute itself, and whole replay. Passing is evidence for these scenarios, not a proof under every
-storage failure.
+(`StampedStoreFactory` adds `set_ledger`, `set_stamp` and `remove_ledger`). `TogetherConformance`
+adds groups for stores with `check_references` and `publish_together`. These cover one instant, a
+refusal refusing every table, untested references, different read boundaries, failures after rows, a
+table published alone between check and publication, receipts whose `references` answer the store
+did not compute itself, and whole replay. Passing is evidence for these scenarios, not a proof under
+every storage failure.
 
 ## Example store on DuckDB
 
@@ -86,10 +86,10 @@ transaction; a refusal changes nothing published, and `StoreError` means storage
 
 - **Types.** Bare CSV and row dictionaries infer types. Use `FileDrop(..., columns=columns)` for
   typed CSV, and `Rows(rows, columns)` for row mappings that are empty or all null, such as an empty
-  API poll. A column declared `decimal(p,s)` (precision up to 38) stays exact: a Parquet DECIMAL of
-  that precision and scale, a CSV value with at most `s` fraction digits and no exponent, or a
-  Python `Decimal`; it is never read as a float. A `datetime` without an offset fails `schema_hash`.
-  Large batches load far faster as a file than as row mappings.
+  API poll. A column declared `decimal(p,s)` (precision up to 38) stays exact. It accepts a Parquet
+  DECIMAL of that precision and scale, a CSV value with at most `s` fraction digits and no exponent,
+  or a Python `Decimal`; it is never read as a float. A `datetime` without an offset fails
+  `schema_hash`. Large batches load far faster as a file than as row mappings.
 - **Tombstones** move to a staging table of keys and the deleted column is dropped, so checks and
   the published table see live rows only. Deliver them from a typed source.
 - **CSV** follows the protocol's grammar; a quoted empty field is the empty string, an unquoted one
@@ -102,9 +102,9 @@ transaction; a refusal changes nothing published, and `StoreError` means storage
   coordinate, and a row edit that keeps the stamp is undetectable.
 - **Reads.** `read(table, publication_id=None)` returns row dictionaries, of a past version when
   given one; `read_publication(contract)` returns rows with their ledger under one publication, and
-  `read_together(group)` every table of a group under one lock, for `group.claims(ledgers, now, limit=...)`.
-  `receipts(table)` lists stored decisions in order, rejections included; a replay is answered from
-  its stored receipt.
+  `read_together(group)` every table of a group under one lock, for `group.claims(ledgers, now,
+  limit=...)`. `receipts(table)` lists stored decisions in order, rejections included; a replay is
+  answered from its stored receipt.
 - **Groups.** `check_references` tries every candidate's plan in a transaction it rolls back and
   counts orphan child rows, naming up to three values; it costs about as much as the delivery, and a
   new check of any candidate discards its answer. A reference whose columns are missing, or whose

@@ -11,7 +11,7 @@ the contract declares, so an honest delivery never fails one.
   count the export computes in the same read; a rule on how much a table may shrink is a business
   check.
 - The wire format is version 4, since a version 3 contract carries the shrink limit: stores and
-  documents written by 0.6.0 or earlier are refused, with a message naming both versions, and a
+  documents written by 0.6.0 or earlier are refused, with a message naming both versions. A
   table moves to the new version with a new full delivery into a new store.
 - `freshness` leaves the contract. It never decided whether a file was accepted, only whether a
   region read as expired, and how old is too old is the reader's choice. `Ledger.claims(now,
@@ -21,15 +21,15 @@ the contract declares, so an honest delivery never fails one.
   meant the contract's seven days. `dogana claims` takes `--limit-days`; without it no region
   expires, where 0.6.0 applied seven days.
 - The deleted column is fixed by history, like the key and the window column, since it decides
-  which rows the dates describe: a contract naming another one is refused, and the table starts
+  which rows the dates describe. A contract naming another one is refused, and the table starts
   again with a full delivery into a new store.
 - `Claims.combine` is gone. The minimum dates across tables guarantee nothing about a query over
   them; `Group.claims(ledgers, now, limit=..., windows=...)` returns a group's regions together,
   with `windows` by keyword, and `exact_as_of` is the instant that does. `Claims(regions)` still
   builds a value from any regions.
-- The decoder refuses what the schemas refuse, instead of rounding it: a duration below a
-  microsecond or not exactly representable, a negative one, a datetime with more than six
-  fractional digits or outside RFC 3339, a date with a time part, and a receipt with an empty
+- The decoder refuses what the schemas refuse, instead of rounding it. It refuses a duration below a
+  microsecond or not exactly representable, or a negative one. It refuses a datetime with more than
+  six fractional digits or outside RFC 3339, a date with a time part, and a receipt with an empty
   `ledger_identity` or `publication_id`.
 - The example DuckDB store loses `adopt=True`, which took over an existing table without
   certifying a row: an existing table without evidence is refused.
@@ -44,8 +44,8 @@ appears, and links the research it builds on.
 
 - The package ships a skill for coding agents, `dogana/.agents/skills/dogana/SKILL.md`: the rules no
   check can enforce (the instant to declare, a window column that never changes, honest shapes,
-  counts from the export, one snapshot for tables read together), a contract, the shapes and the
-  calls. Its code runs in the tests.
+  counts from the export, one snapshot for tables read together). It includes a contract, the shapes
+  and the calls. Its code runs in the tests.
 - The documentation site serves `llms.txt`, `llms-full.txt` and every page as Markdown.
 - The protocol states the soft-delete rule correctly again: a flag is a deleted column only if
   setting it moves the cursor column, since otherwise a changes read never delivers the deletion. It
@@ -93,7 +93,7 @@ wire format to version 3: stores and documents written by 0.3.0 are refused, and
 
 - A delivered file is opened once and copied into the store's private folder while it is hashed;
   every read uses the copy. Below a drop root each folder is opened from the one above it without
-  following a link, so a file or folder swapped for a link after the root check is refused, and a
+  following a link. A file or folder swapped for a link after the root check is refused, and a
   FIFO is refused instead of waited on. A file changed while it was read can no longer put other
   bytes behind a receipt. Windows, which cannot open that way, gets a weaker check.
 - CSV has one grammar, RFC 4180: comma, double quote, UTF-8, header row. DuckDB no longer guesses a
@@ -122,8 +122,8 @@ wire format to version 3: stores and documents written by 0.3.0 are refused, and
   explains a file it cannot read instead of printing a traceback, writes a sidecar other accounts can
   read, and never replaces one without `--force`, even in a race.
 - The protocol states that `produced_at` of a sequence read is earlier than the first unread commit,
-  that `start_at` excludes its own instant, what a soft-deleting source's dates speak about, and that
-  the query theorem assumes both sides compare and compute alike.
+  and that `start_at` excludes its own instant. It states what a soft-deleting source's dates speak about
+  and that the query theorem assumes both sides compare and compute alike.
 - `Rows(rows, columns)`, from `dogana.reference.duckdb`, types a batch of row mappings, so an empty
   API poll or an all-null batch is still a delivery without writing a file.
 - A field of the wrong type names the type expected, and `Ledger.apply` refuses anything but a

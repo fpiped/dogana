@@ -1,0 +1,9 @@
+extends: existence
+message: 'Remove the repeated sentence.'
+level: error
+scope: paragraph
+nonword: true
+ignorecase: true
+# Exact repetition is detectable; paraphrased restatements need editorial review.
+tokens:
+  - '([^.!?]+[.!?])\s+\1'

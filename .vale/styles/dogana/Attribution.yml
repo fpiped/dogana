@@ -1,0 +1,11 @@
+extends: existence
+message: 'Remove references to writing tools or models.'
+level: error
+scope: raw
+ignorecase: true
+# Hex escapes keep prohibited names out of the rule's own text.
+tokens:
+  - '\x{41}\x{49}(?:-generated| coding| models?| tools?| assistants?)?'
+  - '\x{4C}\x{4C}\x{4D}s?(?![-.]txt|s?[-.]full)'
+  - '\x{43}laude(?: Code)?|\x{43}odex|\x{4F}penCode|\x{43}ursor (?:IDE|editor)'
+  - '\x{43}opilot|\x{47}PT(?:-\w+)?|\x{47}emini|\x{43}hatGPT'

@@ -1,0 +1,7 @@
+extends: existence
+message: "State the decision directly instead of '%s'."
+level: error
+scope: text
+ignorecase: true
+tokens:
+  - 'may want to|might consider|could potentially'

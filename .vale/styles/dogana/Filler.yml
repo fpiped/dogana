@@ -1,0 +1,10 @@
+extends: existence
+message: "Remove filler or marketing language: '%s'."
+level: error
+scope: text
+ignorecase: true
+tokens:
+  - 'seamless|robust|leverage|delve|powerful|simply|just|very|really'
+  - "it['\\x{2019}]s worth noting|in order to|note that|basically|essentially"
+  - 'comprehensive|cutting-edge|state-of-the-art|best-in-class'
+  - 'unlock|empower|elevate|streamline|harness|game-changing'

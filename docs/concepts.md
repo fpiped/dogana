@@ -151,7 +151,7 @@ A **contract** is the receiver's description of one table. It names:
 
 - the **key**: the columns that identify a row;
 - the **window column**, if the source can export ranges of it;
-- the **shapes** the source can really produce, each with its cost;
+- the **shapes** the source can produce, each with its cost;
 - the **deleted column**, if a shape carries tombstones;
 - the **cursor column**: the column a read of changes filters on, such as `updated_at`. The
   manifest declares the interval the read covers, from `since` to `produced_at`, and dogana checks
@@ -241,7 +241,7 @@ A **delivery** is one file with its manifest, handed to dogana. It is decided in
 
 A **receipt** is the record of one decision: the manifest, the checks and the outcome. dogana can
 rebuild the ledger from the accepted receipts. The same manifest sent again is a **replay**: dogana
-returns the first receipt and changes nothing, so a job that failed halfway can simply send its file
+returns the first receipt and changes nothing, so a job that failed halfway can send its file
 again.
 
 ## Reading

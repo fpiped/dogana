@@ -1,0 +1,7 @@
+extends: existence
+message: "Use plain punctuation instead of '%s'."
+level: error
+scope: text
+nonword: true
+tokens:
+  - '(?![\x00-\x7F])[\p{S}\x{2010}-\x{201F}\x{2022}\x{2026}\x{00B7}\x{2700}-\x{27BF}\x{1F000}-\x{1FAFF}]'
