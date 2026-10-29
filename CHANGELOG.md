@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-29)
 
 dogana decides from declarations and the ledger alone: it never reads a row or a file. The store,
 the row checks and the atomic commit are the receiver's loader, and the protocol states what the
@@ -23,15 +23,14 @@ or the contract declares, so an honest delivery never fails one.
 - The protocol fixes no file grammar: how bytes become records is agreed between sender and
   receiver, and `rows` counts the records of that grammar.
 - The wire kinds drop `CheckRequirement`; fourteen remain, at version 4.
-
 - The shrink limit is gone: `max_shrink_fraction` leaves the contract and `shrink_tolerance` the row
   checks. It refused honest files, such as a full after the source archived half its rows, and
   passed dishonest ones, such as two files truncated by 40% each. A truncated file is caught by a
   count the export computes in the same read; a rule on how much a table may shrink is a business
   check.
-- The wire format is version 4, since a version 3 contract carries the shrink limit: stores and
+- The wire format is version 4, since a version 3 contract carries the shrink limit: ledgers and
   documents written by 0.6.0 or earlier are refused, with a message naming both versions. A
-  table moves to the new version with a new full delivery into a new store.
+  table moves to the new version with a new full delivery into a new table.
 - `freshness` leaves the contract. It never decided whether a file was accepted, only whether a
   region read as expired, and how old is too old is the reader's choice. `Ledger.claims(now,
   limit=...)`, `Group.claims(ledgers, now, limit=...)` and `Region.state(now, limit=...)` require
@@ -41,7 +40,7 @@ or the contract declares, so an honest delivery never fails one.
   expires, where 0.6.0 applied seven days.
 - The deleted column is fixed by history, like the key and the window column, since it decides
   which rows the dates describe. A contract naming another one is refused, and the table starts
-  again with a full delivery into a new store.
+  again with a full delivery into a new table.
 - `Claims.combine` is gone. The minimum dates across tables guarantee nothing about a query over
   them; `Group.claims(ledgers, now, limit=..., windows=...)` returns a group's regions together,
   with `windows` by keyword, and `exact_as_of` is the instant that does. `Claims(regions)` still
@@ -53,10 +52,8 @@ or the contract declares, so an honest delivery never fails one.
   microsecond or not exactly representable, or a negative one. It refuses a datetime with more than
   six fractional digits or outside RFC 3339, a date with a time part, and a receipt with an empty
   `ledger_identity` or `publication_id`.
-- The example DuckDB store loses `adopt=True`, which took over an existing table without
-  certifying a row: an existing table without evidence is refused.
-- The protocol's signatures of `next_extraction`, `plan_together` and `Ledger.reconcile` match the
-  code: `shape_name`, and `window`, `windows`, `repair` and `retained_head` by keyword.
+- The protocol's signatures of `next_extraction` and `plan_together` match the code: `shape_name`,
+  and `window` and `windows` by keyword.
 
 ## 0.6.0 (2026-10-28)
 
