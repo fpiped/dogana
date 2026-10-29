@@ -631,6 +631,38 @@ class StoreConformance(_StoreScenarios):
         ).accepted
         assert self._rows(factory, store, c.table) == [_row(3)]
 
+    @pytest.mark.protocol("contract.keyless-tables", "checks.rows_in_window", "transitions.window")
+    def test_a_keyless_window_replaces_only_its_own_events_and_matches_no_key(
+        self, factory: StoreFactory, store: Store
+    ) -> None:
+        columns = {"event": "str", "day": "date"}
+        c = Contract(
+            "events",
+            (),
+            {"full": FULL, "daily": WINDOW},
+            window_column="day",
+            types={"day": "date"},
+            schema_hash=_schema_hash(columns),
+        )
+        monday = {"event": "a", "day": _at(18).date()}
+        tuesday = {"event": "b", "day": _at(19).date()}
+        assert self._deliver(factory, store, c, [monday, tuesday], columns=columns).accepted
+        window = (_at(18).date(), _at(18).date())
+        # Without a key, an event in another day is not a copy of the delivered one: nothing is moved.
+        replaced = self._deliver(factory, store, c, [monday], "daily", day=19, columns=columns, window=window)
+        assert replaced.accepted, replaced.checks
+        assert self._rows(factory, store, c.table) == [monday, tuesday]
+        ledger = _after(store, c, replaced)
+        assert ledger.claims(_at(30), limit=timedelta.max, window=window).exact_as_of == _at(19)
+        later = (_at(19).date(), _at(19).date())
+        assert ledger.claims(_at(30), limit=timedelta.max, window=later).exact_as_of == _at(18)
+        # A window replaces every event of its days: the same day read again holds only the new one.
+        other = {"event": "c", "day": _at(18).date()}
+        assert self._deliver(
+            factory, store, c, [other], "daily", day=20, columns=columns, window=window
+        ).accepted
+        assert self._rows(factory, store, c.table) == [tuesday, other]
+
     @pytest.mark.protocol("contract.keyless-tables", "transitions.3")
     def test_an_event_stream_uses_contiguous_arrival_intervals_without_deduplicating_new_batches(
         self, factory: StoreFactory, store: Store
