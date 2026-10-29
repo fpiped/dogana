@@ -134,6 +134,7 @@ def _apply_request(ledger: Ledger, request: ExtractionRequest) -> Ledger:
                 window=request.window,
                 since=request.since,
                 generation=generation,
+                schema_hash=ledger.contract.schema_hash,
             )
         )
     except (InvalidContract, RejectedDelivery) as exc:

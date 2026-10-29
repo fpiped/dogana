@@ -167,16 +167,6 @@ def test_the_package_reads_no_data_file():
             assert not names & readers, source.name
 
 
-def test_the_example_store_pins_the_core_it_is_tested_with():
-    import tomllib
-
-    root = Path(__file__).parents[1]
-    core = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    example = tomllib.loads((root / "examples" / "duckdb" / "pyproject.toml").read_text())["project"]
-    assert f"dogana=={core['version']}" in example["dependencies"]
-    assert example["version"] == core["version"]
-
-
 def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_keys():
     from tests.support import FULL
 
@@ -260,7 +250,7 @@ from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
 shape = Shape(coverage='all', completeness='complete', deletions='absence', checkpoint='none')
 c = Contract('stock', ('id',), {'full': shape}, types={'id': 'int'})
 m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
-checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+checks = ()
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
 ledger = Ledger(c).follow(receipt)
@@ -301,7 +291,6 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         Action,
         ApplyPlan,
         Check,
-        CheckRequirement,
         ExtractionRequest,
         Gate,
         Receipt,
@@ -315,7 +304,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
 
     c = contract()
     m = Manifest(c.table, "full", at(18))
-    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+    checks = ()
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
     claims = ledger.claims(receipt.received_at, limit=timedelta.max)
@@ -329,8 +318,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         claims,
         receipt.transition.plan.actions[0],
         receipt.transition.plan,
-        CheckRequirement("row_count"),
-        checks[0],
+        receipt.checks[0],
         receipt.transition,
         receipt,
         Requirement(c.table, at(19)),
@@ -346,7 +334,6 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         type(claims),
         Action,
         ApplyPlan,
-        CheckRequirement,
         Check,
         Transition,
         Receipt,
@@ -426,11 +413,11 @@ def test_timestamp_offsets_do_not_change_manifest_identity():
 def test_replay_outcome_preserves_the_original_receipt_identity_and_clock():
     from dataclasses import replace
 
-    from dogana import Check, Gate, Receipt
+    from dogana import Gate, Receipt
 
     c = contract()
     m = Manifest(c.table, "full", at(18))
-    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, m))
+    checks = ()
     original = Gate.evaluate(Ledger(c), m, checks, now=at(19), source="stock.csv")
     replay = replace(original, outcome="replayed")
     assert replay.identity == original.identity

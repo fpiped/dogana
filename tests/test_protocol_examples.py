@@ -142,14 +142,10 @@ def test_the_protocol_receipt_matches_the_gate_decision_at_receiver_time():
 
     contract = Contract.from_json((EXAMPLES / "contract.json").read_text())
     receipt = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
-    names = {requirement.name for requirement in Gate.requirements(contract, receipt.manifest)}
-    outcomes = tuple(check for check in receipt.checks if check.name in names)
-    assert (
-        Gate.evaluate(
-            Ledger(contract), receipt.manifest, outcomes, now=receipt.received_at, source=receipt.source
-        )
-        == receipt
+    decided = Gate.evaluate(
+        Ledger(contract), receipt.manifest, now=receipt.received_at, source=receipt.source
     )
+    assert decided == receipt
 
 
 @pytest.mark.protocol("contract.column-hash")

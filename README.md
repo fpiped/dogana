@@ -40,8 +40,9 @@ has, and the declaration counts only what was exported, no check can tell.
 2. Every file arrives with a **manifest**, the sender's declaration: the shape, the instant the
    source was read, the number of rows and of rows reporting a deletion, and the SHA-256 of the
    file's bytes.
-3. A **gate** checks the manifest against the contract and against what is already proven, and the
-   rows are checked against the manifest. If any check fails, the whole file is refused.
+3. A **gate** checks the manifest against the contract and against what is already proven. Your
+   loader checks the rows against the manifest and reports the result. If any check fails, the whole
+   file is refused.
 4. A **ledger** holds the two dates and moves them only as far as each accepted file proves.
    Before trusting the rows, a reader asks the ledger.
 5. Related tables, such as orders and their lines, can be read in one snapshot, one read that sees
@@ -91,15 +92,13 @@ at the source since Sunday may still be here. That is what patched means.
 
 ## Use it
 
-`pip install dogana`. It is pure Python with no dependencies, and it never reads a data file
-itself. It runs inside whatever loads your tables, such as a cron job, an Airflow task or a dlt
-pipeline. dogana names the row checks a file needs, such as the row count, unique keys and the
-hash. Either your loader runs them and passes dogana the results, or you write a **store**: the
-code that checks the rows and writes them, with the new dates, to your database in one transaction.
-dogana's conformance suite tests that a store does this correctly.
-[`examples/duckdb`](https://github.com/fpiped/dogana/tree/main/examples/duckdb), outside the
-package, holds a store on DuckDB and a file drop that delivers files from a folder; the quick start
-uses both. A sender writes its manifest as JSON in any language, or with `dogana manifest`.
+`pip install dogana`. It is pure Python with no dependencies, and it never reads a row or a file:
+it decides from the declarations and the ledger. It runs inside whatever loads your tables, such as
+a cron job, an Airflow task or a dlt pipeline. Your loader does the three things dogana cannot: it
+checks the rows against the manifest, it executes the plan the receipt returns on your table, and it
+saves rows, ledger and receipt in one transaction. The [quick start](https://fpiped.github.io/dogana/quickstart/)
+is such a loader on SQLite, in about sixty lines. A sender writes its manifest as JSON in any
+language, or with `dogana manifest`.
 
 dogana is in beta: the manifest and ledger formats may change before 1.0. If every source sends
 you change data capture with deletes, you already know which rows to trust. dogana is for
@@ -114,9 +113,9 @@ Coding agents find dogana's rules in the installed package, at
 
 The documentation is at [fpiped.github.io/dogana](https://fpiped.github.io/dogana/).
 
-- [Quick start](https://fpiped.github.io/dogana/quickstart/): a store, a rejected file, the same file sent twice, a deletion, two tables together.
+- [Quick start](https://fpiped.github.io/dogana/quickstart/): a loader on SQLite, a rejected file, the same file sent twice, a deletion, two tables together.
 - [Concepts](https://fpiped.github.io/dogana/concepts/): dogana from the beginning, every idea with an example.
 - [Protocol](https://fpiped.github.io/dogana/protocol/): the specification.
-- [Integrations](https://fpiped.github.io/dogana/integrations/): how dlt, dbt, Iceberg and orchestrators would call dogana; no adapter ships yet.
+- [Integrations](https://fpiped.github.io/dogana/integrations/): how dlt, dbt, Iceberg and orchestrators call dogana.
 
 Licensed under [Apache-2.0](https://github.com/fpiped/dogana/blob/main/LICENSE).

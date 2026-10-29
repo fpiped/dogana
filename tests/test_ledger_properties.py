@@ -17,9 +17,8 @@ from dogana import (
     Outcome,
     Region,
     RejectedDelivery,
-    deliver,
 )
-from tests.memory_store import MemoryStore
+from tests.loader import Loader
 from tests.support import FULL, RECENT, SINCE, WINDOW
 
 CONTRACT = Contract(
@@ -272,7 +271,7 @@ def test_store_replay_preserves_the_current_publication_and_original_receipt(
     replay_index: int,
     repeats: int,
 ) -> None:
-    store = MemoryStore()
+    store = Loader()
     for tick, keys in enumerate(snapshots):
         rows = [{"id": key, "bucket": key} for key in keys]
         manifest = Manifest(
@@ -282,27 +281,23 @@ def test_store_replay_preserves_the_current_publication_and_original_receipt(
             rows=len(rows),
             schema_hash=CONTRACT.schema_hash,
         )
-        assert deliver(store, CONTRACT, rows, manifest, at(tick + 1)).accepted
-    receipts = store.receipts(CONTRACT.table)
+        assert store.deliver(CONTRACT, rows, manifest, at(tick + 1)).accepted
+    receipts = store.receipts_of(CONTRACT.table)
     index = replay_index % (len(receipts) - 1)
     original = receipts[index]
     assert original.outcome is Outcome.ACCEPTED and not original.replayed
-    before = store.read(CONTRACT.table), store.load_ledger(CONTRACT), store.publication_stamp(CONTRACT.table)
+    before = store.read(CONTRACT.table), store.ledger(CONTRACT)
     for _ in range(repeats):
-        replay = deliver(store, CONTRACT, object(), original.manifest, at(100))
+        replay = store.deliver(CONTRACT, [], original.manifest, at(100))
         assert replay.accepted and replay.replayed
         assert replay.outcome is Outcome.REPLAYED
         assert replay.to_dict() == {**original.to_dict(), "outcome": "replayed"}
         assert replay.identity == original.identity
         assert replay.received_at == original.received_at
-        assert store.receipts(CONTRACT.table) == receipts
-        current = (
-            store.read(CONTRACT.table),
-            store.load_ledger(CONTRACT),
-            store.publication_stamp(CONTRACT.table),
-        )
+        assert store.receipts_of(CONTRACT.table) == receipts
+        current = store.read(CONTRACT.table), store.ledger(CONTRACT)
         assert current == before
-    assert Ledger.from_receipts(CONTRACT, receipts) == store.load_ledger(CONTRACT)
+    assert Ledger.from_receipts(CONTRACT, receipts) == store.ledger(CONTRACT)
     with pytest.raises(RejectedDelivery):
         Ledger.from_receipts(CONTRACT, receipts[: index + 1]).apply(original.manifest)
 

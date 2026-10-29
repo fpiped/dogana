@@ -31,7 +31,7 @@ from .contract import (
     scalar_compare,
 )
 from .errors import InconsistentPublication as InconsistentPublication
-from .errors import InvalidContract, LedgerAhead, StampAhead
+from .errors import InvalidContract
 from .errors import RejectedDelivery as RejectedDelivery
 from .wire import Wire, utc
 
@@ -370,66 +370,6 @@ class Ledger(Wire):
             ledger = ledger.follow(receipt)
         return ledger.with_contract(contract)
 
-    @classmethod
-    def reconcile(
-        cls,
-        contract: Contract,
-        receipts: Iterable[Receipt],
-        current: Ledger | None,
-        stamp: str | None,
-        *,
-        repair: bool = True,
-        retained_head: Receipt | None = None,
-    ) -> Ledger:
-        """Reconcile with history; a store-verified retained head can certify a consistent read."""
-        current = current.with_contract(contract) if current is not None else None
-        if (
-            not repair
-            and stamp is not None
-            and current is not None
-            and current.publication_id == stamp
-            and retained_head is not None
-        ):
-            if (
-                not retained_head.accepted
-                or retained_head.publication_id != stamp
-                or not retained_head.contract.compatible_with(contract)
-                or current.with_contract(retained_head.contract).identity != retained_head.ledger_identity
-                or _publication(
-                    retained_head.base_publication_id, retained_head.contract, retained_head.manifest
-                )
-                != stamp
-            ):
-                raise StampAhead("retained accepted head differs from the current publication")
-            return current
-        accepted = tuple(receipt for receipt in receipts if receipt.accepted)
-        if stamp is None and current is not None and current.publication_id is not None:
-            raise LedgerAhead("ledger ahead of missing publication stamp")
-        try:
-            rebuilt = cls.from_receipts(contract, accepted)
-        except InconsistentPublication as exc:
-            raise StampAhead(f"publication stamp lacks a valid accepted receipt chain: {exc}") from exc
-        heads = [receipt.publication_id for receipt in accepted]
-        if rebuilt.publication_id != stamp:
-            if stamp is None or stamp in heads:
-                raise LedgerAhead("accepted evidence is ahead of the publication stamp")
-            raise StampAhead("publication stamp has no matching accepted receipt")
-        if current is not None and current.publication_id == stamp:
-            if current != rebuilt:
-                raise StampAhead("current ledger evidence differs from its accepted history")
-            return current
-        if current is not None:
-            head = next((r for r in accepted if r.publication_id == current.publication_id), None)
-            if (
-                current != cls(contract)
-                if head is None
-                else current.with_contract(head.contract).identity != head.ledger_identity
-            ):
-                raise StampAhead("current ledger is unrelated to the publication stamp")
-        if not repair and stamp is not None:
-            raise StampAhead("publication stamp is ahead of the ledger; repair from accepted receipts")
-        return rebuilt
-
     def _check_window_type(self, window: Window | None) -> None:
         if window is None:
             return
@@ -450,8 +390,8 @@ class Ledger(Wire):
     def apply(self, manifest: Manifest) -> Ledger:
         if not isinstance(manifest, Manifest):
             raise TypeError(
-                f"Ledger.apply takes a Manifest, not {type(manifest).__name__}; "
-                "rows reach a store through dogana.deliver"
+                f"Ledger.apply takes a Manifest, not {type(manifest).__name__}: "
+                "the ledger reasons about declarations, never about rows"
             )
         try:
             delivery = manifest.check(self.contract)

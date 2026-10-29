@@ -12,8 +12,6 @@ from hypothesis_jsonschema import from_schema
 from jsonschema import ValidationError
 
 from dogana import (
-    Check,
-    CheckRequirement,
     ExtractionRequest,
     Gate,
     InvalidContract,
@@ -77,7 +75,7 @@ EXAMPLES = list(example_documents())
 def encoded_documents():
     c = contract()
     manifest = Manifest(c.table, "full", at(18))
-    checks = tuple(Check(requirement.name, True) for requirement in Gate.requirements(c, manifest))
+    checks = ()
     receipt = Gate.evaluate(Ledger(c), manifest, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
     claims = ledger.claims(at(19), limit=timedelta.max)
@@ -91,8 +89,7 @@ def encoded_documents():
         receipt.transition,
         receipt.transition.plan,
         receipt.transition.plan.actions[0],
-        checks[0],
-        CheckRequirement("row_count"),
+        receipt.checks[0],
         Region(),
         Requirement(c.table, at(19)),
         ExtractionRequest(c.table, "full", at(19)),

@@ -28,6 +28,8 @@ UNTESTABLE: dict[str, str] = {
     "tables-together.premise": "The receiver cannot verify a source's transaction isolation or snapshot.",
     "tables-together.atomicity": "Explains the availability rationale of atomic group publication.",
     "boundaries.undecided": "Explicitly outside the decided protocol.",
+    "receiver.obligations.4": "A reader's isolation belongs to the receiver's database, outside the core.",
+    "tables-together.replay": "A group's replay is the receiver's persistence of receipts, outside the core.",
 }
 
 LABEL = re.compile(r"<!-- protocol: ([a-z0-9_-]+) -->")

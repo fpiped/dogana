@@ -207,8 +207,8 @@ Every file arrives with a **manifest**, the sender's declaration about that one 
 - `content_hash`, the SHA-256 of the file's bytes.
 
 It usually travels as a JSON file beside the data file, such as `orders.csv.json`; the
-[example manifest](examples/manifest.json) shows one. The [reference](reference.md#file-drop) shows
-how to derive it from the file's name instead.
+[example manifest](examples/manifest.json) shows one, and `dogana manifest` writes one from a
+shell.
 
 ## Which instant to declare
 
@@ -232,22 +232,25 @@ instant it declares, it is wrong by the rows created or deleted while it ran.
 
 ## Delivering a file
 
-A **delivery** is one file with its manifest, handed to dogana. It is decided in three steps:
+A **delivery** is one file with its manifest, handed to dogana by the **loader**, the receiver's
+code that puts rows into the database. It is decided in three steps:
 
 1. The **gate** checks the manifest against the contract and the ledger. For example, a file of
    changes needs a base: the table must already be proven everywhere the file covers, and the read
    must start no later than the complete as of date there.
-2. The **store**, the code that writes to your database, checks the rows against the manifest: for
-   example the counts, unique keys, window values inside the window, the column hash, and the bytes
-   against `content_hash`.
-3. If every check passes, the store publishes the rows, the new ledger and a receipt in one
-   transaction: readers see all of them from then on, or none. If any check fails, the whole file
-   is refused, rows and ledger stay as they were, and the refusal is recorded.
+2. The loader checks the rows against the manifest, since only it can see them: the counts, unique
+   keys, window values inside the window, the column hash, and the bytes against `content_hash`.
+   It reports the results, and dogana records them.
+3. If every check passes, the decision is an acceptance with a **plan**: the row operations the
+   file implies, such as replace the table, replace a window, upsert, delete the tombstoned keys or
+   append. The loader executes the plan and saves the new ledger and the receipt in the same
+   transaction, so readers see all of them or none. If any check fails, the file is refused, rows
+   and ledger stay as they were, and the refusal is recorded.
 
-A **receipt** is the record of one decision: the manifest, the checks and the outcome. dogana can
-rebuild the ledger from the accepted receipts. The same manifest sent again is a **replay**: dogana
-returns the first receipt and changes nothing, so a job that failed halfway can send its file
-again.
+A **receipt** is the record of one decision: the manifest, the checks and the outcome. The ledger
+can be rebuilt from the accepted receipts. The same manifest sent again is a **replay**: the loader
+finds the first receipt by the manifest's identity, answers with it and changes nothing, so a job
+that failed halfway can send its file again.
 
 ## Reading
 
@@ -278,7 +281,7 @@ Which date a reader needs depends on the question:
   shows.
 
 `plan_delivery` works the other way: given the dates a reader needs, it names the cheapest file to
-ask the source for ([quick start, step 6](quickstart.md#6-ask-for-the-next-read)).
+ask the source for ([quick start, step 6](quickstart.md#7-ask-for-the-next-read)).
 
 ## Tables read together
 
@@ -307,36 +310,22 @@ level of most databases, two queries in one transaction can see different data [
 [protocol](protocol.md#tables-together) lists the settings that give one snapshot. dogana cannot
 check that the read was one snapshot.
 
-**A group.** The receiver declares the tables read together as a **group**. It may add
-**references**, rules the source keeps between them, such as "every invoice line names an existing
-invoice". `deliver_together` then decides the files as one:
+**A group.** The receiver declares the tables read together as a **group**. `Group.apply` then
+decides their files as one:
 
-1. it checks each file as if it came alone;
+1. it decides each file as if it came alone;
 2. it requires the same `produced_at` on every manifest;
-3. it checks each reference, when the check can prove something (below);
-4. it publishes every table in one transaction, or none.
+3. if any file is refused, every file is refused. Otherwise the loader saves every table's rows and
+   ledger in one transaction, or nothing.
 
-**When a reference is checked.** Suppose the lines are exact at `p` where this delivery covers them,
-and the invoices are complete as of `p` over the whole table. Because the lines are exact at `p`,
-every line there existed at the source at `p`. The source keeps the rule, so each line's invoice
-also existed at `p`. Because the invoices are complete as of `p`, that invoice is in your table. So
-a line whose invoice is missing proves the files are not one snapshot, and every table is refused.
+Rules the source keeps between the tables, such as "every invoice line names an existing invoice",
+are not checked: they need the rows, and the guarantee is `exact_as_of`, not a check. A loader that
+wants a tripwire against separate reads stamped with one instant joins the staged tables before
+committing; it catches only a line that happens to lose its invoice.
 
-In any other case an honest delivery could fail the check, so dogana skips it and the receipt says
-why:
-
-- Lines delivered as changes without tombstones are patched: a line the source deleted with its
-  invoice can stay, naming an invoice that is gone.
-- If invoices arrive as window files, a range may have been proven yesterday. An invoice created
-  today with yesterday's date is missing from it, and a line delivered today can name it.
-
-The check catches only orphans, lines whose invoice is missing. Two separate reads stamped with the
-same instant pass it whenever, by chance, no line names a missing invoice. So a reader relies on
-`exact_as_of`, not on the check.
-
-**Keeping one instant.** Publishing in one transaction means a reader never sees new lines beside
+**Keeping one instant.** Committing every table at once means a reader never sees new lines beside
 old invoices. Even so, a reader must read the rows and the ledgers together, from one committed
-state of the store, and check `exact_as_of`.
+state of the database, and check `exact_as_of`.
 
 To keep a common instant, every later delivery must leave each table with both dates equal to the
 new instant. These files do it:
@@ -408,13 +397,13 @@ Knowing when a table holds every row it should is an old question in database re
 | Manifest | The sender's declaration about one file: its shape, instant, row count and hash. |
 | Read boundary | `produced_at`, the instant the file's data was read from the source. |
 | Snapshot | A read that sees the whole source at one instant. |
-| Delivery | One file with its manifest, handed to dogana. |
+| Delivery | One file with its manifest, handed to dogana by the loader. |
 | Gate | The part of dogana that checks a manifest against the contract and the ledger. |
-| Store | The code that checks the rows and writes them to your database. |
+| Loader | The receiver's code that puts rows into the database: it checks the rows, executes the plan and commits rows with the ledger. |
+| Plan | The row operations a receipt returns for the loader to execute. |
 | Receipt | The record of the decision on one delivery, whether accepted or refused. |
 | Replay | The same manifest sent again. dogana answers with the first receipt and changes nothing. |
 | Claims | The state of each region at the moment a reader asks. |
 | Expired | The state of a region whose complete as of date is older than the limit the reader gives. |
 | Exact at p | Every region has both dates equal to p: the table holds exactly the rows the source had at p. |
 | Group | Tables read together, from one snapshot of the source. |
-| Reference | A rule the source keeps between two tables of a group, such as "every invoice line names an existing invoice". |

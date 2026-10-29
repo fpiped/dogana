@@ -2,8 +2,27 @@
 
 ## Unreleased
 
-The protocol checks declarations only. Every row check compares the rows with what the manifest or
-the contract declares, so an honest delivery never fails one.
+dogana decides from declarations and the ledger alone: it never reads a row or a file. The store,
+the row checks and the atomic commit are the receiver's loader, and the protocol states what the
+loader owes under The receiver. Every check a loader runs compares the rows with what the manifest
+or the contract declares, so an honest delivery never fails one.
+
+- `Store`, `TogetherStore`, `Extractor`, `deliver`, `deliver_together`, `Gate.requirements`,
+  `CheckRequirement`, `Reference`, `Group.unchecked`, `Ledger.reconcile`, `StoreError`,
+  `LedgerAhead` and `StampAhead` are gone, with the conformance suite, the DuckDB example store and
+  the file drop. A loader calls `Gate.preflight`, checks the rows itself, calls `Gate.evaluate` with
+  its checks, executes `receipt.transition.plan` and saves rows, ledger and receipt in one commit.
+  The quick start is such a loader on SQLite.
+- `Group(contracts)` takes no references. `Group.apply(ledgers, manifests, now=..., outcomes=...)`
+  decides a group's files as one: every table accepted, or every table rejected.
+- A manifest whose column hash differs from the contract's is refused by `Manifest.check`, so the
+  gate refuses it before any row is read.
+- `Gate.evaluate(ledger, manifest, outcomes=(), *, now, source=None, joint=())` records the
+  receiver's checks as given and names none; `Gate.together` and `Gate.delivered` take no
+  references.
+- The protocol fixes no file grammar: how bytes become records is agreed between sender and
+  receiver, and `rows` counts the records of that grammar.
+- The wire kinds drop `CheckRequirement`; fourteen remain, at version 4.
 
 - The shrink limit is gone: `max_shrink_fraction` leaves the contract and `shrink_tolerance` the row
   checks. It refused honest files, such as a full after the source archived half its rows, and

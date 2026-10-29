@@ -7,7 +7,6 @@ from dogana import (
     Action,
     ApplyPlan,
     Check,
-    CheckRequirement,
     Contract,
     Gate,
     InvalidContract,
@@ -23,7 +22,8 @@ from tests.support import accounting_contract as contract
 
 
 def outcomes(c, m, fail=None):
-    return tuple(Check(r.name, r.name != fail) for r in Gate.requirements(c, m))
+    """The checks a receiver reports on the rows; the gate records them and rejects on any failure."""
+    return tuple(Check(name, name != fail) for name in ("row_count", "rows_in_window", "key_integrity"))
 
 
 @pytest.mark.protocol("checks.receipt")
@@ -39,22 +39,6 @@ def test_a_failed_required_check_never_changes_the_published_ledger(failure):
     assert receipt.publication_id is None
     assert receipt.transition is None
     assert Receipt.from_json(receipt.to_json()) == receipt
-
-
-@pytest.mark.protocol("checks.answers")
-@pytest.mark.parametrize("kind", ["missing", "duplicate", "unexpected"])
-def test_a_store_cannot_authorize_publication_with_an_incomplete_or_ambiguous_check_set(kind):
-    c = contract()
-    m = Manifest(c.table, "full", at(18))
-    checks = outcomes(c, m)
-    checks = (
-        checks[:-1]
-        if kind == "missing"
-        else checks + (checks[0] if kind == "duplicate" else Check("extra", True),)
-    )
-    receipt = Gate.evaluate(Ledger(c), m, checks, now=at(25))
-    assert not receipt.accepted
-    assert any(c.name == "check_set" and not c.passed for c in receipt.checks)
 
 
 @pytest.mark.protocol("checks.receipt", "checks.evaluation")
@@ -90,14 +74,12 @@ def test_apply_plans_require_distinct_keys_and_the_columns_their_actions_use(key
         ApplyPlan("moves", key, column, tuple(Action(operation, window) for operation, window in actions))
 
 
-@pytest.mark.parametrize("kind", ["requirement", "check", "transition"])
+@pytest.mark.parametrize("kind", ["check", "transition"])
 def test_checks_need_names_and_transitions_need_evidence(kind):
-    from dogana import ApplyPlan, CheckRequirement, Transition
+    from dogana import ApplyPlan, Transition
 
     with pytest.raises(InvalidContract, match="needs"):
-        if kind == "requirement":
-            CheckRequirement("")
-        elif kind == "check":
+        if kind == "check":
             Check("", True)
         else:
             Transition(ApplyPlan("moves", ("id",), None, ()), ())
@@ -135,7 +117,6 @@ def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_
         Operation.REPLACE_WINDOW,
         Operation.APPEND,
     ]
-    assert "key_integrity" not in [r.name for r in Gate.requirements(c, Manifest(c.table, "full", at(18)))]
 
 
 @pytest.mark.protocol("transitions.1", "checks.evaluation")
@@ -206,28 +187,6 @@ def test_invalid_full_delivery_cannot_hide_an_unexpected_programming_error(monke
         Gate.preflight(Ledger(c), Manifest(c.table, "full", at(18)), now=at(18))
 
 
-@pytest.mark.protocol("contract.cursor-column")
-def test_timestamp_deliveries_request_cursor_interval_checks_only_when_declared():
-
-    c = Contract(
-        "events",
-        ("id",),
-        {"full": FULL, "since": SINCE},
-        types={"id": "int", "changed_at": "datetime"},
-        cursor_column="changed_at",
-        schema_hash="declared-columns",
-    )
-    full_names = {r.name for r in Gate.requirements(c, Manifest(c.table, "full", at(18)))}
-    patch_names = {r.name for r in Gate.requirements(c, Manifest(c.table, "since", at(19), since=at(18)))}
-    assert "rows_in_interval" not in full_names
-    assert "rows_in_interval" in patch_names
-    assert "schema_hash" in full_names
-    accounting = contract()
-    assert "schema_hash" not in {
-        r.name for r in Gate.requirements(accounting, Manifest(accounting.table, "full", at(18)))
-    }
-
-
 @pytest.mark.protocol("checks.evaluation")
 def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
     c = contract()
@@ -246,7 +205,6 @@ def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
     [
         lambda: Check(1, True),
         lambda: Check("row_count", 1),
-        lambda: CheckRequirement(1),
         lambda: Action("upsert", window=(1, 2)),
         lambda: Transition("plan", (Region(),)),
         lambda: Region(low_open=1),
@@ -267,19 +225,20 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
 
 
-@pytest.mark.protocol("checks.schema_hash", "contract.column-hash")
+@pytest.mark.protocol("contract.column-hash")
 @pytest.mark.parametrize("digest", [None, "wrong"])
-def test_a_store_cannot_pass_a_manifest_hash_that_differs_from_the_contract(digest):
+def test_a_manifest_whose_column_hash_differs_from_the_contracts_is_refused_before_any_row(digest):
     c = contract(schema_hash="opaque:columns")
     m = Manifest(c.table, "full", at(18), schema_hash=digest)
-    receipt = Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(18))
-    assert not receipt.accepted
-    assert any(check.name == "schema_hash" and not check.passed for check in receipt.checks)
+    with pytest.raises(InvalidContract, match="column hash"):
+        m.check(c)
+    receipt = Gate.evaluate(Ledger(c), m, now=at(18))
+    assert not receipt.accepted and receipt.checks[0].name == "manifest"
 
 
-@pytest.mark.protocol("checks.schema_hash", "contract.column-hash")
-def test_hashless_accounting_does_not_require_a_schema_check():
+@pytest.mark.protocol("contract.column-hash")
+def test_a_contract_without_a_column_hash_accepts_any_declared_hash():
     c = contract()
-    m = c.manifest("full", at(18))
-    assert "schema_hash" not in {r.name for r in Gate.requirements(c, m)}
-    assert Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(18)).accepted
+    assert Gate.evaluate(Ledger(c), c.manifest("full", at(18)), now=at(18)).accepted
+    declared = Manifest(c.table, "full", at(18), schema_hash="declared-by-the-sender")
+    assert Gate.evaluate(Ledger(c), declared, now=at(18)).accepted

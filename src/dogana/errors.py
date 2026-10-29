@@ -1,4 +1,4 @@
-"""Protocol refusals and storage failures."""
+"""Protocol refusals."""
 
 
 class DoganaError(Exception):
@@ -21,17 +21,5 @@ class PlanningError(DoganaError, ValueError):
     """No admitted extraction can establish the requested evidence."""
 
 
-class StoreError(DoganaError):
-    """A storage operation failed without a protocol decision."""
-
-
-class InconsistentPublication(StoreError):
-    """Published rows and their persisted evidence disagree."""
-
-
-class LedgerAhead(InconsistentPublication):
-    """Recorded evidence is newer than the publication carried by the rows."""
-
-
-class StampAhead(InconsistentPublication):
-    """The row publication lacks matching cached evidence or retained history."""
+class InconsistentPublication(DoganaError):
+    """A receipt does not continue the publication chain it names."""

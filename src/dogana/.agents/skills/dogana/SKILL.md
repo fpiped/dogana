@@ -26,7 +26,7 @@ Every one of these passes every check when broken, and makes the dates lie.
    `deletions="none"`; schedule a periodic `Shape.full()` to heal them. A soft-delete flag is a
    deleted column only if setting it moves the cursor column (usually `updated_at`), nothing deletes
    physically, and the flag is on the table being loaded. Once a table has history, the deleted
-   column is fixed like the key: changing it means a new full delivery into a new store.
+   column is fixed like the key: changing it means a new full delivery into a new table.
 4. **Counts come from the export**, not from re-reading the file: `rows` live rows, `tombstones`
    deleted ones. Always set `content_hash`, the SHA-256 of the file's bytes; tombstone shapes need
    it.
@@ -84,33 +84,36 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 
 ## Deliver and read
 
-- `deliver(store, contract, source, manifest, now)`, `now` the receiver's time, publishes rows,
-  dates and receipt in one transaction or records a rejection; check `receipt.outcome`. The same
-  manifest again is a replay: retry with the same manifest and the same bytes, never re-extract.
-- Never load the consumer's table before acceptance; stage the candidate.
+- dogana never reads rows: the loader does, in this order. Look the manifest's identity up among
+  the receipts (an accepted one is a replay: answer with it, read nothing). `Gate.preflight(ledger,
+  manifest, now=now)`; on a failure, `Gate.reject`. Check the staged rows against the manifest
+  (counts, keys, window, column hash, `content_hash`) and pass the results as `Check` values to
+  `Gate.evaluate(ledger, manifest, outcomes, now=now)`. On acceptance execute
+  `receipt.transition.plan` and save `ledger.follow(receipt)` and the receipt in the same
+  transaction as the rows; on rejection save the receipt alone.
+- Never load the consumer's table before acceptance; stage the candidate. Retry with the same
+  manifest and the same bytes, never re-extract.
 - `ledger.claims(now, limit=...)` gives `state` (unknown, expired, patched, complete) and the two
   dates. `limit` is required: how long ago `complete_as_of` may be before the region is expired, as
   a `timedelta`, or `timedelta.max` to expire nothing. Pass `window=` for part of the table. A query
   with `NOT EXISTS` or an anti-join needs the deletions date of the negated table.
 - `plan_delivery(ledger, Requirement(...))` names the cheapest read for the dates a reader needs;
   `next_extraction(ledger, shape, until)` the next regular read.
-- Without a store, a loader calls `Gate.requirements`, answers the checks, `Gate.evaluate`, and
-  commits rows, ledger and receipt atomically itself (see the reference's "Without a Store").
 
 ## Tables together
 
-`Group((invoices, lines), (Reference("invoice_lines", ("invoice_id",), "invoices"),))` and
-`deliver_together(store, group, {"invoices": (rows, manifest), ...}, now)`: every file is checked
-alone, all must share one `produced_at`, references are checked when a failure would prove the files
-are not one snapshot, and every table is published or none. A reader trusts a join only when
+`Group((invoices, lines)).apply(ledgers, manifests, now=now, outcomes=checks)`: every file is
+decided alone, all must share one `produced_at`, and every table is accepted or every table is
+rejected; the loader then commits every table's rows and ledger together, or nothing. A reader trusts a join only when
 `group.claims(ledgers, now, limit=timedelta.max).exact_as_of` is not `None`, reading rows and
 ledgers under one publication. Later deliveries must bring each table back to equal dates: complete
 files, or changes with tombstones; a table without changes sends an empty file of its tombstone
 changes shape at the same instant.
 
-## Stores
+## The loader
 
-The package ships no store. `examples/duckdb` in the repository is an example on DuckDB, not
-installed. A store implements the eight methods of `dogana.interfaces.Store` and must pass
-`dogana.conformance.StoreConformance` (pytest); publishing rows and dates in separate commits does
-not conform.
+The package ships no loader: it depends on your database. What a loader owes, from the protocol's
+"The receiver". Rows, ledger and receipt change in one atomic step. A decision made against a ledger
+that moved (`receipt.base_publication_id` differs from the published head) is made again. Every
+receipt is kept, and the ledger equals `Ledger.from_receipts` of the accepted ones. Readers read
+rows and ledger from one committed state. The quick start is a complete loader on SQLite.

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -11,36 +12,22 @@ from dogana import (
     Ledger,
     Manifest,
     PlanningError,
-    Reference,
     Shape,
     State,
-    deliver,
     plan_together,
 )
-from tests.memory_store import MemoryStore
+from tests.loader import Loader
 from tests.support import FULL, SINCE, at, contract
 
 ORDERS = contract("orders")
 LINES = contract("order_lines")
-LINE = Reference("order_lines", ("order_id",), "orders")
 
 
 def full(c, day):
     return Ledger(c).apply(Manifest(c.table, "full", at(day), rows=0, schema_hash=c.schema_hash))
 
 
-@pytest.mark.protocol("tables-together.group-and-reference")
-def test_a_reference_names_distinct_columns_with_valid_identifiers():
-    with pytest.raises(InvalidContract, match="distinct columns"):
-        Reference("order_lines", (), "orders")
-    with pytest.raises(InvalidContract, match="distinct columns"):
-        Reference("order_lines", ("order_id", "order_id"), "orders")
-    with pytest.raises(InvalidContract, match="identifiers"):
-        Reference("order lines", ("order_id",), "orders")
-    assert str(LINE) == "order_lines(order_id) references orders"
-
-
-@pytest.mark.protocol("tables-together.group-and-reference")
+@pytest.mark.protocol("tables-together.group")
 def test_a_group_names_each_table_once_and_references_only_its_tables():
     with pytest.raises(InvalidContract, match="each of its tables once"):
         Group((ORDERS, ORDERS))
@@ -48,13 +35,9 @@ def test_a_group_names_each_table_once_and_references_only_its_tables():
         Group(())
     with pytest.raises(InvalidContract, match="each of its tables once"):
         Group((ORDERS, contract("ORDERS")))
-    with pytest.raises(InvalidContract, match="outside the group"):
-        Group((LINES,), (LINE,))
-    with pytest.raises(InvalidContract, match="one column per key column"):
-        Group((ORDERS, LINES), (Reference("order_lines", ("order_id", "day"), "orders"),))
     with pytest.raises(InvalidContract, match="not in the group"):
         Group((ORDERS,)).contract("order_lines")
-    assert Group([ORDERS, LINES], [LINE]).tables == ("orders", "order_lines")
+    assert Group([ORDERS, LINES]).tables == ("orders", "order_lines")
 
 
 @pytest.mark.protocol("tables-together.exact")
@@ -73,7 +56,7 @@ def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant
     assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).exact_as_of == at(18)
 
 
-@pytest.mark.protocol("claims.2", "tables-together.group-and-reference")
+@pytest.mark.protocol("claims.2", "tables-together.group")
 def test_a_group_expires_by_the_readers_limit_and_judges_only_the_windows_it_is_given():
     ledgers = {"orders": full(ORDERS, 18), "order_lines": full(LINES, 18)}
     group = Group((ORDERS, LINES))
@@ -128,7 +111,7 @@ def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
 
 @pytest.mark.protocol("claims.3")
 def test_patched_movements_hide_valid_antijoin_answers_and_make_exact_counts_and_sums_wrong():
-    store = MemoryStore()
+    store = Loader()
     items = contract("items", columns=None, shapes={"full": FULL})
     movements = contract("movements", columns=None, shapes={"full": FULL, "since": SINCE})
     source_items = [{"id": 1}, {"id": 2}, {"id": 3}]
@@ -136,19 +119,19 @@ def test_patched_movements_hide_valid_antijoin_answers_and_make_exact_counts_and
         {"id": 10, "item_id": 1, "amount": 5},
         {"id": 20, "item_id": 2, "amount": 7},
     ]
-    baseline = deliver(store, movements, source_movements, movements.manifest("full", at(18), rows=2), at(18))
+    baseline = store.deliver(movements, source_movements, movements.manifest("full", at(18), rows=2), at(18))
     assert baseline.accepted
 
     deleted = source_movements.pop()
     inserted = {"id": 30, "item_id": 1, "amount": 3}
     source_movements.append(inserted)
-    exact_items = deliver(store, items, source_items, items.manifest("full", at(19), rows=3), at(19))
-    changed = deliver(
-        store, movements, [inserted], movements.manifest("since", at(19), since=at(18), rows=1), at(19)
+    exact_items = store.deliver(items, source_items, items.manifest("full", at(19), rows=3), at(19))
+    changed = store.deliver(
+        movements, [inserted], movements.manifest("since", at(19), since=at(18), rows=1), at(19)
     )
     assert exact_items.accepted and changed.accepted
-    assert store.load_ledger(items).claims(at(19), limit=timedelta.max).exact_as_of == at(19)
-    claims = store.load_ledger(movements).claims(at(19), limit=timedelta.max)
+    assert store.ledger(items).claims(at(19), limit=timedelta.max).exact_as_of == at(19)
+    claims = store.ledger(movements).claims(at(19), limit=timedelta.max)
     assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (
         State.PATCHED,
         at(19),
@@ -173,9 +156,9 @@ def test_patched_movements_hide_valid_antijoin_answers_and_make_exact_counts_and
     assert aggregates(published_movements) == (3, 15)
     assert aggregates(source_movements) == (2, 8)
 
-    repaired = deliver(store, movements, source_movements, movements.manifest("full", at(20), rows=2), at(20))
+    repaired = store.deliver(movements, source_movements, movements.manifest("full", at(20), rows=2), at(20))
     assert repaired.accepted
-    assert store.load_ledger(movements).claims(at(20), limit=timedelta.max).exact_as_of == at(20)
+    assert store.ledger(movements).claims(at(20), limit=timedelta.max).exact_as_of == at(20)
     assert without_movements(store.read(items.table), store.read(movements.table)) == truth
     assert aggregates(store.read(movements.table)) == aggregates(source_movements)
 
@@ -184,7 +167,7 @@ def test_patched_movements_hide_valid_antijoin_answers_and_make_exact_counts_and
 def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own():
     def alone(c, day, passed=True):
         manifest = Manifest(c.table, "full", at(day), rows=0, schema_hash=c.schema_hash)
-        outcomes = tuple(Check(r.name, passed) for r in Gate.requirements(c, manifest))
+        outcomes = () if passed else (Check("row_count", False),)
         return Gate.evaluate(Ledger(c), manifest, outcomes, now=at(30))
 
     both = (alone(ORDERS, 18), alone(LINES, 18))
@@ -193,7 +176,6 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
         "order_lines, orders as of 2026-10-18T00:00:00+00:00, delivery "
     )
     assert passed == Gate.delivered(tuple((r.contract.table, r.manifest) for r in reversed(both)))
-    assert passed != Gate.together(both, (LINE,))
     later = Manifest("orders", "full", at(18), rows=1, schema_hash=ORDERS.schema_hash)
     assert passed != Gate.delivered((("orders", later), ("order_lines", both[1].manifest)))
     assert Gate.together((alone(ORDERS, 18), alone(LINES, 19))) == Check(
@@ -206,10 +188,10 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
     )
 
 
-@pytest.mark.protocol("tables-together.delivery.4")
+@pytest.mark.protocol("tables-together.delivery.3")
 def test_a_failed_joint_check_turns_an_acceptable_delivery_into_a_rejection():
     manifest = Manifest("orders", "full", at(18), rows=0, schema_hash=ORDERS.schema_hash)
-    outcomes = tuple(Check(r.name, True) for r in Gate.requirements(ORDERS, manifest))
+    outcomes = ()
     refused = Gate.evaluate(
         Ledger(ORDERS), manifest, outcomes, now=at(30), joint=(Check("references", False, "1 rows"),)
     )
@@ -227,7 +209,16 @@ def test_planning_together_reads_every_table_at_one_boundary_past_all_evidence()
     requests = plan_together(group, ledgers, at(19))
     assert {r.until for r in requests.values()} == {at(20) + timedelta(microseconds=1)}
     after = {
-        t: ledgers[t].apply(Manifest(t, r.shape, r.until, since=r.since, window=r.window))
+        t: ledgers[t].apply(
+            Manifest(
+                t,
+                r.shape,
+                r.until,
+                since=r.since,
+                window=r.window,
+                schema_hash=ledgers[t].contract.schema_hash,
+            )
+        )
         for t, r in requests.items()
     }
     assert group.claims(after, at(21), limit=timedelta.max).exact_as_of == at(20) + timedelta(microseconds=1)
@@ -260,26 +251,54 @@ def test_planning_together_reads_a_keyless_append_after_its_start():
     assert {r.until for r in requests.values()} == {at(19) + timedelta(microseconds=1)}
 
 
-@pytest.mark.protocol("tables-together.when-a-reference-is-tested")
-def test_a_reference_is_checked_only_where_an_orphan_would_disprove_the_shared_boundary():
-    group = Group((ORDERS, LINES), (LINE,))
-    exact = {"orders": full(ORDERS, 19), "order_lines": full(LINES, 19)}
-    lines = Manifest("order_lines", "full", at(19), rows=0, schema_hash=LINES.schema_hash)
-    assert group.unchecked(LINE, exact, lines) is None
-    changes = Manifest("order_lines", "since", at(19), since=at(18), schema_hash=LINES.schema_hash)
-    patched = {**exact, "order_lines": full(LINES, 18).apply(changes)}
-    assert group.unchecked(LINE, patched, changes) == (
-        "order_lines is not exact as of 2026-10-19T00:00:00+00:00 where it was delivered"
-    )
-    window = (at(19).date(), at(19).date())
-    daily = Manifest("orders", "daily", at(19), window=window, schema_hash=ORDERS.schema_hash)
-    windowed = {**exact, "orders": full(ORDERS, 18).apply(daily)}
-    assert group.unchecked(LINE, windowed, lines) == (
-        "orders is not complete as of 2026-10-19T00:00:00+00:00 over the whole table"
-    )
-    parent_changes = Manifest("orders", "since", at(19), since=at(18), schema_hash=ORDERS.schema_hash)
-    complete = {**exact, "orders": full(ORDERS, 18).apply(parent_changes)}
-    assert group.unchecked(LINE, complete, lines) is None
+@pytest.mark.protocol(
+    "tables-together.delivery",
+    "tables-together.delivery.1",
+    "tables-together.delivery.3",
+    "tables-together.references",
+)
+def test_a_group_is_accepted_whole_or_rejected_whole():
+    group = Group((ORDERS, LINES))
+    ledgers = {t: Ledger(group.contract(t)) for t in group.tables}
+    manifests = {
+        t: Manifest(t, "full", at(18), rows=0, schema_hash=group.contract(t).schema_hash)
+        for t in group.tables
+    }
+    receipts = group.apply(ledgers, manifests, now=at(30))
+    assert all(r.accepted for r in receipts.values())
+    after = {t: ledgers[t].follow(receipts[t]) for t in group.tables}
+    assert group.claims(after, at(30), limit=timedelta.max).exact_as_of == at(18)
+    uneven = {**manifests, "orders": replace(manifests["orders"], produced_at=at(19))}
+    refused = group.apply(after, uneven, now=at(30))
+    assert not any(r.accepted for r in refused.values())
+    assert all(r.checks[-1].name == "together" and not r.checks[-1].passed for r in refused.values())
+    failed = group.apply(ledgers, manifests, now=at(30), outcomes={"orders": (Check("row_count", False),)})
+    assert not any(r.accepted for r in failed.values())
+    with pytest.raises(InvalidContract, match="one manifest per table"):
+        group.apply(ledgers, {"orders": manifests["orders"]}, now=at(30))
+
+
+@pytest.mark.protocol("tables-together.reaching-p-p")
+def test_later_deliveries_keep_a_common_instant_only_where_each_table_returns_to_equal_dates():
+    orders = contract("orders", shapes={"full": FULL, "changes": Shape.changes(deletions="tombstone")})
+    lines = contract("order_lines", shapes={"full": FULL, "since": SINCE})
+    group = Group((orders, lines))
+    ledgers = {
+        t: Ledger(c).apply(Manifest(t, "full", at(18), rows=0, schema_hash=c.schema_hash))
+        for t, c in (("orders", orders), ("order_lines", lines))
+    }
+    tombstones = Manifest("orders", "changes", at(20), since=at(18), schema_hash=orders.schema_hash)
+    plain = Manifest("order_lines", "since", at(20), since=at(18), schema_hash=lines.schema_hash)
+    receipts = group.apply(ledgers, {"orders": tombstones, "order_lines": plain}, now=at(30))
+    assert all(r.accepted for r in receipts.values())
+    after = {t: ledgers[t].follow(receipts[t]) for t in group.tables}
+    assert group.claims(after, at(30), limit=timedelta.max).exact_as_of is None
+    assert after["orders"].claims(at(30), limit=timedelta.max).exact_as_of == at(20)
+    complete = Manifest("order_lines", "full", at(21), rows=0, schema_hash=lines.schema_hash)
+    again = Manifest("orders", "changes", at(21), since=at(20), schema_hash=orders.schema_hash)
+    receipts = group.apply(after, {"orders": again, "order_lines": complete}, now=at(30))
+    exact = {t: after[t].follow(receipts[t]) for t in group.tables}
+    assert group.claims(exact, at(30), limit=timedelta.max).exact_as_of == at(21)
 
 
 @pytest.mark.protocol("tables-together.planning")
@@ -289,12 +308,6 @@ def test_planning_together_ignores_start_at_once_a_keyless_table_has_evidence():
     proven = Ledger(events).apply(Manifest("events", "full", at(18), rows=0))
     requests = plan_together(Group((ORDERS, events)), {"orders": full(ORDERS, 18), "events": proven}, at(19))
     assert {r.until for r in requests.values()} == {at(19)}
-
-
-@pytest.mark.protocol("tables-together.group-and-reference")
-def test_a_group_names_each_reference_once():
-    with pytest.raises(InvalidContract, match="each reference once"):
-        Group((ORDERS, LINES), (LINE, LINE))
 
 
 @pytest.mark.protocol("tables-together.planning")

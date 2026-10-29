@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from dogana import Check, Checkpoint, Contract, Gate, Ledger, Manifest, Shape
+from dogana import Checkpoint, Contract, Gate, Ledger, Manifest, Shape
 from dogana.cli import main
 from tests.support import schema_hash
 
@@ -191,7 +191,7 @@ def test_check_refuses_a_schema_hash_the_gate_would_refuse(files, capsys):
     )
     (tmp_path / "orders.csv.json").write_text(replace(manifest, schema_hash="0" * 64).to_json())
     assert run(tmp_path, "check", str(data)) == 1
-    assert "schema_hash: the manifest declares 000" in capsys.readouterr().err
+    assert "manifest column hash differs from the contract's" in capsys.readouterr().err
 
 
 def test_check_refuses_a_manifest_without_a_hash_and_a_missing_file(files, capsys):
@@ -250,7 +250,7 @@ def test_claims_prints_each_region_and_the_instant_the_table_is_exact_at(tmp_pat
     manifest = c.manifest(
         "daily", datetime(2026, 10, 26, 6, tzinfo=UTC), window=(date(2026, 9, 27), date(2026, 10, 26)), rows=2
     )
-    checks = tuple(Check(r.name, True) for r in Gate.requirements(c, manifest))
+    checks = ()
     receipt = Gate.evaluate(Ledger(c), manifest, checks, now=datetime(2026, 10, 26, 7, tzinfo=UTC))
     path = tmp_path / "orders.ledger.json"
     path.write_text(Ledger(c).follow(receipt).to_json())

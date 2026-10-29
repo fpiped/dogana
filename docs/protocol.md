@@ -17,20 +17,20 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
 ## Trust model
 
 1. A delivery is rows and a `Manifest`, the sender's declaration of the read. The `Contract` states
-   the source's guarantees; the `Gate` checks declaration and rows against each other, never against
-   the source. A truncated full export with a matching count, an overstated window or an omitted
-   late commit passes. A count derived by the receiver checks parsing, not completeness: only a
-   count the export computed in the same read can catch a truncated file.
-2. The invariant holds given truthful extraction, the declared guarantees and correct store checks:
-   **a delivery never raises a date above what those premises prove**. The core checks that regions
-   partition the domain, date order, continuity and that evidence outside coverage is unchanged. It
-   does not authenticate senders, verify business values or certify a query's answer.
-3. A store reads a file once, into a copy only it can reach, hashing the bytes as it copies, so the
-   rows it checks and publishes are the bytes `content_hash` names.
-4. CSV is [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180): comma, double quotes escaped by
-   doubling, UTF-8, a header row, no comments, no other dialect; a sender counting rows parses that
-   grammar. A `datetime`, in a file or a manifest, carries its UTC offset or is refused. A file that
-   does not parse is a recorded rejection, never a storage error.
+   the source's guarantees. dogana decides from the declarations and the ledger alone: it never
+   reads rows or bytes, so it cannot tell a truncated full export with a matching count, an
+   overstated window or an omitted late commit. A count the receiver derives from the file checks
+   parsing, not completeness: only a count the export computed in the same read can catch a
+   truncated file.
+2. The invariant holds given truthful declarations: **a delivery never raises a date above what the
+   declarations prove**. The core checks that regions partition the domain, date order, continuity
+   and that evidence outside coverage is unchanged. It does not authenticate senders, verify
+   business values or certify a query's answer.
+3. The receiver owns the rows. The dates describe the rows only if the receiver refuses a file whose
+   contents contradict its manifest, and saves rows and ledger in the same commit, so that no reader
+   sees one without the other. dogana names neither how to check nor how to commit; it records the
+   checks the receiver reports, and [the receiver](#the-receiver) states what it owes.
+4. A `datetime`, in a file or a manifest, carries its UTC offset or is refused.
 5. `produced_at` is the instant of the source the file shows: the extractor guarantees every
    change up to it, that instant included. When the download finished, when the file arrived and a
    scheduler's logical date are not that instant. The gate rejects `produced_at` later than the
@@ -56,13 +56,13 @@ Keys and window bounds use ordered scalar types, a cursor `datetime` or `int`, t
 
 **Column hash.** The data contract owns the columns; the delivery contract references them by an
 opaque `schema_hash`, from an ODCS (Open Data Contract Standard) document, a dbt model or a column
-list. When present, the manifest carries the same hash and the store checks its candidate against
-it; when absent, no schema check is required. For an ODCS schema object, build one `[name, type]`
+list. When present, a manifest that does not carry the same hash is refused, and the receiver
+computes the hash of the file it loads and refuses a file with other columns; when absent, no
+column check is required. For an ODCS schema object, build one `[name, type]`
 pair per property, in declared order. The type is one of dogana's six type names, or `decimal(p,s)`
 for an exact decimal; the receiver maps physical and nested types to these names. Hash
 `json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")` with SHA-256. Only the
-pairs are hashed. The example store and file drop use this recipe; another store must agree with
-its receiver on the hash.
+pairs are hashed.
 
 **Window column.** A contract has one exactly when it has a window shape. Regions divide the
 window column's values, not the keys. A key's window value never changes, even if the row is
@@ -104,8 +104,8 @@ published, and the column hash leaves it out.
 <!-- protocol: deleted-content -->
 
 The keys a file deletes travel in the file, not in the manifest, so only `content_hash` tells two
-such files apart: without it, a second file with the same manifest is a replay and is never read.
-Declare `content_hash` for tombstone shapes, as `dogana manifest` and the file drop do.
+such files apart: without it, a second file with the same manifest is a replay, and the receiver
+never reads it. Declare `content_hash` for tombstone shapes, as `dogana manifest` does.
 
 <!-- protocol-scope: soft-deletes -->
 
@@ -185,10 +185,9 @@ content_hash)` describes one read.
 5. Timestamp reads with a cursor column cover `(since, produced_at]`; without one, keyed reads may
    include `since` and may overlap. Keyless appends always cover `(since, produced_at]`, never
    overlapping.
-6. `content_hash`, optional, is the lowercase hex SHA-256 of the delivered bytes, from sender or
-   receiver. It is part of the manifest's identity, and the store verifies it against the bytes it
-   read; rows without bytes cannot carry one. Without it, identity does not name the content, so the
-   file drop fills it in.
+6. `content_hash`, optional, is the lowercase hex SHA-256 of the delivered bytes. It is part of the
+   manifest's identity, so a corrected file is a new delivery, and the receiver verifies it against
+   the bytes it loads. Without it, identity does not name the content.
 
 **Corrections.** A corrected file is a new delivery by its hash and needs a later truthful boundary.
 Invalidating an accepted delivery means rebuilding rows and ledger from the receipts before it, then
@@ -216,7 +215,7 @@ The ledger stores only the points where the evidence changes, each with the evid
 next point; regions are the view between points. Neighbouring regions with equal dates merge, and
 values no delivery touched stay unknown. `Ledger.apply` does accounting only: it checks the
 transition and updates dates, position and publication chain. Checking rows and looking up replays
-belong to store delivery.
+belong to the receiver.
 
 ## Transitions
 
@@ -263,41 +262,39 @@ the rows in its closed window and earlier copies of candidate keys, then inserts
 published rows the tombstones name; `append` inserts without matching. Keyless replacement matches
 no keys. The core describes operations and never reads rows.
 
-<!-- protocol: answers -->
+<!-- protocol: implied -->
 
-`Gate.requirements(contract, manifest)` names the row checks; the store answers exactly one
-`Check(name, passed, detail)` per name, and a missing, duplicate or unexpected answer rejects.
-
-| Check | Predicate |
-|---|---|
-| row_count | Live rows equal `manifest.rows`, tombstones `manifest.tombstones`, and no deleted value is null. |
-| schema_hash | Candidate and manifest hashes equal `contract.schema_hash`; absent when the contract has none. |
-| rows_in_window | Every live window value is non-null and inside the window, and so is that of every published row sharing a key with a delivered row. |
-| window_present | Every live window value is non-null, so each row falls in a region. |
-| key_integrity | Every key, live or tombstoned, is non-null and appears once. |
-| rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. A tombstone's may be null, else in the same interval. |
-| content_hash | With `manifest.content_hash`, the SHA-256 of the bytes read equals it. |
+A manifest implies facts about the rows it describes, and the receiver verifies them before
+deciding. The file holds `rows` live rows and `tombstones` tombstones, and no deleted value is
+null. Its columns hash to `schema_hash` and its bytes to `content_hash`. Every key, live or
+tombstoned, is non-null and appears once. Every window value is non-null and, for a window
+delivery, inside the window. With a `datetime` cursor, every live cursor value of a timestamp read
+is in `(since, produced_at]`; with an `int` cursor, every one of a sequence read is in
+`(since, generation]`; a tombstone's is null or in the same interval. The receiver passes its
+results to the gate as `Check(name, passed, detail)` values; dogana names no check and runs none.
 
 <!-- protocol: declarations -->
 
-Every row check compares the rows with a declaration, the manifest's or the contract's, so an
-honest delivery never fails one. A rule about the source's data, such as a table that should not
-halve or an amount that must be positive, declares nothing and is a business check.
+Every check a receiver runs compares the rows with a declaration, the manifest's or the contract's,
+so an honest delivery never fails one. A rule about the source's data, such as a table that should
+not halve or an amount that must be positive, declares nothing and is a business check, whose
+result the receiver keeps for itself.
 
 <!-- protocol: blocked -->
 
-A window delivery refuses a key already published in another region instead of moving it, since
-that region keeps its claim. A row whose window value changes at the source can still leave a hole
-no check sees, so the window column must never change. A check that an earlier failure blocks
-answers `passed=False, detail="not evaluated"`. Business rules run outside this set, and the caller
-keeps their results.
+A window delivery's plan replaces its window and nothing else: a key already published in another
+region is not moved, and a receiver refuses a file that carries one, since that region keeps its
+claim. A row whose window value changes at the source can still leave a hole no check sees, so the
+window column must never change.
 
 <!-- protocol: evaluation -->
 
-`Gate.evaluate(ledger, manifest, outcomes, now=now, source=None)` adds the core checks: structure,
-source time, base coverage, continuity and monotonic time. `Gate.preflight(ledger, manifest,
-now=now)` returns them without rows; `Gate.reject(ledger, manifest, checks, now=now, source=None)`
-records a declared failure.
+`Gate.evaluate(ledger, manifest, outcomes=(), *, now, source=None, joint=())` decides a delivery
+from three core checks: `manifest` (the declarations agree with each other and the contract),
+`receiver_time` and `transition` (the ledger admits the read). Then come the receiver's `outcomes`
+and the `joint` checks of a group. Any failed check rejects. `Gate.preflight(ledger, manifest, now=now)`
+returns the core checks alone; `Gate.reject(ledger, manifest, checks, now=now, source=None)`
+records a failure the receiver found.
 
 <!-- protocol: receipt -->
 
@@ -320,9 +317,9 @@ and its identity covers its checks.
 <!-- protocol: errors -->
 
 `DoganaError` is the root of `InvalidContract` (with its subclass `SerializationError`),
-`RejectedDelivery`, `PlanningError` and `StoreError` (with `InconsistentPublication`). Only declared
-protocol violations become rejections; operational failures and programming errors propagate after
-cleanup, and a failure after commit cannot revoke an acceptance.
+`RejectedDelivery`, `PlanningError` and `InconsistentPublication`. Only declared protocol
+violations become rejections; a receiver's operational failures are its own, and a failure after
+its commit cannot revoke an acceptance.
 
 ## Claims and planning
 
@@ -392,41 +389,30 @@ read is REPEATABLE READ, SERIALIZABLE or one exported snapshot shared by workers
 TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL; a read-only transaction or queries `AS OF` one SCN
 (system change number) in Oracle; SNAPSHOT isolation in SQL Server. Separate export jobs are not one
 read, and one `produced_at` for them, such as one date in their file names, fabricates the instant.
-The theorem needs no common store transaction: tables each exact at `p`, each read with its ledger
-under one publication (obligation 6), are consistent however they were published.
+The theorem needs no common transaction at the receiver: tables each exact at `p`, each read with
+its ledger from one committed state, are consistent however they were published.
 
-**Group and reference.** `Group(contracts, references=())` names tables read together, each once
-whatever its letter case. A table belongs to one group, since a table accepted in one group does not
-replay in another: a parent with several children is one group. `Group.claims(ledgers, now, *,
-limit, windows=None)` returns every table's regions together, each table clipped to its window.
-`Reference(table, columns, parent)` states that every live row of `table` whose `columns` are all
-non-null names, in order, the key of a `parent` row; it has one column per parent key column, and
-both tables are in the group.
+**Group.** `Group(contracts)` names tables read together, each once whatever its letter case. A
+table belongs to one group, since files accepted together replay together: a parent with several
+children is one group. `Group.claims(ledgers, now, *, limit, windows=None)` returns every table's
+regions together, each table clipped to its window.
 
-**Delivery.** `deliver_together(store, group, deliveries, now)` takes one `(source, manifest)` per
-table and decides them as one:
+**Delivery.** `Group.apply(ledgers, manifests, *, now, outcomes=None, sources=None)` takes one
+manifest per table, with the receiver's checks of each table's rows, and decides them as one:
 
-1. Each table runs a single delivery up to its decision: replay lookup, preflight, `hold`, `check`.
+1. Each table is decided alone, as `Gate.evaluate` does.
 2. The `together` check passes when every manifest has the same `produced_at` and every table is
-   accepted alone. Its detail digests every manifest identity and the references, so a receipt
-   carrying it was accepted with exactly those files.
-3. When the group has references and `together` passed, the store answers one more check,
-   `references`, on the rows each table would hold once its plan is applied. It covers only the
-   references `Group.unchecked` gives no reason to skip.
-4. Both checks join every receipt through `Gate.evaluate(..., joint=checks)`. If any receipt is a
-   rejection, every table records its refusal; otherwise `publish_together` publishes every table's
-   rows, ledger and receipt in one atomic step.
+   accepted alone. Its detail digests every manifest identity, so a receipt carrying it was accepted
+   with exactly those files.
+3. That check joins every receipt. If any table is rejected, every table's receipt is a rejection;
+   otherwise every receipt is an acceptance, and the receiver saves every table's rows and ledger in
+   one commit, or nothing.
 
-**When a reference is tested.** Only when the child's delivered coverage ends exact at `p` and the
-parent is complete as of `p` over its whole domain. Then every child row there was live at `p`, and
-so was every parent row it can name, which is therefore present. A child row whose reference columns
-are all non-null and name no parent row proves the premise false, or that the source breaks the
-rule. In every other case the reference passes untested and the detail says why, so an honest
-delivery is never refused for one. A child without tombstones, or a parent delivered by windows,
-leaves it untested, and `exact_as_of` tells the reader. A tested reference covers every child row in
-the coverage, so the store scans the child and joins the parent on each delivery. Values compare as
-values, int and float alike; a reference column typed other than its parent key column is a
-declaration error, and fails as soon as one row names a parent.
+<!-- protocol: references -->
+
+Rules the source keeps between its tables, such as every line naming an existing invoice, are not
+checked: they need the rows, and the guarantee is `exact_as_of`, not a check. A receiver that wants
+the tripwire joins the staged tables before committing.
 
 **Reaching `(p, p)`.** `together` does not require the result to be exact; each table's shape
 decides it over that table's coverage. These reach `(p, p)`: a complete delivery, a keyless append,
@@ -434,25 +420,17 @@ timestamp tombstones with `since` no later than the deletions date, and generati
 tombstones when both dates were already equal. A table without changes delivers an empty file of
 a tombstone changes shape at `p`. A reader of windows passes them to `Group.claims`.
 
-**Replay and races.**
-
-1. A group replays whole or is refused whole: when every manifest was accepted in one delivery of
-   these files under these references, every receipt replays, provided every declared hash still
-   matches the bytes. When any was accepted alone, in another delivery or under other references,
-   every table is refused, and the group needs a new read.
-2. A failure after the group's commit returns the committed receipts. If another delivery accepts
-   the same manifests in the meantime, this one is decided by rule 1, as if the other came first, so
-   the outcome does not depend on timing. If that other delivery lands while this one is recording
-   refusals, the call raises `StoreError`, and a retry decides it. Only a publication that committed
-   some tables and not others raises `InconsistentPublication`. Two concurrent deliveries with equal
-   manifests and receiver times give one receipt, so the one that published nothing may also be
-   answered `accepted`.
-3. Each table keeps its receipts, chain and reconstruction; a group adds no wire kind.
+**Replay.** A group replays whole: the receiver answers a repeated group with the receipts it
+recorded when every manifest was accepted together, which the `together` digest identifies, after
+verifying every declared hash against the bytes. Files accepted alone, in another group or never
+are a new decision, and the group needs a new read. Each table keeps its receipts and chain; a
+group adds no wire kind.
 
 <!-- protocol: atomicity -->
 
-Atomic publication serves availability, not the guarantee: without it a refused table leaves the
-others ahead and the current tables have no common instant; with it, the instant moves in one step.
+Committing every table at once serves availability, not the guarantee: without it a refused table
+leaves the others ahead and the current tables have no common instant; with it, the instant moves in
+one step.
 
 <!-- protocol: planning -->
 
@@ -463,96 +441,60 @@ establishing `(until, until)` over its window. `until` is the earliest admissibl
 extractor reads every table in one snapshot taken at or after it and stamps every manifest with its
 instant.
 
-<!-- protocol-scope: store -->
+## The receiver
 
-<!-- protocol: store -->
+<!-- protocol-section: receiver -->
 
-`TogetherStore` adds `check_references(group, candidates)` and `publish_together(group, entries)`,
-`candidates` mapping each table to its checked candidate and `entries` pairing one candidate per
-table with its accepted receipt. The store must:
+<!-- protocol: sequence -->
 
-1. answer the references check on the rows the candidates would produce, without changing published
-   rows, only for candidates that passed their own checks and references `Group.unchecked` leaves;
-2. verify that each receipt agrees with its checks, that the `together` check equals the one
-   recomputed from the receipts and the references. When there are references, verify that the
-   `references` answer is the one it gave itself for exactly these candidates after their last
-   check. Without that answer it refuses to publish;
-3. publish every entry or none in one atomic step, under the six obligations of a single
-   publication.
+The receiver is the code that loads a file into its database. dogana decides; the receiver does, in
+this order:
 
-## Store protocol and publication
-
-<!-- protocol-section: store -->
-
-<!-- protocol: delivery -->
-
-`Store` and `Extractor` are structural `typing.Protocol`s; `extract(contract, request)` returns
-`(manifest, source)`, whose representation belongs to the store. `dogana.deliver(store, contract,
-source, manifest, now)` owns the sequence:
-
-1. `load_ledger(contract)`; `accepted_receipt(manifest.identity)` returns a stored acceptance as
-   `replayed`, with original identity and receiver time. A manifest with `content_hash` replays only
-   once `digest(source)` equals it, else it is refused; a replay compares bytes, never rows against
-   today's contract.
-2. Preflight; `publish(None, receipt)` records a rejection against its expected parent without
-   changing rows or evidence.
-3. `hold(source, manifest, contract)` stages a candidate; `check(candidate, contract, manifest,
-   requirements)` answers the row checks against one base publication.
-4. `publish(candidate, receipt)` compares that base and atomically executes an accepted plan with
-   its rows and evidence, or records the rejection; `abort(candidate)` releases staged work after a
-   failure.
-
-<!-- protocol: methods -->
-
-These six, with `receipts(table=None)`, in persistence order, and `digest(source)`, the SHA-256 of a
-source's bytes or `None` for rows, are the eight required methods. Publishing an acceptance needs a
-held and checked candidate. Recording a rejection also compares and sets the parent, and a receipt
-that cannot be decoded is refused before the log changes. `publication_stamp(table)` and
-`repair(contract)` form the optional stamped tier, `check_references` and `publish_together` the
-[together tier](#tables-together); read methods and `store.deliver` are conveniences.
+1. Looks the manifest's identity up among its receipts. An accepted one is a replay, answered with
+   the original receipt once a declared `content_hash` matches the bytes; a repeated manifest over
+   other bytes is refused, and a replay never reads the rows again.
+2. Runs `Gate.preflight`; a failed check is recorded with `Gate.reject`, and nothing else happens.
+3. Loads the rows where they can be checked without touching the published table, verifies them
+   against the manifest, and passes the results to `Gate.evaluate` as `Check` values.
+4. On acceptance, executes `receipt.transition.plan` on the published table and saves the new
+   ledger, `ledger.follow(receipt)`, and the receipt in the same commit; on rejection, saves the
+   receipt alone.
 
 <!-- protocol-scope: obligations -->
 
-The store's six obligations:
+What the receiver owes, for the dates to describe the rows:
 
-1. Check candidate rows before published rows change; execute only an accepted receipt's plan.
-2. Publish rows, ledger, receipt and any stamp in one atomic step: one transaction, or a
-   table-format commit carrying the receipt or a reference to a durable one. Ordered writes with
-   idempotent plans are not atomic, and `Ledger.apply` alone guarantees nothing about rows.
-3. Compare and set against `receipt.base_publication_id`, refusing a changed head, cached checks on
-   a stale base included; a commit retry never silently rebases an approved plan.
-4. Persist accepted and rejected receipts; keep accepted ones in publication order.
-5. Answer a replay with its original receipt and no second publication, after verifying a declared
-   `content_hash` against the bytes.
-6. Read rows and claims under one publication identity; separate reads can straddle a commit.
+1. Rows, ledger and receipt change in one atomic step: one transaction, or a table-format commit
+   that carries the receipt or a reference to a durable copy. Writing the rows first and the ledger
+   after is not atomic.
+2. A decision is made against the ledger that describes the published rows. If the published
+   chain head no longer equals `receipt.base_publication_id` when committing, the decision is stale
+   and is made again; a retry never silently rebases an approved plan.
+3. Accepted and rejected receipts are kept, accepted ones in publication order. The ledger is the
+   fold of the accepted receipts, `Ledger.from_receipts`, and a stored ledger that differs from that
+   fold is wrong.
+4. Readers read rows and ledger from one committed state; separate reads can straddle a commit.
 
-**Chain and recovery.** The publication chain is SHA-256 of UTF-8
-`f"{previous}:{contract.identity}:{manifest.identity}"`, the first `previous` the string `None`. The
-store stamps the published rows with that head; the stamp is not a checksum of the rows. Comparing
-it with the ledger finds a ledger behind its rows, or a publication from outside dogana. It cannot
-see a row edit that keeps the stamp, a lost rejection or the loss of all evidence. When a ledger is
-missing, surviving receipts or stamps show the table is not new. Stores fail closed.
+**Chain.** The publication chain is SHA-256 of UTF-8
+`f"{previous}:{contract.identity}:{manifest.identity}"`, the first `previous` the string `None`;
+`publication_id` is its head. A receiver that records the head its rows were published under can
+tell a ledger behind its rows, or a publication from outside dogana. It cannot see a row edit that
+keeps the head, a lost rejection or the loss of all evidence.
 
 <!-- protocol: recovery -->
 
-`Ledger.follow(receipt)` applies one accepted receipt and checks its publication and ledger
-identities; `Ledger.from_receipts(contract, receipts)` folds the accepted ones in order, ignoring
-rejections and refusing missing, reordered or foreign ones. `repair` restores the ledger only when
-the rebuilt head equals the stamp, never relabelling rows; rows need retained store versions.
-`Ledger.reconcile(contract, receipts, current, stamp, *, repair=True, retained_head=None)`
-diagnoses, and with `repair` returns rebuilt evidence only for a matching stamp: `LedgerAhead`,
-evidence beyond the stamp, needs a fresh full replacement; `StampAhead`, rows without matching
-evidence, needs receipt recovery or restoration. Both are `InconsistentPublication`, matched by
-type. A store that verifies retention can pass `retained_head`: diagnosis then checks the current
-ledger against that receipt's `ledger_identity` and its hash against the stamp, without replaying
-the prefix. Repairs and mismatches still fold the whole history.
+`Ledger.follow(receipt)` applies one accepted receipt and checks that it continues the chain and
+leaves the ledger it names; `Ledger.from_receipts(contract, receipts)` folds the accepted ones in
+order, ignoring rejections and refusing missing, reordered or foreign ones with
+`InconsistentPublication`. Rebuilding the ledger recovers no rows: a receiver whose rows are in
+doubt starts again with a complete whole-table delivery.
 
 ## Algebraic guarantees
 
 <!-- protocol: laws -->
 
-The same initial ledger and accepted history give the same ledger. Store delivery is idempotent by
-receipt lookup; `Ledger.apply` is not. Disjoint complete or timestamp windows commute on evidence
+The same initial ledger and accepted history give the same ledger. A receiver's delivery is
+idempotent by receipt lookup; `Ledger.apply` is not. Disjoint complete or timestamp windows commute on evidence
 when both orders are admissible, never on the chain. Ledgers cannot be merged. Rejection applies per
 manifest, not to a batch or a history.
 
@@ -561,7 +503,7 @@ manifest, not to a batch or a history.
 <!-- protocol: compatibility -->
 
 Once a table has history, its `table`, `key`, `window_column`, `deleted_column` and the types of
-the key and window columns are fixed, and stores refuse a contract that changes them. The deleted
+the key and window columns are fixed, and a receiver refuses a contract that changes them. The deleted
 column decides which rows the dates describe, so a new one makes old dates speak of other rows.
 Everything else may evolve: costs, window sizes, lookback, shapes, cursor columns, the column hash.
 Each
@@ -604,15 +546,15 @@ reconstruction uses each receipt's contract, then the requested one.
 [contract](examples/contract.json), [manifest](examples/manifest.json),
 [ledger](examples/ledger.json) and [receipt](examples/receipt.json) examples are executable,
 [identity vectors](examples/identity-vectors.json) fix canonical forms and hashes for other
-implementations, and [JSON Schemas](wire/README.md) cover all fifteen wire kinds.
+implementations, and [JSON Schemas](wire/README.md) cover all fourteen wire kinds.
 
 ## Boundaries
 
 <!-- protocol: package -->
 
-The package uses only the standard library, beside pytest for the conformance suite, and parses no
-data file. The [reference](reference.md) covers the example store, the command line and the
-accounting path; passing the conformance suite is evidence for its scenarios, not a proof.
+The package uses only the standard library and never reads rows or bytes: it decides from
+declarations and the ledger. The [reference](reference.md) covers the command line and a receiver
+written against the gate.
 
 <!-- protocol: undecided -->
 

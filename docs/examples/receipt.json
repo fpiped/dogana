@@ -21,34 +21,6 @@
       "name":"transition",
       "passed":true,
       "version":4
-    },
-    {
-      "detail":"",
-      "kind":"Check",
-      "name":"row_count",
-      "passed":true,
-      "version":4
-    },
-    {
-      "detail":"",
-      "kind":"Check",
-      "name":"schema_hash",
-      "passed":true,
-      "version":4
-    },
-    {
-      "detail":"",
-      "kind":"Check",
-      "name":"key_integrity",
-      "passed":true,
-      "version":4
-    },
-    {
-      "detail":"one outcome per required row check",
-      "kind":"Check",
-      "name":"check_set",
-      "passed":true,
-      "version":4
     }
   ],
   "contract":{

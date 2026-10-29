@@ -26,7 +26,6 @@ from hypothesis import strategies as st
 
 from dogana import (
     ApplyPlan,
-    Check,
     Checkpoint,
     Completeness,
     Contract,
@@ -37,7 +36,7 @@ from dogana import (
     RejectedDelivery,
     Shape,
 )
-from tests.memory_store import RowSource, apply_rows, check_rows, split_rows
+from tests.loader import RowSource, apply_rows, check_rows, split_rows
 from tests.support import at
 
 INSTANTS = (2, 3)
@@ -265,9 +264,7 @@ class Model:
             accepted = True
         assert before == snapshot, "P6: Ledger.apply mutated its input"
         # Row checks are independently verified against actual files in walk().
-        checks = (
-            tuple(Check(r.name, True) for r in Gate.requirements(self.contract, manifest)) if accepted else ()
-        )
+        checks = () if accepted else ()
         receipt = Gate.evaluate(before, manifest, checks, now=NOW)
         assert receipt.accepted == accepted, "Gate and Ledger.apply disagree"
         if not accepted:

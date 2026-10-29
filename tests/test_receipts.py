@@ -2,17 +2,17 @@ from dataclasses import replace
 
 import pytest
 
-from dogana import Check, Gate, InconsistentPublication, Ledger, Manifest
+from dogana import Gate, InconsistentPublication, Ledger, Manifest
 from tests.support import at, contract, fold
 
 
 def publication(ledger, day):
     manifest = ledger.contract.manifest("full", at(day))
-    checks = tuple(Check(r.name, True) for r in Gate.requirements(ledger.contract, manifest))
+    checks = ()
     return Gate.evaluate(ledger, manifest, checks, now=at(25))
 
 
-@pytest.mark.protocol("checks.receipt-size", "store.recovery")
+@pytest.mark.protocol("checks.receipt-size", "receiver.recovery")
 def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     c = contract()
     first = publication(Ledger(c), 18)
@@ -73,37 +73,7 @@ def test_following_a_forged_receipt_names_the_broken_parent_or_evidence(problem,
     assert str(error.value) == message
 
 
-@pytest.mark.parametrize(
-    "problem,message",
-    [
-        ("missing_stamp", "ledger ahead of missing publication stamp"),
-        ("old_stamp", "accepted evidence is ahead of the publication stamp"),
-        ("unmatched_stamp", "publication stamp has no matching accepted receipt"),
-        ("evidence", "current ledger evidence differs from its accepted history"),
-    ],
-)
-def test_reconciliation_names_the_exact_disagreement_between_stamp_history_and_evidence(problem, message):
-    from dogana import LedgerAhead, StampAhead
-
-    c = contract()
-    first = publication(Ledger(c), 18)
-    second = publication(fold(first), 19)
-    current = fold(first, second)
-    stamp = current.publication_id
-    if problem == "missing_stamp":
-        stamp = None
-    elif problem == "old_stamp":
-        stamp = first.publication_id
-    elif problem == "unmatched_stamp":
-        stamp = "unmatched"
-    else:
-        current = replace(current, generation="forged")
-    with pytest.raises((LedgerAhead, StampAhead)) as error:
-        Ledger.reconcile(c, (first, second), current, stamp)
-    assert str(error.value) == message
-
-
-@pytest.mark.protocol("checks.receipt-size", "store.recovery")
+@pytest.mark.protocol("checks.receipt-size", "receiver.recovery")
 @pytest.mark.parametrize("problem", ["missing", "reordered", "duplicate", "foreign", "evidence"])
 def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):
     c = contract()
@@ -136,7 +106,7 @@ def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
     assert second.base_publication_id == first.publication_id
 
 
-@pytest.mark.protocol("store.obligations.5")
+@pytest.mark.protocol("receiver.1")
 def test_replayed_full_delivery_receipt_retains_its_original_identity_and_receiving_time():
     first = publication(Ledger(contract()), 18)
     replay = replace(first, outcome="replayed")
@@ -159,7 +129,7 @@ def test_many_full_deliveries_keep_receipt_size_bounded_by_regions_not_history()
     for index in range(1000):
         boundary = at(18) + timedelta(seconds=index)
         manifest = Manifest(c.table, "full", boundary)
-        checks = tuple(Check(r.name, True) for r in Gate.requirements(c, manifest))
+        checks = ()
         receipt = Gate.evaluate(ledger, manifest, checks, now=boundary)
         assert receipt.accepted
         ledger = ledger.follow(receipt)

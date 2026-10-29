@@ -443,6 +443,8 @@ class Manifest(Wire):
             assert contract.window_column is not None
             if type(self.window[0]) is not LOGICAL_TYPES[contract.types[contract.window_column]].python_type:
                 raise InvalidContract("window bound types differ from the contract types")
+        if contract.schema_hash is not None and self.schema_hash != contract.schema_hash:
+            raise InvalidContract("manifest column hash differs from the contract's")
         if shape.complete:
             return (
                 FullDelivery(self, shape) if self.window is None else WindowDelivery(self, shape, self.window)

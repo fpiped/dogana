@@ -1,7 +1,5 @@
 graft tests
 graft docs
-graft examples
 graft scripts
 include mkdocs.yml CHANGELOG.md CONTRIBUTING.md AGENTS.md NOTICE
-prune examples/duckdb/dogana_example_store.egg-info
 global-exclude __pycache__ *.py[cod]

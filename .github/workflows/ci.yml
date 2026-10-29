@@ -19,7 +19,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: uv venv && uv pip install -e . -e examples/duckdb --group dev
+      - run: uv venv && uv pip install -e . --group dev
       # The coverage floor is measured once, where sys.monitoring makes tracing nearly free.
       - if: matrix.python == '3.14'
         run: COVERAGE_CORE=sysmon .venv/bin/coverage run -m pytest -q && .venv/bin/coverage report
@@ -27,7 +27,7 @@ jobs:
         run: .venv/bin/python -m pytest -q
       - run: .venv/bin/python scripts/traceability.py --strict
       - run: uvx ruff check . && uvx ruff format --check .
-      - run: .venv/bin/python -m mypy --strict src examples/duckdb scripts/traceability.py
+      - run: .venv/bin/python -m mypy --strict src scripts/traceability.py
 
   prose:
     runs-on: ubuntu-latest

@@ -33,14 +33,11 @@ Issues = "https://github.com/fpiped/dogana/issues"
 dev = [
   "pytest>=8",
   "coverage>=7",
-  "pyarrow>=14",
   "mypy>=1.11",
   "hypothesis>=6",
   "hypothesis-jsonschema>=0.23.2",
   "jsonschema>=4.18",
   "types-jsonschema>=4",
-  "duckdb>=1.2",
-  "pytz>=2024.1",
 ]
 
 [build-system]
@@ -54,7 +51,7 @@ where = ["src"]
 dogana = ["py.typed", ".agents/skills/dogana/*.md"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "examples/duckdb"]
+pythonpath = ["src"]
 testpaths = ["tests"]
 markers = ["protocol(*ids): protocol rules exercised by this test (see scripts/traceability.py --list)"]
 
@@ -67,7 +64,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.coverage.run]
 branch = true
-source = ["src/dogana", "examples/duckdb/example_store"]
+source = ["src/dogana"]
 
 [tool.coverage.report]
 fail_under = 97

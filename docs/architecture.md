@@ -8,15 +8,13 @@ and why.
 <!-- illustration: package layer diagram, not command output -->
 ```text
 core          contract ledger gate group planner wire errors     standard library only, no I/O
-              interfaces (Store, TogetherStore, Extractor)
-sequence      delivery.deliver, deliver_together               the one place that calls storage
-entry points  cli, conformance                                 the core imports neither
-example       examples/duckdb (example_store), not installed   a store and file drop on the core
+entry points  cli                                              hashes a file, parses none
+your loader   outside the package                              rows, checks, the commit
 ```
 
-Dependencies point inward: entry points and the example import the core, never the reverse. Tests
-enforce it, that the command line imports no third-party package, and that no module of the package
-imports a reader of data files (csv, DuckDB, Arrow).
+The core never reads a row or a file: it decides from declarations and the ledger. Tests enforce
+that no module of the package imports a reader of data files or a database driver, and that a copy
+of the core's modules alone still validates a manifest, applies it and answers claims.
 
 ## The core
 
@@ -30,13 +28,12 @@ imports a reader of data files (csv, DuckDB, Arrow).
   view of the pieces between points. `Ledger.apply(manifest)` runs the guards (no gap, no stale
   overwrite, a proven base for changes) and returns a new ledger; values are never modified.
   `Ledger.claims(now, limit=...)` reads it at the reader's time, with the reader's age limit.
-- **`gate.py`**: `Gate.requirements` names the row checks a store must answer for a manifest;
-  `Gate.preflight` checks the manifest and its transition without rows; `Gate.evaluate` turns the
-  checks into a `Receipt` with an `ApplyPlan`, the row operations to execute. The core describes
-  row operations and never reads rows.
-- **`group.py`**: `Group` and `Reference`, tables read together and the rules the source keeps
-  between them. `Group.claims` returns their claims together, and `Claims.exact_as_of` is the instant at
-  which all of them equal the source, if there is one.
+- **`gate.py`**: `Gate.preflight` checks a manifest and its transition; `Gate.evaluate` adds the
+  checks the loader reports on the rows and turns the decision into a `Receipt` with an
+  `ApplyPlan`, the row operations the loader executes. The core describes row operations and never
+  reads rows.
+- **`group.py`**: `Group`, tables read together. `Group.apply` decides their files as one, and
+  `Claims.exact_as_of` is the instant at which all of them equal the source, if there is one.
 - **`planner.py`**: because `Ledger.apply` has no side effects, the planner simulates each admitted
   read on the current ledger and keeps the cheapest one that establishes the required dates.
 - **`wire.py`**: every value as versioned JSON, and its identity, the SHA-256 of its RFC 8785
@@ -44,40 +41,29 @@ imports a reader of data files (csv, DuckDB, Arrow).
 
 ## One delivery
 
-`deliver(store, contract, source, manifest, now)` is the only sequence, so a store cannot get the
-order wrong:
+The loader owns the sequence, and the [protocol](protocol.md#the-receiver) states it:
 
-1. load the ledger and look for an accepted receipt with the same manifest identity; if there is
-   one, the delivery is a replay (after the store has verified a declared hash against the bytes);
-2. preflight, and record a refusal that changes nothing if it fails;
-3. `hold` the candidate rows and `check` them;
-4. `Gate.evaluate`, then `publish` rows, ledger and receipt in one atomic step, compared against
-   the publication the checks were made on; `abort` releases staged work after any failure.
+1. look for an accepted receipt with the same manifest identity; if there is one, the delivery is a
+   replay, once a declared hash matches the bytes;
+2. `Gate.preflight`, and record a refusal that changes nothing if it fails;
+3. check the staged rows against the manifest;
+4. `Gate.evaluate`, then execute the plan and save rows, ledger and receipt in one transaction,
+   against the ledger the decision was made on.
 
-`deliver_together` runs the first three steps for each table of a group, adds the joint checks
-(one read boundary, every table accepted on its own, references), and publishes every table in one
-`publish_together` step or refuses them all.
-
-`Store` is a `typing.Protocol` of eight methods (`digest`, `hold`, `check`, `publish`, `abort`,
-`load_ledger`, `accepted_receipt`, `receipts`). Any class with those methods is a store; the
-conformance suite exercises its obligations.
+`Group.apply` runs the decision for each table of a group, adds the joint check (one read boundary,
+every table accepted on its own), and accepts every table or refuses every table.
 
 ## Receipts are the history
 
 Accepted receipts, in order, are the history of a table; the ledger is computed from them, and
-`Ledger.from_receipts` rebuilds it. Each publication extends a hash chain, SHA-256 of the previous
-head, the contract and the manifest, and the store stamps the published rows with its head. A
-ledger that disagrees with that stamp is diagnosed as `LedgerAhead` (evidence ahead of the rows:
-deliver a fresh full) or `StampAhead` (rows without matching evidence: repair from receipts). The
-stamp cannot detect a direct edit of the rows that leaves it unchanged.
+`Ledger.from_receipts` rebuilds it. Each acceptance extends a hash chain, SHA-256 of the previous
+head, the contract and the manifest; `Ledger.follow` refuses a receipt that does not continue the
+chain it names.
 
 ## Patterns
 
-- **Functional core, imperative shell**: decisions are pure functions of immutable values; only
-  `deliver` performs I/O, through the store.
-- **Ports and adapters**: `Store` is the port; the DuckDB example is one adapter, a warehouse store
-  another.
+- **Functional core, imperative shell**: decisions are pure functions of immutable values; the
+  loader, outside the package, performs the I/O.
 - **Parse, don't validate**: a manifest becomes a typed delivery once, and exhaustive matching
   (`assert_never`) proves every kind is handled.
-- **Write, audit, publish**: candidate rows are staged and checked before visible rows change.
 - **Event sourcing**: receipts are the events, the ledger their projection.

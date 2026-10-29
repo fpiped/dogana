@@ -291,7 +291,7 @@ def _decode_field(value: object, annotation: object) -> object:
 @cache
 def _registry() -> Mapping[str, type[Wire]]:
     from .contract import Contract, Manifest, Shape
-    from .gate import Action, ApplyPlan, Check, CheckRequirement, Receipt, Transition
+    from .gate import Action, ApplyPlan, Check, Receipt, Transition
     from .ledger import Claims, Ledger, Region, RegionClaim
     from .planner import ExtractionRequest, Requirement
 
@@ -302,7 +302,6 @@ def _registry() -> Mapping[str, type[Wire]]:
         Action,
         ApplyPlan,
         Check,
-        CheckRequirement,
         Receipt,
         Transition,
         Claims,

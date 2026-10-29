@@ -164,6 +164,7 @@ def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage(
         ledger.apply(Manifest(c.table, "recent", at(19), window=(5, 15), since=at(18)))
 
 
+@pytest.mark.protocol("manifest.2", "transitions.6", "transitions.sequence")
 @pytest.mark.parametrize(
     "since,through,accepted", [(10, 12, True), (9, 12, True), (9, 10, True), (11, 12, False), (8, 9, False)]
 )
@@ -685,9 +686,9 @@ def test_keyless_append_preserves_or_replaces_an_issued_table_generation():
 
 
 def accepted_receipt(ledger, manifest):
-    from dogana import Check, Gate
+    from dogana import Gate
 
-    checks = tuple(Check(r.name, True) for r in Gate.requirements(ledger.contract, manifest))
+    checks = ()
     receipt = Gate.evaluate(ledger, manifest, checks, now=at(25))
     assert receipt.accepted
     return receipt
@@ -700,189 +701,8 @@ def receipt_chain():
     return c, first, second
 
 
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize("missing", [False, True])
-def test_reconciliation_of_a_fresh_store_needs_no_receipts(missing):
-    c = contract()
-    current = None if missing else Ledger(c)
-    for repair in (False, True):
-        assert Ledger.reconcile(c, (), current, None, repair=repair) == Ledger(c)
-
-
-@pytest.mark.protocol("store.recovery")
-def test_reconciliation_of_matching_evidence_does_not_require_repair():
-    c, first, second = receipt_chain()
-    for repair in (False, True):
-        assert Ledger.reconcile(
-            c, iter((first, second)), fold(first, second), second.publication_id, repair=repair
-        ) == fold(first, second)
-
-
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize("current_kind", ["missing", "initial", "behind"])
-def test_stamp_ahead_diagnosis_requires_repair_and_reconstructs_exactly_the_stamped_head(current_kind):
-    from dogana.errors import StampAhead
-
-    c, first, second = receipt_chain()
-    current = {"missing": None, "initial": Ledger(c), "behind": fold(first)}[current_kind]
-    with pytest.raises(StampAhead, match="ahead"):
-        Ledger.reconcile(c, (first, second), current, second.publication_id, repair=False)
-    assert Ledger.reconcile(c, (first, second), current, second.publication_id) == fold(first, second)
-
-
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize("stamp_kind", ["missing", "behind"])
-@pytest.mark.parametrize("missing_ledger", [False, True])
-def test_reconciliation_never_moves_the_rows_forward_to_a_later_receipt(stamp_kind, missing_ledger):
-    from dogana.errors import LedgerAhead
-
-    c, first, second = receipt_chain()
-    stamp = None if stamp_kind == "missing" else first.publication_id
-    for repair in (False, True):
-        with pytest.raises(LedgerAhead):
-            Ledger.reconcile(
-                c, (first, second), None if missing_ledger else fold(first, second), stamp, repair=repair
-            )
-
-
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize(
-    "problem", ["missing", "gap", "reordered", "duplicate", "foreign", "unrelated_stamp"]
-)
-def test_reconciliation_refuses_an_unprovable_stamp(problem):
-    from dogana.errors import StampAhead
-
-    c, first, second = receipt_chain()
-    other = contract("other")
-    foreign = accepted_receipt(Ledger(other), Manifest(other.table, "full", at(18)))
-    receipts = {
-        "missing": (),
-        "gap": (second,),
-        "reordered": (second, first),
-        "duplicate": (first, first),
-        "foreign": (foreign,),
-        "unrelated_stamp": (first, second),
-    }[problem]
-    stamp = "unrelated" if problem == "unrelated_stamp" else second.publication_id
-    for repair in (False, True):
-        with pytest.raises(StampAhead):
-            Ledger.reconcile(c, receipts, None, stamp, repair=repair)
-
-
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize("problem", ["unrelated_head", "wrong_evidence", "initial_with_evidence"])
-def test_reconciliation_refuses_current_evidence_that_does_not_belong_to_the_chain(problem):
-    from dataclasses import replace
-
-    from dogana.errors import StampAhead
-
-    c, first, second = receipt_chain()
-    current = {
-        "unrelated_head": replace(fold(first), publication_id="unrelated"),
-        "wrong_evidence": replace(fold(first, second), generation="invented"),
-        "initial_with_evidence": replace(fold(first), publication_id=None),
-    }[problem]
-    for repair in (False, True):
-        with pytest.raises(StampAhead):
-            Ledger.reconcile(c, (first, second), current, second.publication_id, repair=repair)
-
-
-@pytest.mark.protocol("store.recovery")
-def test_reconstruction_checks_historical_region_spellings_by_evidence():
-    from dataclasses import replace
-
-    from dogana import Receipt, Region
-
-    c = contract()
-    manifests = (
-        Manifest(c.table, "daily", at(18), window=(1, 9)),
-        Manifest(c.table, "daily", at(19), window=(5, 12)),
-    )
-    first = accepted_receipt(Ledger(c), manifests[0])
-    historical = (Region(1, 9, at(18), at(18)),)
-    first = replace(first, transition=replace(first.transition, regions=historical))
-    second = accepted_receipt(fold(first), manifests[1])
-    receipts = tuple(Receipt.from_json(receipt.to_json()) for receipt in (first, second))
-    expected = Ledger(c).apply(manifests[0]).apply(manifests[1])
-    assert Ledger.from_receipts(c, receipts) == expected
-    assert Ledger.reconcile(c, receipts, None, second.publication_id) == expected
-
-
-@pytest.mark.protocol("store.recovery")
-def test_a_store_verified_retained_head_certifies_a_consistent_read_without_loading_history():
-    c, first, second = receipt_chain()
-
-    def unavailable_history():
-        raise AssertionError("consistent reads must not load the receipt prefix")
-        yield first
-
-    assert Ledger.reconcile(
-        c,
-        unavailable_history(),
-        fold(first, second),
-        second.publication_id,
-        repair=False,
-        retained_head=second,
-    ) == fold(first, second)
-
-
-@pytest.mark.protocol("store.recovery")
-def test_a_lone_retained_head_cannot_replace_full_history_during_repair():
-    from dogana.errors import StampAhead
-
-    c, first, second = receipt_chain()
-    with pytest.raises(StampAhead, match="receipt chain"):
-        Ledger.reconcile(c, (second,), fold(first, second), second.publication_id, retained_head=second)
-    with pytest.raises(StampAhead, match="receipt chain"):
-        Ledger.reconcile(c, (second,), fold(first), second.publication_id, repair=False, retained_head=second)
-
-
-@pytest.mark.protocol("store.recovery")
-@pytest.mark.parametrize("problem", ["stale", "parent", "manifest", "evidence", "rejected"])
-def test_a_retained_head_must_match_the_rows_cached_ledger_and_its_own_hash(problem):
-    from dataclasses import replace
-
-    from dogana import Gate
-    from dogana.errors import StampAhead
-
-    c, first, second = receipt_chain()
-    head = {
-        "stale": first,
-        "parent": replace(second, base_publication_id="unrelated"),
-        "manifest": replace(second, manifest=replace(second.manifest, produced_at=at(20))),
-        "evidence": replace(
-            second, ledger_identity=replace(fold(first, second), generation="invented").identity
-        ),
-        "rejected": Gate.evaluate(fold(first, second), Manifest(c.table, "full", at(17)), now=at(25)),
-    }[problem]
-    with pytest.raises(StampAhead, match="retained accepted head"):
-        Ledger.reconcile(c, (), fold(first, second), second.publication_id, repair=False, retained_head=head)
-
-
-@pytest.mark.protocol("store.recovery")
-def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash():
-    from dataclasses import replace
-
-    c, first, second = receipt_chain()
-    evolved = replace(
-        c, shapes={name: replace(shape, cost=shape.cost + 1) for name, shape in c.shapes.items()}
-    )
-    current = fold(first, second).with_contract(evolved)
-    assert (
-        Ledger.reconcile(
-            evolved,
-            (),
-            current,
-            second.publication_id,
-            repair=False,
-            retained_head=second,
-        )
-        == current
-    )
-
-
 @pytest.mark.protocol("ledger.accounting")
 def test_apply_takes_a_manifest_and_says_where_rows_go():
     c = Contract("t", key=("id",), types={"id": "int"}, shapes={"full": Shape.full()})
-    with pytest.raises(TypeError, match="takes a Manifest, not list; rows reach a store"):
+    with pytest.raises(TypeError, match="takes a Manifest, not list: the ledger reasons about declarations"):
         Ledger(c).apply([{"id": 1}])
