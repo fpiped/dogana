@@ -14,6 +14,27 @@ from tests.integration.support import csv_file, row, sidecar
 from tests.support import SINCE, contract
 
 
+@pytest.mark.parametrize(
+    "low,high", [(datetime.min.replace(tzinfo=UTC), at(18)), (at(18), datetime.max.replace(tzinfo=UTC))]
+)
+def test_datetime_windows_at_domain_ends_replace_rows_and_preserve_old_publications(low, high):
+    from example_store import Rows
+
+    columns = {"id": "int", "day": "datetime", "value": "str"}
+    c = contract(columns=columns)
+    rows = [{"id": 1, "day": low, "value": "low"}, {"id": 2, "day": high, "value": "high"}]
+    with DuckDBStore(":memory:") as store:
+        first = store.deliver(c, Rows(rows, columns), c.manifest("full", at(18), rows=2), now=at(30))
+        replacement = [{**rows[0], "value": "replacement"}]
+        second = store.deliver(
+            c, Rows(replacement, columns), c.manifest("daily", at(19), window=(low, high), rows=1), now=at(30)
+        )
+        assert first.accepted and second.accepted, second.checks
+        assert store.read(c.table) == replacement
+        assert store.read(c.table, first.publication_id) == rows
+        assert store.read(c.table, second.publication_id) == replacement
+
+
 def test_repeated_full_exports_retain_unchanged_row_versions_and_exact_old_publications(tmp_path):
     c = contract()
     with DuckDBStore(":memory:") as store:

@@ -122,3 +122,83 @@ def test_reopening_after_an_interrupted_append_retains_one_publication_and_retry
         assert replayed.replayed and replayed.identity == retried.identity
         assert reopened.receipts(c.table) == (first, retried)
         assert reopened.read(c.table) == rows * 3
+
+
+@pytest.mark.parametrize("operation", ["references", "abort"])
+def test_a_rollback_interrupt_propagates_after_releasing_the_transaction_and_candidates(operation):
+    from example_store import Rows
+
+    from dogana import Gate, Group
+
+    c = contract()
+    manifest = c.manifest("full", at(18), rows=1)
+    with DuckDBStore(":memory:") as store:
+        candidate = store.hold(Rows([row(1)], COLUMNS), manifest, c)
+        store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+        connection = store.connection
+        fault = StatementFault(connection, fail_at=0, error_type=KeyboardInterrupt)
+        execute = fault.execute
+
+        def interrupt(sql, *args):
+            return execute(sql, *args) if sql == "ROLLBACK" else connection.execute(sql, *args)
+
+        fault.execute = interrupt
+        store.connection = fault
+        try:
+            with pytest.raises(KeyboardInterrupt, match="interrupted before statement 0"):
+                if operation == "references":
+                    store.check_references(Group((c,)), {c.table: candidate})
+                else:
+                    store._open((candidate,))
+                    store.abort(candidate)
+            assert fault.fired
+            assert fault.statements == ["ROLLBACK", "ROLLBACK"]
+        finally:
+            store.connection = connection
+
+        assert store._transaction is None
+        if operation == "references":
+            store.abort(candidate)
+        assert not store._candidates
+        assert store.receipts() == ()
+
+
+def test_two_failed_rollbacks_keep_the_transaction_unresolved_and_protected():
+    import duckdb
+    from example_store import Rows
+
+    from dogana import Gate
+
+    class FailedRollback:
+        def __init__(self, connection):
+            self.connection = connection
+            self.attempts = 0
+
+        def execute(self, sql, *args):
+            if sql == "ROLLBACK":
+                self.attempts += 1
+                raise duckdb.TransactionException("rollback storage failure")
+            return self.connection.execute(sql, *args)
+
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        manifest = c.manifest("full", at(18), rows=1)
+        candidate = store.hold(Rows([row(1)], COLUMNS), manifest, c)
+        store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+        store._open((candidate,))
+        connection = store.connection
+        fault = FailedRollback(connection)
+        store.connection = fault
+        try:
+            with pytest.raises(StoreError, match="rollback storage failure") as error:
+                store.abort(candidate)
+            assert isinstance(error.value.__cause__, duckdb.TransactionException)
+            assert fault.attempts == 2
+            assert store._transaction == (candidate,)
+            assert candidate in store._candidates
+            with pytest.raises(StoreError, match="before reading a publication"):
+                store.load_ledger(c)
+        finally:
+            store.connection = connection
+            store.abort(candidate)
+        assert store._transaction is None and not store._candidates

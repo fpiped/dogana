@@ -60,6 +60,19 @@ def test_a_store_that_cannot_publish_together_refuses_before_reading_any_source(
     assert store.receipts() == ()
 
 
+def test_each_file_drop_uses_its_exact_group_contract_before_reading_files():
+    from dataclasses import replace
+
+    with DuckDBStore(":memory:") as store:
+        changed = replace(ORDERS, shapes={"full": replace(FULL, cost=999)})
+        drop = FileDrop(store, changed, columns=COLUMNS)
+        with pytest.raises(
+            InvalidContract, match="each drop's contract must be its table's contract in the group"
+        ):
+            ingest_together(GROUP, [(drop, "missing.csv")], now=at(20))
+        assert store.receipts() == ()
+
+
 def test_a_delivery_together_carries_one_source_per_table():
     with DuckDBStore(":memory:") as store, pytest.raises(InvalidContract, match="one source per table"):
         deliver_together(store, GROUP, {"orders": full(ORDERS, [order(1)])}, at(20))

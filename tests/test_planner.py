@@ -289,6 +289,36 @@ def test_equal_cost_shapes_are_chosen_by_name():
     assert plan_delivery(Ledger(c), Requirement(c.table, at(18))).shape == "a"
 
 
+@pytest.mark.parametrize(
+    "shape,window,message",
+    [
+        ("daily", None, "a window shape needs a window or window_size"),
+        ("full", (1, 2), "only window shapes can extract a window"),
+    ],
+)
+def test_extraction_requests_require_window_bounds_only_for_window_shapes(shape, window, message):
+    c = contract(shapes={"full": FULL, "daily": replace(WINDOW, window_size=None)})
+    with pytest.raises(PlanningError, match=message):
+        next_extraction(Ledger(c), shape, at(19), window=window)
+
+
+def test_planning_refuses_a_requirement_for_another_table():
+    with pytest.raises(PlanningError, match="requirement table differs from contract"):
+        plan_delivery(Ledger(contract()), Requirement("other", at(19)))
+
+
+def test_group_planning_refuses_evidence_at_the_last_datetime():
+    from datetime import UTC, datetime
+
+    from dogana import Group, plan_together
+
+    c = contract(shapes={"full": FULL})
+    ledger = Ledger(c).apply(Manifest(c.table, "full", datetime.max.replace(tzinfo=UTC)))
+    with pytest.raises(PlanningError, match="the shared boundary exceeds the datetime range"):
+        other = contract("other", shapes={"full": FULL})
+        plan_together(Group((c, other)), {c.table: ledger, other.table: Ledger(other)}, at(19))
+
+
 @pytest.mark.protocol("claims.4")
 def test_an_unrepresentable_later_read_is_refused_without_overflow():
     c = contract(shapes={"full": FULL, "since": SINCE})

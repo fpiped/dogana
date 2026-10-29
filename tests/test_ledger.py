@@ -164,6 +164,77 @@ def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage(
         ledger.apply(Manifest(c.table, "recent", at(19), window=(5, 15), since=at(18)))
 
 
+@pytest.mark.parametrize(
+    "since,through,accepted", [(10, 12, True), (9, 12, True), (9, 10, True), (11, 12, False), (8, 9, False)]
+)
+def test_sequence_reads_continue_at_or_before_the_held_position_without_gaps_or_rewinds(
+    since, through, accepted
+):
+    from dogana import Checkpoint
+
+    c = Contract(
+        "moves",
+        ("id",),
+        {"full": FULL, "changes": Shape.feed(checkpoint=Checkpoint.SEQUENCE)},
+        types={"id": "int", "deleted": "bool"},
+        deleted_column="deleted",
+    )
+    ledger = full(c, generation=10)
+    manifest = Manifest(c.table, "changes", at(19), since=since, generation=through)
+    if accepted:
+        after = ledger.apply(manifest)
+        assert after.generation == through
+        assert after.claims(at(19), limit=timedelta.max).exact_as_of == at(19)
+    else:
+        with pytest.raises(RejectedDelivery, match="sequence_chain: a sequence read must continue"):
+            ledger.apply(manifest)
+
+
+@pytest.mark.parametrize("problem", ["time", "sequence", "since", "append", "gap"])
+def test_refused_deliveries_name_the_exact_guard_and_delivery_context(problem):
+    from dogana import Checkpoint
+
+    if problem == "sequence":
+        c = Contract(
+            "moves",
+            ("id",),
+            {"full": FULL, "changes": Shape.feed(checkpoint=Checkpoint.SEQUENCE)},
+            types={"id": "int", "deleted": "bool"},
+            deleted_column="deleted",
+        )
+        ledger = full(c, generation=10)
+        manifest = Manifest(c.table, "changes", at(19), since=11, generation=12)
+        detail = (
+            "sequence_chain: a sequence read must continue the table's position without a gap; "
+            "request a complete delivery"
+        )
+    elif problem == "append":
+        c = Contract("events", (), {"log": SINCE}, start_at=at(1))
+        ledger = Ledger(c).apply(Manifest(c.table, "log", at(18), since=at(1)))
+        manifest = Manifest(c.table, "log", at(20), since=at(17))
+        detail = "append_contiguous: append-only intervals must be contiguous without overlap"
+    else:
+        c = contract(shapes={"full": FULL, "since": SINCE})
+        ledger = full(c)
+        if problem == "time":
+            manifest = Manifest(c.table, "full", at(18))
+            detail = "monotone_time: delivery time must be later than every affected region"
+        else:
+            manifest = Manifest(c.table, "since", at(20), since=at(21) if problem == "since" else at(19))
+            detail = (
+                "since_before_boundary: since is after the source read boundary"
+                if problem == "since"
+                else "no_gap_after_base: timestamp checkpoint leaves a gap after the base"
+            )
+    with pytest.raises(RejectedDelivery) as error:
+        ledger.apply(manifest)
+    assert str(error.value) == (
+        f"table={manifest.table!r} shape={manifest.shape!r} "
+        f"produced_at={manifest.produced_at.isoformat()} since={manifest.since} "
+        f"window={manifest.window!r}: {detail}"
+    )
+
+
 @pytest.mark.protocol("transitions.generation-tombstones-exact")
 def test_a_change_feed_with_tombstones_keeps_a_clean_base_complete():
     c = contract(shapes={"full": FULL, "feed": FEED})
@@ -462,6 +533,101 @@ def test_dataclass_replacement_preserves_cuts_unless_regions_are_explicitly_repl
         "generation",
         "publication_id",
     }
+
+
+@pytest.mark.parametrize(
+    "dates,message",
+    [
+        (
+            dict(complete_as_of=at(18), deletions_as_of=at(19)),
+            "deletion evidence cannot be newer than completeness",
+        ),
+        (dict(complete_as_of=at(18)), "region dates must be present or absent together"),
+        (dict(deletions_as_of=at(18)), "region dates must be present or absent together"),
+    ],
+)
+def test_region_evidence_requires_both_dates_in_completeness_order(dates, message):
+    from dogana import Region
+
+    with pytest.raises(InvalidContract) as error:
+        Region(**dates)
+    assert str(error.value) == message
+
+
+def test_known_evidence_normalizes_both_dates_to_utc():
+    from datetime import timezone
+
+    from dogana.ledger import Known
+
+    local = at(18).astimezone(timezone(timedelta(hours=2)))
+    known = Known(local, local - timedelta(hours=1))
+    assert known.complete_as_of == at(18) and known.complete_as_of.tzinfo is UTC
+    assert known.deletions_as_of == at(17, 23) and known.deletions_as_of.tzinfo is UTC
+    assert not hasattr(known, "COMPLETE_AS_OF")
+
+
+@pytest.mark.parametrize("limit", [-timedelta(microseconds=1), None, 1])
+def test_region_states_refuse_invalid_age_limits(limit):
+    from dogana import Region
+
+    with pytest.raises(InvalidContract, match="the age limit must be a nonnegative duration"):
+        Region().state(at(18), limit=limit)
+
+
+@pytest.mark.parametrize("ends", [(1, 3), (3, 1), (1, None)])
+def test_ledger_regions_must_partition_the_entire_domain_without_gaps_or_overlaps(ends):
+    from dogana import Region
+
+    left, right = ends
+    regions = (Region(high=left), Region(low=right)) if right is not None else (Region(high=left),)
+    with pytest.raises(InvalidContract) as error:
+        Ledger(contract(shapes={"full": FULL}), regions)
+    assert str(error.value) == "ledger regions must partition the entire ordered domain"
+
+
+def test_adjacent_regions_with_equal_evidence_coalesce():
+    from dogana import Region
+
+    c = contract(shapes={"full": FULL})
+    regions = (
+        Region(high=2, high_open=True, complete_as_of=at(18), deletions_as_of=at(18)),
+        Region(low=2, complete_as_of=at(18), deletions_as_of=at(18)),
+    )
+    assert Ledger(c, regions).regions == (Region(complete_as_of=at(18), deletions_as_of=at(18)),)
+
+
+def test_claims_require_at_least_one_region():
+    with pytest.raises(InvalidContract) as error:
+        Claims(())
+    assert str(error.value) == "claims need at least one region"
+
+
+def test_ledger_regions_must_share_one_scalar_domain():
+    from dogana import Region
+
+    with pytest.raises(InvalidContract) as error:
+        Ledger(contract(shapes={"full": FULL}), (Region(high=1), Region(low="a")))
+    assert str(error.value) == "ledger regions must share one scalar domain"
+
+
+@pytest.mark.parametrize("field", ["generation", "publication_id"])
+def test_ledger_positions_and_publication_identities_cannot_be_empty(field):
+    with pytest.raises(InvalidContract, match="generation and publication identities must be nonempty"):
+        Ledger(contract(), **{field: ""})
+
+
+def test_window_queries_follow_the_window_domain_and_do_not_borrow_the_key_type():
+    from dogana import Region
+
+    c = Contract("moves", ("XXXX",), {"full": FULL}, types={"XXXX": "int"})
+    assert Ledger(c).covered(("a", "z")) == (Region("a", "z\x00", high_open=True),)
+    ledger = Ledger(
+        c, (Region(high=2, high_open=True), Region(low=2, complete_as_of=at(18), deletions_as_of=at(18)))
+    )
+    with pytest.raises(InvalidContract, match="window bound types differ from the ledger domain"):
+        ledger.covered(("a", "z"))
+    with pytest.raises(InvalidContract, match="window bound types differ from the contract types"):
+        Ledger(contract()).covered(("a", "z"))
 
 
 @pytest.mark.protocol("contract.domains")

@@ -48,6 +48,29 @@ def _delivery(path: Path, contract: Contract) -> Manifest:
     return manifest
 
 
+def test_unresolvable_delivery_paths_use_the_public_contract_error(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError("unresolvable")
+
+    with DuckDBStore(":memory:") as store:
+        drop = FileDrop(store, _contract(), columns=COLUMNS)
+        monkeypatch.setattr(Path, "resolve", fail)
+        with pytest.raises(InvalidContract, match="delivery path cannot be resolved") as error:
+            drop.ingest(tmp_path / "data.csv", now=BOUNDARY)
+        assert isinstance(error.value.__cause__, OSError)
+
+
+def test_a_plain_file_needs_a_sidecar_or_a_filename_pattern(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("id\n1\n")
+    with DuckDBStore(":memory:") as store:
+        with pytest.raises(
+            InvalidContract, match="delivery needs a sidecar manifest or a declared filename pattern"
+        ):
+            FileDrop(store, _contract(), columns=COLUMNS).ingest(path, now=BOUNDARY)
+        assert store.receipts() == ()
+
+
 @pytest.mark.parametrize(
     "document",
     [b'\xff{"table":"files"}', b"{", b"[" * 2000 + b"0" + b"]" * 2000],

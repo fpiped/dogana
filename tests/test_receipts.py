@@ -24,6 +24,85 @@ def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     assert Ledger.from_receipts(c, ()) == Ledger(c)
 
 
+@pytest.mark.parametrize(
+    "problem,message",
+    [
+        ("missing_transition", "only accepted receipts contain a transition"),
+        ("rejected_transition", "only accepted receipts contain a transition"),
+        ("failed_check", "accepted receipts require passing checks"),
+        ("future", "accepted receipts cannot attest a future source boundary"),
+        ("rejected_parent", "rejected receipts retain their base publication"),
+    ],
+)
+def test_decoded_receipts_keep_their_outcome_checks_clock_and_parent_consistent(problem, message):
+    from dogana import InvalidContract, Receipt
+
+    first = publication(Ledger(contract()), 18)
+    document = first.to_dict()
+    if problem == "missing_transition":
+        document["transition"] = None
+    elif problem == "rejected_transition":
+        document["outcome"] = "rejected"
+    elif problem == "failed_check":
+        document["checks"][0]["passed"] = False
+    elif problem == "future":
+        document["received_at"] = {"$datetime": at(17).isoformat()}
+    else:
+        document.update(outcome="rejected", transition=None)
+    with pytest.raises(InvalidContract, match=message):
+        Receipt.from_dict(document)
+
+
+@pytest.mark.parametrize(
+    "problem,message",
+    [
+        ("parent", "accepted receipt has a different parent publication"),
+        ("evidence", "accepted receipt breaks publication chain or ledger evidence"),
+    ],
+)
+def test_following_a_forged_receipt_names_the_broken_parent_or_evidence(problem, message):
+    c = contract()
+    first = publication(Ledger(c), 18)
+    receipt = (
+        replace(first, base_publication_id="another")
+        if problem == "parent"
+        else replace(first, ledger_identity="forged")
+    )
+    with pytest.raises(InconsistentPublication) as error:
+        Ledger(c).follow(receipt)
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize(
+    "problem,message",
+    [
+        ("missing_stamp", "ledger ahead of missing publication stamp"),
+        ("old_stamp", "accepted evidence is ahead of the publication stamp"),
+        ("unmatched_stamp", "publication stamp has no matching accepted receipt"),
+        ("evidence", "current ledger evidence differs from its accepted history"),
+    ],
+)
+def test_reconciliation_names_the_exact_disagreement_between_stamp_history_and_evidence(problem, message):
+    from dogana import LedgerAhead, StampAhead
+
+    c = contract()
+    first = publication(Ledger(c), 18)
+    second = publication(fold(first), 19)
+    current = fold(first, second)
+    stamp = current.publication_id
+    if problem == "missing_stamp":
+        stamp = None
+    elif problem == "old_stamp":
+        stamp = first.publication_id
+    elif problem == "unmatched_stamp":
+        stamp = "unmatched"
+    else:
+        current = replace(current, generation="forged")
+    with pytest.raises((LedgerAhead, StampAhead)) as error:
+        Ledger.reconcile(c, (first, second), current, stamp)
+    assert str(error.value) == message
+
+
 @pytest.mark.protocol("checks.receipt-size", "store.recovery")
 @pytest.mark.parametrize("problem", ["missing", "reordered", "duplicate", "foreign", "evidence"])
 def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):

@@ -24,6 +24,55 @@ def test_a_fixed_feed_shape_and_counted_csv_need_only_a_source_date_in_the_filen
         assert store.read(c.table) == [row(1, 19, "line one\nline two"), row(2, 19)]
 
 
+@pytest.mark.parametrize(
+    "data,message",
+    [
+        (b"id,deleted\n1,false,extra\n", "a record has 3 fields"),
+        (b"id,deleted\n1,maybe\n", "deleted must be true or false"),
+        (b"id,deleted\n1,\xff\n", "not UTF-8 CSV"),
+        (b'id,deleted\n1,"unclosed', "not UTF-8 CSV"),
+    ],
+)
+def test_csv_count_derivation_refuses_malformed_rows_markers_and_encoding(tmp_path, data, message):
+    from example_store._sources import _count_rows
+
+    path = tmp_path / "bad.csv"
+    path.write_bytes(data)
+    with pytest.raises(InvalidContract, match=message):
+        _count_rows(path, "deleted")
+
+
+@pytest.mark.parametrize(
+    "contents,message",
+    [
+        ("corrupt", "not a readable Parquet file"),
+        ("1::INTEGER", "must be a BOOLEAN column"),
+        ("NULL::BOOLEAN", "must be true or false"),
+    ],
+)
+def test_parquet_count_derivation_refuses_corrupt_files_and_invalid_deleted_columns(
+    tmp_path, contents, message
+):
+    import duckdb
+    from example_store._sources import _count_rows
+
+    path = tmp_path / "bad.parquet"
+    if contents == "corrupt":
+        path.write_bytes(b"not parquet")
+    else:
+        with duckdb.connect() as connection:
+            connection.execute(f"COPY (SELECT {contents} AS deleted) TO ? (FORMAT PARQUET)", [str(path)])
+    with pytest.raises(InvalidContract, match=message):
+        _count_rows(path, "deleted")
+
+
+def test_count_derivation_requires_a_csv_or_parquet_extension(tmp_path):
+    from example_store._sources import _count_rows
+
+    with pytest.raises(InvalidContract, match="row counting supports CSV and Parquet files"):
+        _count_rows(tmp_path / "data.txt")
+
+
 def test_a_header_only_feed_counts_zero_rows(tmp_path):
     c = contract(shapes={"full": FULL})
     path = csv_file(tmp_path, "2026-10-18.csv", [])
@@ -60,6 +109,80 @@ def test_explicit_bounds_and_count_override_derivation_without_reading_a_file():
     manifest = pattern.manifest("2026-10-19_2026-10-01_2026-10-19_7.csv", c)
     assert manifest.rows == 7
     assert manifest.window == (at(1).date(), at(19).date())
+
+
+@pytest.mark.parametrize(
+    "options,message",
+    [
+        (dict(expression=r"(?P<shape>full)"), "needs a produced_at group"),
+        (dict(expression=r"(?P<produced_at>.*)", shape=3), "fixed shape must be a nonempty name"),
+        (
+            dict(expression=r"(?P<produced_at>.*)", shape="full", timezone="UTC"),
+            "timezone must be a tzinfo value",
+        ),
+    ],
+)
+def test_filename_patterns_require_a_source_date_a_named_shape_and_a_timezone_value(options, message):
+    with pytest.raises(InvalidContract, match=message):
+        FilePattern(**options)
+
+
+@pytest.mark.parametrize(
+    "expression,filename,shape,message",
+    [
+        (r"(?P<produced_at>2026).*", "wrong.csv", "full", "filename does not match"),
+        (
+            r"(?P<shape>full)?(?P<produced_at>2026-10-18).csv",
+            "2026-10-18.csv",
+            None,
+            "filename supplies no shape",
+        ),
+        (
+            r"(?P<produced_at>2026-10-18)(?:_(?P<low>.*))?_(?P<high>x).csv",
+            "2026-10-18_x.csv",
+            "daily",
+            "filename needs both window bounds",
+        ),
+        (
+            r"(?P<produced_at>2026-10-18)_(?P<low>x)(?:_(?P<high>.*))?.csv",
+            "2026-10-18_x.csv",
+            "daily",
+            "filename needs both window bounds",
+        ),
+        (
+            r"(?P<produced_at>2026-10-18)_(?P<low>bad)_(?P<high>bad).csv",
+            "2026-10-18_bad_bad.csv",
+            "daily",
+            "not an ISO 8601 date",
+        ),
+    ],
+)
+def test_filenames_must_supply_the_declared_shape_and_valid_window_bounds(
+    expression, filename, shape, message
+):
+    with pytest.raises(InvalidContract, match=message):
+        FilePattern(expression, shape=shape, timezone=UTC).manifest(filename, contract())
+
+
+@pytest.mark.parametrize("kind,low,high", [("int", "12", "34"), ("str", "east", "west")])
+def test_filename_window_bounds_use_the_contract_scalar_type(kind, low, high):
+    from tests.support import accounting_contract
+
+    c = accounting_contract(window_type=kind)
+    pattern = FilePattern(
+        r"(?P<produced_at>[^_]+)_(?P<low>[^_]+)_(?P<high>[^_]+)_(?P<rows>0).csv", shape="daily", timezone=UTC
+    )
+    manifest = pattern.manifest(f"2026-10-18_{low}_{high}_0.csv", c)
+    assert manifest.window == ((int(low), int(high)) if kind == "int" else (low, high))
+
+
+@pytest.mark.parametrize(
+    "columns,message",
+    [({**COLUMNS, "id": "str"}, "bound column types"), ({**COLUMNS, "extra": "str"}, "schema_hash")],
+)
+def test_file_drop_columns_match_the_bound_types_and_published_schema(columns, message):
+    with DuckDBStore(":memory:") as store, pytest.raises(InvalidContract, match=message):
+        FileDrop(store, contract(), columns=columns)
 
 
 def test_a_feed_without_any_shape_declaration_is_refused():

@@ -32,6 +32,8 @@ Issues = "https://github.com/fpiped/dogana/issues"
 [dependency-groups]
 dev = [
   "pytest>=8",
+  "coverage>=7",
+  "pyarrow>=14",
   "mypy>=1.11",
   "hypothesis>=6",
   "hypothesis-jsonschema>=0.23.2",
@@ -62,3 +64,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/dogana", "examples/duckdb/example_store"]
+
+[tool.coverage.report]
+fail_under = 97
+exclude_also = ["assert_never", "if TYPE_CHECKING:"]

@@ -205,6 +205,46 @@ def test_check_refuses_a_manifest_without_a_hash_and_a_missing_file(files, capsy
     assert f"{data}: no such file" in capsys.readouterr().err
 
 
+def test_claims_require_a_window_column_before_parsing_window_bounds(tmp_path, capsys):
+    c = contract(shapes={"full": Shape.full()}, window_column=None, types={"id": "int"}, deleted_column=None)
+    path = tmp_path / "ledger.json"
+    path.write_text(Ledger(c).to_json())
+    assert main(["claims", str(path), "--window", "1", "2"]) == 2
+    assert "table orders has no window column" in capsys.readouterr().err
+
+
+def test_full_table_claims_label_all_rows(tmp_path, capsys):
+    path = tmp_path / "ledger.json"
+    path.write_text(Ledger(contract()).to_json())
+    assert main(["claims", str(path), "--at", BOUNDARY]) == 0
+    assert capsys.readouterr().out.startswith("orders all rows: unknown;")
+
+
+@pytest.mark.parametrize(
+    "region,span",
+    [
+        (dict(low=1, high=5, low_open=True, high_open=True), "[2, 4]"),
+        (dict(low="a", high="z", low_open=True, high_open=True), "(a, z)"),
+    ],
+)
+def test_claim_labels_close_discrete_integer_bounds_and_preserve_open_string_bounds(region, span):
+    from dogana import Region
+    from dogana.cli import _span
+
+    assert _span(Region(**region)) == span
+
+
+def test_window_manifests_without_a_duration_require_explicit_bounds(files, capsys):
+    tmp_path, data = files
+    c = contract(shapes={"daily": Shape.window()}, types={"id": "int", "day": "date"}, deleted_column=None)
+    (tmp_path / "orders.contract.json").write_text(c.to_json())
+    assert (
+        run(tmp_path, "manifest", str(data), "--shape", "daily", "--produced-at", BOUNDARY, "--rows", "2")
+        == 2
+    )
+    assert "needs --window LOW HIGH" in capsys.readouterr().err
+
+
 def test_claims_prints_each_region_and_the_instant_the_table_is_exact_at(tmp_path, capsys):
     c = contract()
     manifest = c.manifest(

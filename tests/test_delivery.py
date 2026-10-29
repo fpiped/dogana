@@ -43,6 +43,25 @@ def test_a_protocol_refusal_persists_one_attempt_without_a_publication(monkeypat
     assert store.read(c.table) == [row(1)]
 
 
+def test_abort_failure_after_an_uncommitted_delivery_is_the_cleanup_error_cause(monkeypatch):
+    store = MemoryStore()
+    c, first = seed(store)
+    cleanup = StoreError("abort failed")
+
+    def fail(*args):
+        raise InvalidContract("bad rows")
+
+    def abort(candidate):
+        raise cleanup
+
+    monkeypatch.setattr(store, "check", fail)
+    monkeypatch.setattr(store, "abort", abort)
+    with pytest.raises(StoreError, match="candidate cleanup failed") as error:
+        deliver(store, c, [row(2)], replace(first.manifest, produced_at=at(19)), at(20))
+    assert error.value.__cause__ is cleanup
+    assert store.receipts() == (first,)
+
+
 @pytest.mark.protocol("store.4", "checks.errors")
 @pytest.mark.parametrize("operation", ["hold", "check", "_publication_point", "publish"])
 @pytest.mark.parametrize("error", [OSError("disk"), ValueError("bug"), TypeError("bug"), StoreError("store")])
@@ -134,3 +153,141 @@ def test_delivery_failures_share_one_error_root_and_serialization_is_a_declarati
         assert issubclass(error, DoganaError)
     assert issubclass(SerializationError, InvalidContract)
     assert issubclass(InconsistentPublication, StoreError)
+
+
+@pytest.fixture
+def grouped_delivery():
+    from example_store import DuckDBStore
+
+    from dogana import Group
+
+    contracts = (contract("one"), contract("two"))
+    group = Group(contracts)
+    deliveries = {c.table: ([row(1)], c.manifest("full", at(18), rows=1)) for c in contracts}
+    with DuckDBStore(":memory:") as store:
+        yield store, group, deliveries
+
+
+@pytest.mark.parametrize("failure_mode", ["partial", "committed", "race_cleanup"])
+def test_failed_group_publication_recovers_only_a_complete_commit_with_successful_cleanup(
+    grouped_delivery, monkeypatch, failure_mode
+):
+    from dogana import deliver_together
+
+    store, group, deliveries = grouped_delivery
+    publish = store.publish_together
+    abort = store.abort
+    load = store.load_ledger
+    loaded = []
+    attempted = {}
+    partial_reads = []
+    cleanup = StoreError("abort failed")
+
+    def fail(group, entries):
+        attempted.update({receipt.contract.table: receipt for _, receipt in entries})
+        if failure_mode == "partial":
+            receipt = entries[0][1]
+
+            def partial(identity):
+                partial_reads.append(identity)
+                return receipt if identity == receipt.manifest.identity else None
+
+            monkeypatch.setattr(store, "accepted_receipt", partial)
+        else:
+            if failure_mode == "race_cleanup":
+                entries = tuple(
+                    (candidate, replace(receipt, source="another writer")) for candidate, receipt in entries
+                )
+            publish(group, entries)
+        raise StoreError("lost acknowledgement")
+
+    def read(c):
+        loaded.append(c.table)
+        return load(c)
+
+    def cleanup_failure(candidate):
+        abort(candidate)
+        raise cleanup
+
+    monkeypatch.setattr(store, "publish_together", fail)
+    monkeypatch.setattr(store, "load_ledger", read)
+    if failure_mode == "race_cleanup":
+        monkeypatch.setattr(store, "abort", cleanup_failure)
+    if failure_mode == "committed":
+        result = deliver_together(store, group, deliveries, at(20))
+        assert result == attempted
+        assert loaded.count("one") >= 2 and loaded.count("two") >= 2
+        for c in group.contracts:
+            assert store.load_ledger(c).identity == result[c.table].ledger_identity
+    else:
+        error_type = InconsistentPublication if failure_mode == "partial" else StoreError
+        message = (
+            "committed only some of its tables" if failure_mode == "partial" else "candidate cleanup failed"
+        )
+        with pytest.raises(error_type, match=message) as error:
+            deliver_together(store, group, deliveries, at(20))
+        if failure_mode == "race_cleanup":
+            assert error.value.__cause__ is cleanup
+        else:
+            assert partial_reads == [deliveries[t][1].identity for t in group.tables] * 2
+    assert not store._candidates
+
+
+def test_group_cleanup_attempts_every_candidate_and_reports_the_last_failure(grouped_delivery, monkeypatch):
+    from dogana import deliver_together
+
+    store, group, deliveries = grouped_delivery
+    attempted = []
+    failures = [StoreError("first abort"), StoreError("last abort")]
+    abort = store.abort
+
+    def fail(*args):
+        raise StoreError("publication failed")
+
+    def abort_failure(candidate):
+        abort(candidate)
+        attempted.append(candidate)
+        raise failures[len(attempted) - 1]
+
+    monkeypatch.setattr(store, "publish_together", fail)
+    monkeypatch.setattr(store, "abort", abort_failure)
+    with pytest.raises(StoreError, match="candidate cleanup failed") as error:
+        deliver_together(store, group, deliveries, at(20))
+    assert len(attempted) == 2
+    assert error.value.__cause__ is failures[-1]
+    assert not store._candidates
+
+
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_a_group_preflight_refusal_does_not_hold_that_source_and_refuses_every_member(
+    grouped_delivery, monkeypatch, abort_fails
+):
+    from dogana import deliver_together
+
+    store, group, deliveries = grouped_delivery
+    source, manifest = deliveries["two"]
+    deliveries["two"] = (source, replace(manifest, produced_at=at(21)))
+    held = []
+    hold, abort = store.hold, store.abort
+    cleanup = StoreError("abort failed")
+
+    def record(source, manifest, c):
+        held.append(c.table)
+        return hold(source, manifest, c)
+
+    def fail(candidate):
+        abort(candidate)
+        raise cleanup
+
+    monkeypatch.setattr(store, "hold", record)
+    if abort_fails:
+        monkeypatch.setattr(store, "abort", fail)
+        with pytest.raises(StoreError, match="candidate cleanup failed") as error:
+            deliver_together(store, group, deliveries, at(20))
+        assert error.value.__cause__ is cleanup
+    else:
+        receipts = deliver_together(store, group, deliveries, at(20))
+        assert all(not receipt.accepted for receipt in receipts.values())
+    assert held == ["one"]
+    assert len(store.receipts()) == 2
+    assert not store._candidates

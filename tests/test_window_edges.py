@@ -97,6 +97,27 @@ def test_first_string_partition_delivery_leaves_no_unknown_region_below_the_empt
     assert ledger.regions[0].complete_as_of == at(19)
 
 
+@pytest.mark.parametrize("endpoint", ["low", "high"])
+def test_unbounded_region_endpoints_cannot_be_open(endpoint):
+    from dogana import InvalidContract
+
+    with pytest.raises(InvalidContract, match="unbounded endpoints cannot be open"):
+        Region(**{f"{endpoint}_open": True})
+
+
+def test_singleton_strings_do_not_intersect_their_successor():
+    assert Region("a", "a").intersection(Region("a\x00", "a\x00")) is None
+    assert Region("a", "a").touches(Region("a\x00", "a\x00"))
+
+
+def test_intersecting_a_known_region_preserves_its_evidence():
+    left = Region(1, 5, at(19), at(18))
+    part = left.intersection(Region(2, 6, at(20), at(20)))
+    assert part is not None
+    assert (part.low, part.high, part.high_open) == (2, 6, True)
+    assert (part.complete_as_of, part.deletions_as_of) == (at(19), at(18))
+
+
 @pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "region",

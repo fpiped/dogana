@@ -217,3 +217,44 @@ def test_a_commit_failure_before_publication_leaves_no_receipt_or_rows(monkeypat
     assert store.receipts(c.table) == (first,)
     assert store.read(c.table) == [row(1)]
     assert not store.candidates
+
+
+@pytest.mark.parametrize(
+    "scenario,message",
+    [
+        (
+            StampedLedgerConformance.test_stamp_ahead_refuses_until_receipts_repair_the_lost_ledger,
+            "store does not expose both stamped-ledger operations",
+        ),
+        (
+            TogetherConformance.test_a_group_publishes_every_table_at_one_instant,
+            "store does not publish tables together",
+        ),
+    ],
+)
+def test_optional_conformance_scenarios_skip_stores_without_the_required_operations(
+    monkeypatch, scenario, message
+):
+    factory = MinimalMemoryFactory(MemoryStore, monkeypatch)
+    suite = StampedLedgerConformance() if "stamp" in scenario.__name__ else TogetherConformance()
+    with pytest.raises(pytest.skip.Exception, match=message):
+        scenario(suite, factory, factory.make_store())
+
+
+class ReopeningMemoryFactory(MinimalMemoryFactory):
+    def reopen(self, store):
+        return SimpleNamespace(**vars(store))
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        StoreConformance.test_a_publication_survives_reopening_its_storage,
+        StoreConformance.test_two_stores_on_one_storage_publish_only_one_candidate,
+    ],
+)
+def test_durable_conformance_scenarios_accept_an_adapter_without_close(monkeypatch, scenario):
+    factory = ReopeningMemoryFactory(MemoryStore, monkeypatch)
+    store = factory.make_store()
+    assert not hasattr(store, "close")
+    scenario(StoreConformance(), factory, store)

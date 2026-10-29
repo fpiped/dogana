@@ -5,7 +5,7 @@ pytest.importorskip("duckdb")
 from example_store import DuckDBStore
 from example_store._sources import _FileSource
 
-from dogana import Ledger, Manifest
+from dogana import Gate, Ledger, Manifest
 from dogana.errors import LedgerAhead, StampAhead
 from tests.integration.support import csv_file, row, sidecar
 from tests.support import COLUMNS, at, contract, fold
@@ -48,6 +48,26 @@ def test_rows_and_stamp_ahead_of_the_ledger_refuse_until_receipts_restore_eviden
         assert store.load_ledger(c) == repaired
         assert store.read(c.table) == [row(1)]
         assert len(store.receipts()) == 1
+
+
+@pytest.mark.parametrize("shape", ["since", "full"])
+def test_a_candidate_cannot_reuse_accepted_history_ahead_of_the_rows_stamp(tmp_path, shape):
+    from example_store import Rows
+
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        path = csv_file(tmp_path, "base.csv", [row(1)])
+        first = store.deliver(c, _FileSource(path, COLUMNS), sidecar(path, c, "full", 18, 1), now=at(30))
+        second = store.deliver(c, Rows([row(2)], COLUMNS), c.manifest("full", at(19), rows=1), now=at(30))
+        store.connection.execute("UPDATE __dogana_publications SET publication_id=?", [first.publication_id])
+        manifest = second.manifest if shape == "full" else c.manifest("since", at(20), since=at(19), rows=1)
+        candidate = store.hold(Rows([row(3)], COLUMNS), manifest, c)
+        try:
+            with pytest.raises(LedgerAhead):
+                store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+        finally:
+            store.abort(candidate)
+        assert store.receipts(c.table) == (first, second)
 
 
 def test_rows_replaced_behind_the_gate_refuse_until_a_new_complete_full_delivery(tmp_path):

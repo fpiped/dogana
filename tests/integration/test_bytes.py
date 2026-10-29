@@ -1,6 +1,7 @@
 """What the store publishes is what the sender hashed and counted: one read, one grammar."""
 
 from dataclasses import replace
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -219,6 +220,137 @@ def test_a_csv_decimal_is_read_exactly_or_refused(tmp_path, value, accepted):
         assert not accepted or store.read("t") == [{"id": 1, "amount": Decimal(value)}]
 
 
+@pytest.mark.parametrize(
+    "columns,message",
+    [
+        ({}, "nonempty mapping"),
+        ([], "nonempty mapping"),
+        ({"id": "int", "ID": "int"}, "distinct ignoring case"),
+    ],
+)
+def test_explicit_source_columns_are_nonempty_mappings_with_distinct_names(columns, message):
+    from example_store import Rows
+
+    with pytest.raises(InvalidContract, match=message):
+        Rows([], columns)
+
+
+def test_row_sources_have_no_delivered_bytes_to_digest_or_match_a_content_hash():
+    from example_store import Rows
+
+    source = Rows([{"id": 1, "v": "a"}], COLUMNS)
+    with DuckDBStore(":memory:") as store:
+        assert store.digest(source) is None
+        manifest = Manifest("t", "full", at(18), rows=1, schema_hash=C.schema_hash, content_hash="a" * 64)
+        receipt = deliver(store, C, source, manifest, at(19))
+        check = next(c for c in receipt.checks if c.name == "content_hash")
+        assert not check.passed and check.detail == "the source has no delivered bytes to hash"
+        assert store.receipts() == (receipt,)
+
+
+@pytest.mark.parametrize(
+    "source,message",
+    [
+        (object(), "source must be a path"),
+        ([1], "source rows must be mappings"),
+        ([{"id": 1}, {"id": 2, "v": "a"}], "each source row must have the same columns"),
+        ([{"id": 1, "v": object()}], "unsupported value"),
+        ([{"id": 1, "v": datetime(2026, 1, 1)}], "unsupported value"),
+        ([{"id": 1, "v": "a"}, {"id": 2, "v": 2}], "inconsistent types"),
+        ([], "empty or all-null row columns"),
+        ([{"id": 1, "v": None}], "empty or all-null row columns"),
+    ],
+)
+def test_invalid_row_sources_are_recorded_as_rejections(source, message):
+    manifest = Manifest("t", "full", at(18), schema_hash=C.schema_hash)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, C, source, manifest, at(19))
+        assert not receipt.accepted
+        assert any(message in check.detail for check in receipt.checks if not check.passed)
+        assert store.receipts() == (receipt,)
+        assert not store._candidates
+
+
+def test_explicit_row_types_refuse_inconsistent_values():
+    from example_store import Rows
+
+    with DuckDBStore(":memory:") as store:
+        manifest = Manifest("t", "full", at(18), schema_hash=C.schema_hash)
+        receipt = deliver(store, C, Rows([{"id": "one", "v": "a"}], COLUMNS), manifest, at(19))
+        assert not receipt.accepted
+        assert any("inconsistent types" in check.detail for check in receipt.checks)
+
+
+@pytest.mark.parametrize("rows", [[], [{"id": 1, "v": None}]])
+def test_explicit_types_allow_empty_or_all_null_columns(rows):
+    from example_store import Rows
+
+    with DuckDBStore(":memory:") as store:
+        manifest = Manifest("t", "full", at(18), rows=len(rows), schema_hash=C.schema_hash)
+        assert deliver(store, C, Rows(rows, COLUMNS), manifest, at(19)).accepted
+        assert store.read("t") == rows
+
+
+def test_inferred_float_columns_accept_later_integers():
+    columns = {"id": "int", "v": "float"}
+    c = replace(C, schema_hash=schema_hash(columns))
+    with DuckDBStore(":memory:") as store:
+        manifest = Manifest("t", "full", at(18), rows=2, schema_hash=c.schema_hash)
+        assert deliver(store, c, [{"id": 1, "v": 1.5}, {"id": 2, "v": 2}], manifest, at(19)).accepted
+        assert published(store) == [(1, 1.5), (2, 2.0)]
+        assert store.connection.execute("DESCRIBE t").fetchall()[1][1] == "DOUBLE"
+
+
+def test_row_batches_flush_before_the_last_partial_batch():
+    rows = [{"id": i, "v": str(i)} for i in range(1001)]
+    from types import SimpleNamespace
+
+    with DuckDBStore(":memory:") as store:
+        connection = store.connection
+        sizes = []
+
+        def insert(sql, batch):
+            sizes.append(len(batch))
+            return connection.executemany(sql, batch)
+
+        store.connection = SimpleNamespace(execute=connection.execute, executemany=insert)
+        try:
+            manifest = Manifest("t", "full", at(18), rows=len(rows), schema_hash=C.schema_hash)
+            assert deliver(store, C, iter(rows), manifest, at(19)).accepted
+        finally:
+            store.connection = connection
+        assert sizes == [1000, 1]
+        assert store.read("t") == rows
+
+
+def test_bound_column_schema_errors_without_a_schema_hash_are_recorded_as_rejections():
+    c = replace(C, schema_hash=None)
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, c, [{"id": "one", "v": "a"}], Manifest("t", "full", at(18)), at(19))
+        assert not receipt.accepted
+        assert any(
+            "source columns differ from the contract's bound column types" in check.detail
+            for check in receipt.checks
+            if not check.passed
+        )
+        assert store.receipts() == (receipt,)
+
+
+def test_arrow_tables_publish_their_rows_and_schema_then_unregister_the_input():
+    pa = pytest.importorskip("pyarrow")
+    with DuckDBStore(":memory:") as store:
+        manifest = Manifest("t", "full", at(18), rows=1, schema_hash=C.schema_hash)
+        assert deliver(store, C, pa.table({"id": [1], "v": ["a"]}), manifest, at(19)).accepted
+        assert published(store) == [(1, "a")]
+        assert [(r[0], r[1]) for r in store.connection.execute("DESCRIBE t").fetchall()] == [
+            ("id", "BIGINT"),
+            ("v", "VARCHAR"),
+        ]
+        assert not store.connection.execute(
+            "SELECT view_name FROM duckdb_views() WHERE view_name LIKE '%_input'"
+        ).fetchall()
+
+
 def test_rows_carry_decimals_into_a_declared_decimal_column():
     from decimal import Decimal
 
@@ -241,6 +373,57 @@ def test_an_empty_poll_with_typed_rows_is_a_delivery():
         assert deliver(store, contract, Rows([], COLUMNS), full, at(19)).accepted
         poll = Manifest("t", "changes", at(19), since=at(18), rows=0, schema_hash=C.schema_hash)
         assert deliver(store, contract, Rows([], COLUMNS), poll, at(19)).accepted
+
+
+def test_the_fallback_file_opener_refuses_a_swapped_file_and_closes_its_descriptor(tmp_path, monkeypatch):
+    import os
+
+    from example_store import _sources
+
+    path = tmp_path / "data.csv"
+    path.write_text("id,v\n1,a\n")
+    opened = []
+    original = os.open
+
+    def swap(*args, **kwargs):
+        descriptor = original(*args, **kwargs)
+        opened.append(descriptor)
+        path.rename(tmp_path / "original.csv")
+        path.write_text("id,v\n2,b\n")
+        return descriptor
+
+    monkeypatch.setattr(_sources, "_BENEATH", False)
+    monkeypatch.setattr(os, "open", swap)
+    with pytest.raises(InvalidContract, match="the delivered file changed while it was opened"):
+        _sources._open(path, tmp_path)
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+def test_a_file_below_two_directories_is_opened_relative_to_its_root(tmp_path):
+    from example_store import _sources
+
+    if not _sources._BENEATH:
+        pytest.skip("descriptor-relative traversal is unavailable")
+    folder = tmp_path / "one" / "two"
+    folder.mkdir(parents=True)
+    path = folder / "data.csv"
+    path.write_text("id,v\n1,a\n")
+    declare(path, 1)
+    with DuckDBStore(":memory:") as store:
+        assert FileDrop(store, C, columns=COLUMNS, root=tmp_path).ingest(path, now=at(19)).accepted
+        assert published(store) == [(1, "a")]
+
+
+def test_unsupported_file_extensions_are_recorded_as_rejections(tmp_path):
+    path = tmp_path / "data.txt"
+    path.write_text("id,v\n1,a\n")
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, C, path, declare(path, 1), at(19))
+        assert not receipt.accepted
+        assert any("only CSV and Parquet paths" in check.detail for check in receipt.checks)
+        assert store.receipts() == (receipt,)
 
 
 def test_a_folder_swapped_for_a_link_after_the_root_check_is_refused_not_read(tmp_path, monkeypatch):

@@ -14,6 +14,7 @@ from dogana import (
     Manifest,
     Shape,
 )
+from dogana.contract import bounds
 from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
 
 
@@ -226,6 +227,35 @@ def test_history_compatibility_binds_only_table_key_window_and_their_types():
         ),
     ):
         assert not original.compatible_with(incompatible)
+
+
+@pytest.mark.parametrize(
+    "build,message",
+    [
+        (lambda: bounds((1.0, 2.0)), "window bounds must be"),
+        (lambda: replace(FULL, cost=-1), "cost must be finite and nonnegative"),
+        (lambda: replace(WINDOW, window_size=timedelta(0)), "positive window_size"),
+        (lambda: replace(WINDOW, window_size=-timedelta(days=1)), "positive window_size"),
+        (lambda: replace(FULL, window_size=timedelta(days=1)), "positive window_size"),
+        (lambda: contract(start_at=at(1)), "start_at belongs to append-only history"),
+    ],
+)
+def test_declarations_refuse_unsupported_bounds_costs_sizes_and_history_starts(build, message):
+    with pytest.raises(InvalidContract, match=message):
+        build()
+
+
+@pytest.mark.parametrize(
+    "shape,kind,message",
+    [
+        (replace(WINDOW, window_size=None), "date", "needs a date or datetime domain"),
+        (WINDOW, "int", "needs a date or datetime domain"),
+        (replace(WINDOW, window_size=timedelta(hours=1)), "date", "must contain whole days"),
+    ],
+)
+def test_derived_windows_require_a_duration_in_a_compatible_calendar_domain(shape, kind, message):
+    with pytest.raises(InvalidContract, match=message):
+        shape.window_ending_at(at(18), kind)
 
 
 @pytest.mark.parametrize(

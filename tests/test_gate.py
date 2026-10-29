@@ -75,6 +75,35 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
 
 @pytest.mark.protocol("checks.plans")
 @pytest.mark.parametrize(
+    "key,column,actions,message",
+    [
+        (("id", "id"), None, (), "duplicate plan key column"),
+        (("id",), None, (("replace_window", (1, 2)),), "window actions need a window column"),
+        ((), None, (("upsert", None),), "key actions need a key"),
+        ((), None, (("tombstone", None),), "key actions need a key"),
+    ],
+)
+def test_apply_plans_require_distinct_keys_and_the_columns_their_actions_use(key, column, actions, message):
+    from dogana import Action, ApplyPlan
+
+    with pytest.raises(InvalidContract, match=message):
+        ApplyPlan("moves", key, column, tuple(Action(operation, window) for operation, window in actions))
+
+
+@pytest.mark.parametrize("kind", ["requirement", "check", "transition"])
+def test_checks_need_names_and_transitions_need_evidence(kind):
+    from dogana import ApplyPlan, CheckRequirement, Transition
+
+    with pytest.raises(InvalidContract, match="needs"):
+        if kind == "requirement":
+            CheckRequirement("")
+        elif kind == "check":
+            Check("", True)
+        else:
+            Transition(ApplyPlan("moves", ("id",), None, ()), ())
+
+
+@pytest.mark.parametrize(
     "shape,kwargs,operations",
     [
         ("full", {}, [Operation.REPLACE_ALL]),

@@ -35,6 +35,29 @@ def test_a_delivered_path_never_expands_to_other_files(tmp_path, name):
         assert not store._candidates
 
 
+@pytest.mark.parametrize("stage", ["connect", "initialize"])
+def test_storage_open_and_initialization_failures_use_the_public_store_error(monkeypatch, stage):
+    import duckdb
+
+    failure = duckdb.IOException("storage unavailable")
+    connection = duckdb.connect()
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    if stage == "connect":
+        monkeypatch.setattr(duckdb, "connect", fail)
+    else:
+        monkeypatch.setattr(duckdb, "connect", lambda *args, **kwargs: connection)
+        monkeypatch.setattr(DuckDBStore, "_initialize", fail)
+    try:
+        with pytest.raises(StoreError, match="storage unavailable") as error:
+            DuckDBStore(":memory:")
+        assert error.value.__cause__ is failure
+    finally:
+        connection.close()
+
+
 def test_an_existing_table_without_a_publication_is_refused(tmp_path):
     path, c = tmp_path / "landing.duckdb", contract()
     with DuckDBStore(path) as store:
@@ -165,6 +188,29 @@ def test_each_rejection_attempt_is_retained_even_with_an_identical_receiver_time
         assert not third.accepted
 
 
+@pytest.mark.parametrize(
+    "lookup,message",
+    [
+        ("head", "accepted head receipt differs from its retained publication"),
+        ("identity", "a stored receipt answers for another delivery"),
+    ],
+)
+def test_retained_receipt_documents_must_match_their_indexed_publication(tmp_path, lookup, message):
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        first = publish(store, tmp_path, [row(1)])
+        corrupted = replace(first, manifest=replace(first.manifest, produced_at=at(17)))
+        store.connection.execute(
+            "UPDATE __dogana_receipts SET document=? WHERE receipt_id=?",
+            [corrupted.to_json(), first.identity],
+        )
+        with pytest.raises(InconsistentPublication, match=message):
+            if lookup == "head":
+                store.load_ledger(c)
+            else:
+                store.accepted_receipt(first.manifest.identity)
+
+
 @pytest.mark.parametrize("older", [False, True])
 def test_lost_accepted_receipts_are_never_replaced_by_replay(tmp_path, older):
     c = contract()
@@ -182,6 +228,25 @@ def test_lost_accepted_receipts_are_never_replaced_by_replay(tmp_path, older):
             with pytest.raises(InconsistentPublication, match="receipt missing"):
                 operation()
         assert len(store.receipts()) == int(older)
+
+
+def test_changed_ledger_evidence_cannot_authorize_a_candidate_under_an_unchanged_stamp(tmp_path):
+    c = contract()
+    with DuckDBStore(":memory:") as store:
+        first = publish(store, tmp_path, [row(1)])
+        manifest = c.manifest("full", at(19), rows=1)
+        candidate = store.hold(Rows([row(2)], COLUMNS), manifest, c)
+        checks = store.check(candidate, c, manifest, Gate.requirements(c, manifest))
+        receipt = Gate.evaluate(fold(first), manifest, checks, now=at(20))
+        altered = replace(fold(first), generation="changed")
+        store.connection.execute("UPDATE __dogana_ledgers SET document=?", [altered.to_json()])
+        try:
+            with pytest.raises(StoreError, match="ledger changed after the candidate was checked"):
+                store.publish(candidate, receipt)
+        finally:
+            store.abort(candidate)
+        assert store.read(c.table) == [row(1)]
+        assert store.publication_stamp(c.table) == first.publication_id
 
 
 @pytest.mark.parametrize("rebase", [False, True])
@@ -394,6 +459,50 @@ def test_candidate_payload_renames_and_retypes_fail_the_external_schema_hash(inc
         assert not next(check for check in receipt.checks if check.name == "schema_hash").passed
         assert store.read_publication(c) == (original, fold(first))
         assert store.receipts(c.table) == (first, receipt)
+
+
+@pytest.mark.parametrize("missing", ["destination", "history"])
+def test_recorded_publications_require_their_destination_and_schema_history(tmp_path, missing):
+    with DuckDBStore(":memory:") as store:
+        first = publish(store, tmp_path, [row(1)])
+        if missing == "destination":
+            store.connection.execute('DROP TABLE "moves"')
+        else:
+            history = store.connection.execute("SELECT history_table FROM __dogana_commits").fetchone()[0]
+            store.connection.execute(f'DROP TABLE "{history}"')
+            store.connection.execute(f'DROP TABLE IF EXISTS "__dogana_version_{first.publication_id}"')
+        message = (
+            "published table is missing from its recorded schema"
+            if missing == "destination"
+            else "recorded publication schema is missing"
+        )
+        with pytest.raises(StoreError, match=message):
+            publish(store, tmp_path, [row(2)], day=19)
+        assert not store._candidates
+
+
+@pytest.mark.parametrize("hashed", [False, True])
+@pytest.mark.parametrize("matching", [False, True])
+def test_destination_schema_authorization_compares_unrecorded_column_order_and_types(hashed, matching):
+    c = contract(shapes={"full": FULL})
+    if not hashed:
+        c = replace(c, schema_hash=None)
+    with DuckDBStore(":memory:") as store:
+        store.connection.execute(
+            f"CREATE TABLE moves(id {'BIGINT' if matching else 'VARCHAR'}, day DATE, value VARCHAR)"
+        )
+        manifest = c.manifest("full", at(18), rows=1)
+        candidate = store.hold(Rows([row(1)], COLUMNS), manifest, c)
+        try:
+            if matching:
+                store._assert_destination_schema(c, candidate)
+            else:
+                with pytest.raises(
+                    StoreError, match="published column order or types differ from the recorded schema"
+                ):
+                    store._assert_destination_schema(c, candidate)
+        finally:
+            store.abort(candidate)
 
 
 @pytest.mark.parametrize("shape", ["full", "since"])
@@ -620,6 +729,25 @@ def test_schema_evolution_removes_replaced_rows_before_converting_survivors():
         assert receipt.accepted
         assert store.read_publication(changed) == ([{"id": 1, "value": 7}], fold(published, receipt))
         assert store.read(original.table, published.publication_id) == [{"id": 1, "value": "old"}]
+
+
+@pytest.mark.parametrize("logical", ["[1,2]", "{'name': 'nested'}"])
+def test_nested_parquet_columns_are_rejected_as_unsupported_logical_types(tmp_path, logical):
+    import duckdb
+
+    c = contract(shapes={"full": FULL})
+    path = tmp_path / "nested.parquet"
+    with duckdb.connect() as writer:
+        writer.execute(
+            f"COPY (SELECT 1 AS id, DATE '2026-10-18' AS day, {logical} AS value) TO ? (FORMAT PARQUET)",
+            [str(path)],
+        )
+    with DuckDBStore(":memory:") as store:
+        receipt = deliver(store, c, path, c.manifest("full", at(18), rows=1), at(20))
+        assert not receipt.accepted
+        check = next(check for check in receipt.checks if check.name == "schema_hash")
+        assert not check.passed and "unsupported" in check.detail
+        assert store.receipts() == (receipt,)
 
 
 def test_nested_arrow_values_fail_schema_checks_as_a_rejected_delivery():

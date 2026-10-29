@@ -184,6 +184,55 @@ def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_key
     assert Contract.from_json(c.to_json()) == c
 
 
+def test_utc_normalization_refuses_an_offset_that_underflows_the_datetime_range():
+    from datetime import datetime, timedelta, timezone
+
+    from dogana.wire import utc
+
+    with pytest.raises(InvalidContract, match="timestamp is outside the UTC datetime range"):
+        utc(datetime.min.replace(tzinfo=timezone(timedelta(hours=1))))
+
+
+@pytest.mark.parametrize(
+    "value,message", [((), "unsupported JSON value: tuple"), ({1: "a"}, "mapping keys must be strings")]
+)
+def test_canonical_json_refuses_values_outside_its_json_domain(value, message):
+    from dogana.wire import canonical_json
+
+    with pytest.raises(SerializationError, match=message):
+        canonical_json(value)
+
+
+def test_canonical_json_refuses_recursive_containers():
+    from dogana.wire import canonical_json
+
+    value = []
+    value.append(value)
+    with pytest.raises(SerializationError, match="JSON containers are recursive or too deeply nested"):
+        canonical_json(value)
+
+
+@pytest.mark.parametrize(
+    "value,message",
+    [
+        ({1: "a"}, "mapping keys must be strings"),
+        (float("inf"), "numbers must be finite"),
+        (float("nan"), "numbers must be finite"),
+        (object(), "unsupported value type: object"),
+    ],
+)
+def test_wire_encoding_refuses_invalid_mapping_keys_numbers_and_objects(value, message):
+    from dogana.wire import _encode
+
+    with pytest.raises(SerializationError, match=message):
+        _encode(value, identity=False)
+
+
+def test_wire_decoding_refuses_non_string_python_mapping_keys():
+    with pytest.raises(SerializationError, match="mapping keys must be strings"):
+        Contract.from_dict({1: "a"})
+
+
 @pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("change", [{"table": 1}, {"generation": True}, {"schema_hash": 4}, {"rows": True}])
 def test_manifest_wire_types_are_checked_before_any_accounting(change):
