@@ -9,3 +9,5 @@ dist/
 .mypy_cache/
 .hypothesis/
 site/
+.coverage
+.coverage.*

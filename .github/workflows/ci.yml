@@ -13,14 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.11", "3.13"]
+        python: ["3.11", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
       - run: uv venv && uv pip install -e . -e examples/duckdb --group dev
-      - run: .venv/bin/coverage run -m pytest -q && .venv/bin/coverage report
+      # The coverage floor is measured once, where sys.monitoring makes tracing nearly free.
+      - if: matrix.python == '3.14'
+        run: COVERAGE_CORE=sysmon .venv/bin/coverage run -m pytest -q && .venv/bin/coverage report
+      - if: matrix.python != '3.14'
+        run: .venv/bin/python -m pytest -q
       - run: .venv/bin/python scripts/traceability.py --strict
       - run: uvx ruff check . && uvx ruff format --check .
       - run: .venv/bin/python -m mypy --strict src examples/duckdb scripts/traceability.py
