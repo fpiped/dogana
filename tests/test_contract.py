@@ -12,10 +12,11 @@ from dogana import (
     Deletions,
     InvalidContract,
     Manifest,
+    Part,
     Shape,
 )
 from dogana.contract import bounds
-from tests.support import FEED, FULL, SINCE, WINDOW, at, contract
+from tests.support import FEED, FULL, SINCE, WINDOW, at, contract, part_of, revised
 
 
 @pytest.mark.protocol("contract.shapes", "contract.shapes.1", "contract.shapes.2")
@@ -92,7 +93,7 @@ def test_a_contract_copies_mutable_input_and_freezes_its_public_declarations():
 @pytest.mark.protocol("transitions.1")
 def test_a_manifest_for_an_unadmitted_source_shape_is_refused_before_rows_are_read():
     with pytest.raises(InvalidContract, match="admits no shape"):
-        Manifest("moves", "surprise", at(18)).check(contract())
+        Manifest.single("moves", "surprise", at(18)).check(contract())
 
 
 @pytest.mark.protocol("transitions.1")
@@ -109,26 +110,26 @@ def test_a_full_export_manifest_cannot_contradict_its_contract(kwargs):
     fields = {"table": "moves", "shape": "full", "produced_at": at(18)}
     fields.update(kwargs)
     with pytest.raises(InvalidContract):
-        Manifest(**fields).check(contract())
+        Manifest.single(**fields).check(contract())
 
 
 @pytest.mark.protocol("manifest.1", "contract.domains")
 @pytest.mark.parametrize("window", [None, (30, 1), (1, "2"), (True, False)])
 def test_window_manifests_need_ordered_bounds_of_one_type(window):
     with pytest.raises(InvalidContract):
-        Manifest("moves", "daily", at(18), window=window).check(contract())
+        Manifest.single("moves", "daily", at(18), window=window).check(contract())
 
 
 @pytest.mark.protocol("trust-model.4")
 def test_source_read_boundaries_must_include_a_timezone():
     with pytest.raises(InvalidContract, match="timezone-aware"):
-        Manifest("stock", "full", datetime(2026, 10, 18))
+        Manifest.single("stock", "full", datetime(2026, 10, 18))
 
 
 @pytest.mark.protocol("manifest.1")
 def test_generation_feeds_must_issue_the_cursor_the_next_read_will_use():
     with pytest.raises(InvalidContract, match="generation tokens"):
-        Manifest("moves", "feed", at(19), since="g1").check(contract())
+        Manifest.single("moves", "feed", at(19), since="g1").check(contract())
 
 
 @pytest.mark.protocol("contract.keyless-tables")
@@ -258,6 +259,15 @@ def test_derived_windows_require_a_duration_in_a_compatible_calendar_domain(shap
         shape.window_ending_at(at(18), kind)
 
 
+@pytest.mark.protocol("manifest.7")
+def test_a_snapshot_token_is_a_nonempty_string_that_changes_the_manifests_identity():
+    plain = Manifest.single("stock", "full", at(18))
+    named = Manifest.single("stock", "full", at(18), snapshot="txn-42")
+    assert named.snapshot == "txn-42" and named.identity != plain.identity
+    with pytest.raises(InvalidContract, match="nonempty"):
+        Manifest.single("stock", "full", at(18), snapshot="")
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -276,11 +286,27 @@ def test_contract_constructor_rejects_invalid_types_before_normalization(field, 
         replace(contract(), **{field: value})
 
 
+@pytest.mark.protocol("manifest.declaration")
+@pytest.mark.parametrize(
+    "parts",
+    [
+        {},
+        {1: Part(shape="full")},
+        {"": Part(shape="full")},
+        {"stock": "full"},
+        {"stock": None},
+        [("stock", Part(shape="full"))],
+    ],
+)
+def test_a_manifest_rejects_invalid_parts_without_needing_a_contract(parts):
+    with pytest.raises(InvalidContract):
+        Manifest(at(18), parts)
+
+
 @pytest.mark.protocol("manifest.6")
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("table", 1),
         ("shape", []),
         ("shape", ""),
         ("rows", "2"),
@@ -305,9 +331,9 @@ def test_contract_constructor_rejects_invalid_types_before_normalization(field, 
         ("content_hash", "0" * 63),
     ],
 )
-def test_manifest_constructor_rejects_invalid_types_without_needing_a_contract(field, value):
+def test_a_part_rejects_invalid_types_without_needing_a_contract(field, value):
     with pytest.raises(InvalidContract):
-        replace(Manifest("stock", "full", at(18)), **{field: value})
+        replace(Part(shape="full"), **{field: value})
 
 
 def test_list_inputs_are_copied_into_immutable_typed_values():
@@ -315,7 +341,7 @@ def test_list_inputs_are_copied_into_immutable_typed_values():
     types = {"id": "int"}
     c = Contract("stock", key, {"full": FULL}, types=types)
     window = [1, 2]
-    m = Manifest("stock", "daily", at(18), window=window)
+    m = Manifest.single("stock", "daily", at(18), window=window)
     key.clear()
     types.clear()
     window.append(3)
@@ -323,23 +349,32 @@ def test_list_inputs_are_copied_into_immutable_typed_values():
     assert c.types == {"id": "int"}
     with pytest.raises(TypeError):
         c.types["id"] = "str"
-    assert m.window == (1, 2)
+    assert part_of(m).window == (1, 2)
     assert hash(c) == hash(Contract.from_json(c.to_json()))
     assert hash(m) == hash(Manifest.from_json(m.to_json()))
+
+
+@pytest.mark.protocol("manifest.declaration", "versioned-json.4")
+def test_the_order_of_a_reads_parts_changes_neither_equality_nor_hash_nor_identity():
+    part = Part(shape="full")
+    read = Manifest(at(18), {"orders": part, "order_lines": part})
+    reordered = Manifest(at(18), {"order_lines": part, "orders": part})
+    assert read == reordered and hash(read) == hash(reordered) and read.identity == reordered.identity
+    assert len({read, reordered}) == 1 and read.tables != reordered.tables
 
 
 @pytest.mark.protocol("manifest.3")
 def test_window_deliveries_cannot_issue_a_table_wide_generation():
     with pytest.raises(InvalidContract, match="table generation"):
-        Manifest("moves", "daily", at(18), window=(at(17).date(), at(18).date()), generation="g1").check(
-            contract()
-        )
+        Manifest.single(
+            "moves", "daily", at(18), window=(at(17).date(), at(18).date()), generation="g1"
+        ).check(contract())
 
 
 @pytest.mark.protocol("manifest.6")
 def test_corrected_content_changes_manifest_identity():
-    original = Manifest("stock", "full", at(18), rows=2, content_hash="1" * 64)
-    corrected = replace(original, content_hash="2" * 64)
+    original = Manifest.single("stock", "full", at(18), rows=2, content_hash="1" * 64)
+    corrected = revised(original, content_hash="2" * 64)
     assert original.identity != corrected.identity
     assert Manifest.from_json(corrected.to_json()) == corrected
 
@@ -381,7 +416,7 @@ def test_lone_surrogates_cannot_enter_window_or_key_domains(value):
     from dogana.contract import bounds
 
     for build in (
-        lambda: Manifest("stock", "daily", at(18), window=(value, value)),
+        lambda: Manifest.single("stock", "daily", at(18), window=(value, value)),
         lambda: Region(value, None),
         lambda: bounds((value, value)),
     ):
@@ -405,8 +440,8 @@ def test_each_keyed_delivery_pattern_parses_its_required_fields_once(shape, kwar
     m = c.manifest(shape, at(18), **kwargs)
     parsed = m.check(c)
     assert type(parsed).__name__ == kind
-    assert parsed.manifest == m and parsed.shape == c.shape(shape)
-    assert m.table == c.table and m.schema_hash == c.schema_hash
+    assert parsed.manifest == m and parsed.part == m.part(c.table) and parsed.shape == c.shape(shape)
+    assert m.tables == (c.table,) and parsed.part.schema_hash == c.schema_hash
 
 
 @pytest.mark.protocol("contract.keyless-tables")
@@ -446,7 +481,11 @@ def test_optional_declaration_fields_require_keywords():
     with pytest.raises(TypeError):
         Contract("stock", ("id",), {"full": FULL}, None)
     with pytest.raises(TypeError):
-        Manifest("stock", "full", at(18), None)
+        Manifest.single("stock", "full", at(18), None)
+    with pytest.raises(TypeError):
+        Manifest(at(18), {"stock": Part(shape="full")}, None)
+    with pytest.raises(TypeError):
+        Part("full")
 
 
 @pytest.mark.protocol("contract.types")
@@ -469,14 +508,14 @@ def test_one_type_covers_a_column_shared_by_key_window_and_cursor():
         types={"at": "datetime"},
     )
     assert c.types == {"at": "datetime"}
-    assert c.manifest("daily", at(18), window=(at(17), at(18))).schema_hash is None
+    assert part_of(c.manifest("daily", at(18), window=(at(17), at(18)))).schema_hash is None
 
 
 @pytest.mark.protocol("contract.column-hash")
 @pytest.mark.parametrize("digest", [None, "", "opaque:data-contract:v2"])
 def test_manifest_construction_carries_the_optional_opaque_data_contract_hash(digest):
     c = Contract("stock", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=digest)
-    assert c.manifest("full", at(18)).schema_hash == digest
+    assert part_of(c.manifest("full", at(18))).schema_hash == digest
     assert Contract.from_json(c.to_json()) == c
 
 
@@ -518,7 +557,8 @@ def test_a_deleted_column_exists_exactly_for_tombstone_shapes_and_has_its_own_bo
 @pytest.mark.protocol("manifest.4")
 def test_only_tombstone_shapes_count_tombstones_and_an_empty_interval_has_none():
     c = contract()
-    assert c.manifest("feed", at(19), since="g0", generation="g1", rows=1, tombstones=2).tombstones == 2
+    counted = c.manifest("feed", at(19), since="g0", generation="g1", rows=1, tombstones=2)
+    assert part_of(counted).tombstones == 2
     with pytest.raises(InvalidContract, match="only tombstone shapes"):
         c.manifest("since", at(19), since=at(18), tombstones=1)
     with pytest.raises(InvalidContract, match="empty interval"):

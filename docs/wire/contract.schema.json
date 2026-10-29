@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:Contract",
+  "$id": "urn:dogana:wire:5:Contract",
   "title": "Contract",
   "type": "object",
   "properties": {
@@ -9,15 +9,15 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "table": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
     },
     "key": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+        "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
       },
       "uniqueItems": true
     },
@@ -25,16 +25,16 @@
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
-        "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+        "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
       },
       "additionalProperties": {
-        "$ref": "urn:dogana:wire:4:Shape"
+        "$ref": "urn:dogana:wire:5:Shape"
       }
     },
     "window_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -44,7 +44,7 @@
     "start_at": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
+          "$ref": "urn:dogana:wire:5:types#/$defs/datetime"
         },
         {
           "type": "null"
@@ -54,7 +54,7 @@
     "cursor_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
         },
         {
           "type": "null"
@@ -64,7 +64,7 @@
     "types": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+        "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
       },
       "additionalProperties": {
         "enum": [
@@ -80,7 +80,7 @@
     "schema_hash": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/text"
+          "$ref": "urn:dogana:wire:5:types#/$defs/text"
         },
         {
           "type": "null"
@@ -90,7 +90,7 @@
     "deleted_column": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+          "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
         },
         {
           "type": "null"

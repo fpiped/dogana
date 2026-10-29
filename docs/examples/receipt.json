@@ -6,21 +6,21 @@
       "kind":"Check",
       "name":"manifest",
       "passed":true,
-      "version":4
+      "version":5
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"receiver_time",
       "passed":true,
-      "version":4
+      "version":5
     },
     {
       "detail":"",
       "kind":"Check",
       "name":"transition",
       "passed":true,
-      "version":4
+      "version":5
     }
   ],
   "contract":{
@@ -40,7 +40,7 @@
         "deletions":"absence",
         "kind":"Shape",
         "lookback":null,
-        "version":4,
+        "version":5,
         "window_size":null
       }
     },
@@ -49,29 +49,36 @@
     "types":{
       "id":"int"
     },
-    "version":4,
+    "version":5,
     "window_column":null
   },
   "kind":"Receipt",
-  "ledger_identity":"a47cab9c2c742ea3839bafb02c581f9342d77433273f4cddd67c238857346cd5",
+  "ledger_identity":"fca4032d7b05e82c3863db1fa0643c2e9921687370d59c61dce94eb4165fc3e1",
   "manifest":{
-    "content_hash":null,
-    "generation":null,
     "kind":"Manifest",
+    "parts":{
+      "stock":{
+        "content_hash":null,
+        "generation":null,
+        "kind":"Part",
+        "rows":2,
+        "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
+        "shape":"full",
+        "since":null,
+        "tombstones":0,
+        "version":5,
+        "window":null
+      }
+    },
     "produced_at":{
       "$datetime":"2026-10-18T00:00:00+00:00"
     },
-    "rows":2,
-    "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
-    "shape":"full",
-    "since":null,
-    "table":"stock",
-    "tombstones":0,
-    "version":4,
-    "window":null
+    "snapshot":null,
+    "version":5
   },
   "outcome":"accepted",
-  "publication_id":"e10f4991b1e3c187800944a7d107cf6b2c8f02641ba397ff94db153d7b11e06d",
+  "publication_id":"c6336f44f6d8760249ce6d937e9d2eb37b64b85f73e41ad5a1ccbfb19c178eae",
+  "read_identity":"b277afc4f94fdbf0fa3be174f2375c6692134b6c3ee17cc21540e3263dd0d1b8",
   "received_at":{
     "$datetime":"2026-10-18T01:00:00+00:00"
   },
@@ -83,7 +90,7 @@
         {
           "kind":"Action",
           "operation":"replace_all",
-          "version":4,
+          "version":5,
           "window":null
         }
       ],
@@ -92,7 +99,7 @@
       ],
       "kind":"ApplyPlan",
       "table":"stock",
-      "version":4,
+      "version":5,
       "window_column":null
     },
     "regions":[
@@ -108,10 +115,10 @@
         "kind":"Region",
         "low":null,
         "low_open":false,
-        "version":4
+        "version":5
       }
     ],
-    "version":4
+    "version":5
   },
-  "version":4
+  "version":5
 }

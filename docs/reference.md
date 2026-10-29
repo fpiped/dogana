@@ -72,7 +72,7 @@ states; the [quick start](quickstart.md) is one on SQLite.
 
 <!-- illustration: loader pseudocode; load_ledger, check_rows, execute and save are the loader's own -->
 ```python
-earlier = accepted_receipt(manifest.identity)  # a replay answers with it and reads nothing
+earlier = accepted_receipt(manifest.identity, contract.table)  # a replay answers with it, reading nothing
 ledger = load_ledger(contract)
 checks = Gate.preflight(ledger, manifest, now=now)
 outcomes = check_rows(staged, contract, manifest) if all(c.passed for c in checks) else ()

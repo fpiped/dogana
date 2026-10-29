@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -47,6 +48,18 @@ def schema_hash(columns):
     return sha256(
         json.dumps(list(columns.items()), ensure_ascii=True, separators=(",", ":")).encode("ascii")
     ).hexdigest()
+
+
+def part_of(manifest):
+    """The one part of a one-table manifest."""
+    (part,) = manifest.parts.values()
+    return part
+
+
+def revised(manifest, **changes):
+    """A one-table manifest with fields of its part changed."""
+    ((table, part),) = manifest.parts.items()
+    return replace(manifest, parts={table: replace(part, **changes)})
 
 
 def fold(*receipts):

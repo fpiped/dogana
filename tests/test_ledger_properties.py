@@ -19,7 +19,7 @@ from dogana import (
     RejectedDelivery,
 )
 from tests.loader import Loader
-from tests.support import FULL, RECENT, SINCE, WINDOW
+from tests.support import FULL, RECENT, SINCE, WINDOW, part_of
 
 CONTRACT = Contract(
     "items",
@@ -56,17 +56,17 @@ def evidence(region: Region) -> Evidence:
 
 def advance(old: Evidence, manifest: Manifest) -> Evidence:
     t = manifest.produced_at
-    if manifest.shape in ("full", "window"):
+    if part_of(manifest).shape in ("full", "window"):
         return t, t
-    assert old is not None and isinstance(manifest.since, datetime)
-    valid = t if "deletes" in manifest.shape and manifest.since <= old[1] else old[1]
+    assert old is not None and isinstance(part_of(manifest).since, datetime)
+    valid = t if "deletes" in part_of(manifest).shape and part_of(manifest).since <= old[1] else old[1]
     return t, valid
 
 
 def contains(manifest: Manifest, point: int) -> bool:
-    if manifest.window is None:
+    if part_of(manifest).window is None:
         return True
-    low, high = manifest.window
+    low, high = part_of(manifest).window
     assert isinstance(low, int) and isinstance(high, int)
     return low <= point <= high
 
@@ -75,8 +75,8 @@ def boundary_oracle(history: History) -> Partition:
     """Refine once by all delivered endpoints, then replay each cell independently."""
     cuts: set[int] = set()
     for manifest in history:
-        if manifest.window is not None:
-            low, high = manifest.window
+        if part_of(manifest).window is not None:
+            low, high = part_of(manifest).window
             assert isinstance(low, int) and isinstance(high, int)
             cuts.update((low, high + 1))
     result: list[tuple[int | None, Evidence]] = []
@@ -112,8 +112,8 @@ def partition(ledger: Ledger) -> Partition:
 @st.composite
 def accepted_histories(draw: st.DrawFn) -> History:
     history = [
-        Manifest(CONTRACT.table, "window", at(0), window=(-3, -3)),
-        Manifest(CONTRACT.table, "window", at(1), window=(3, 3)),
+        Manifest.single(CONTRACT.table, "window", at(0), window=(-3, -3)),
+        Manifest.single(CONTRACT.table, "window", at(1), window=(3, 3)),
     ]
     known: dict[int, Evidence] = {point: None for point in range(-7, 8)}
     known[-3], known[3] = (at(0), at(0)), (at(1), at(1))
@@ -144,7 +144,7 @@ def accepted_histories(draw: st.DrawFn) -> History:
                 coordinate = 1 if cover_deletions else 0
                 since = min(value[coordinate] for value in old if value is not None)
                 since -= timedelta(minutes=lookback)
-        manifest = Manifest(CONTRACT.table, name, at(tick), window=window, since=since)
+        manifest = Manifest.single(CONTRACT.table, name, at(tick), window=window, since=since)
         history.append(manifest)
         for point in points:
             known[point] = advance(known[point], manifest)
@@ -236,17 +236,17 @@ def test_disjoint_complete_and_timestamp_windows_commute_only_on_evidence(
     left_since: int,
     right_since: int,
 ) -> None:
-    base = Ledger(CONTRACT).apply(Manifest(CONTRACT.table, "full", at(0), generation="base"))
-    base = base.apply(Manifest(CONTRACT.table, "since", at(1), since=at(0)))
+    base = Ledger(CONTRACT).apply(Manifest.single(CONTRACT.table, "full", at(0), generation="base"))
+    base = base.apply(Manifest.single(CONTRACT.table, "since", at(1), since=at(0)))
     right_low = low + width + gap
-    left = Manifest(
+    left = Manifest.single(
         CONTRACT.table,
         left_shape,
         at(left_time),
         window=(low, low + width),
         since=None if left_shape == "window" else at(left_since),
     )
-    right = Manifest(
+    right = Manifest.single(
         CONTRACT.table,
         right_shape,
         at(right_time),
@@ -274,7 +274,7 @@ def test_store_replay_preserves_the_current_publication_and_original_receipt(
     store = Loader()
     for tick, keys in enumerate(snapshots):
         rows = [{"id": key, "bucket": key} for key in keys]
-        manifest = Manifest(
+        manifest = Manifest.single(
             CONTRACT.table,
             "full",
             at(tick),

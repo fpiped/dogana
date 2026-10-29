@@ -37,7 +37,7 @@ from dogana import (
     Shape,
 )
 from tests.loader import RowSource, apply_rows, check_rows, split_rows
-from tests.support import at
+from tests.support import at, part_of
 
 INSTANTS = (2, 3)
 VALUES = (1, 2, 3)
@@ -223,8 +223,8 @@ def checked_apply(kind, manifest, delivered, incoming, deleted, published):
             deleted,
         )
     )
-    if manifest.window is not None:
-        low, high = manifest.window
+    if part_of(manifest).window is not None:
+        low, high = part_of(manifest).window
 
         def outside(rows):
             return tuple(row for row in rows if not low <= dict(row)["bucket"] <= high)
@@ -278,7 +278,7 @@ class Model:
                 "P7: receipts reconstruct another ledger"
             )
             assert receipt.transition.plan == ApplyPlan.build(self.contract, manifest)
-            partition_and_coverage(before.regions, after.regions, manifest.window)
+            partition_and_coverage(before.regions, after.regions, part_of(manifest).window)
         self.decisions[key] = after, receipt
         return after, receipt
 

@@ -32,7 +32,7 @@ of the core's modules alone still validates a manifest, applies it and answers c
   checks the loader reports on the rows and turns the decision into a `Receipt` with an
   `ApplyPlan`, the row operations the loader executes. The core describes row operations and never
   reads rows.
-- **`group.py`**: `Group`, tables read together. `Group.apply` decides their deliveries as one, and
+- **`group.py`**: `Group`, tables decided as one. `Group.apply` decides a read for them, and
   `Claims.exact_as_of` is the instant at which all of them equal the source, if there is one.
 - **`planner.py`**: because `Ledger.apply` has no side effects, the planner simulates each admitted
   read on the current ledger and keeps the cheapest one that establishes the required dates.
@@ -43,15 +43,16 @@ of the core's modules alone still validates a manifest, applies it and answers c
 
 The loader owns the sequence, and the [protocol](protocol.md#the-receiver) states it:
 
-1. look for an accepted receipt with the same manifest identity; if there is one, the delivery is a
-   replay, once a declared hash matches the bytes;
+1. look for an accepted receipt of the same read, by `read_identity` and table; if there is one,
+   the delivery is a replay, once a declared hash matches the bytes;
 2. `Gate.preflight`, and record a refusal that changes nothing if it fails;
 3. check the staged rows against the manifest;
 4. `Gate.evaluate`, then execute the plan and save rows, ledger and receipt in one transaction,
    against the ledger the decision was made on.
 
-`Group.apply` runs the decision for each table of a group, adds the joint check (one read boundary,
-every table accepted on its own), and accepts every table or refuses every table.
+`Group.apply` runs the decision for each table of a group from one read, adds the joint check (the
+read declares every table, every table accepted on its own), and accepts every table or refuses
+every table.
 
 ## Receipts are the history
 

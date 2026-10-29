@@ -2,7 +2,7 @@
 
 <!-- protocol: version -->
 
-Version 4 of the wire format, the `version: 4` every document carries; the package is versioned
+Version 5 of the wire format, the `version: 5` every document carries; the package is versioned
 separately. [Concepts](concepts.md) explains the same ideas with examples.
 
 ## Notation
@@ -153,8 +153,9 @@ With the flag as the deleted column, dates speak of the rows whose flag is false
 
 <!-- protocol: constructors -->
 
-Shape constructors take keywords; `Contract` and `Manifest` take keywords after `shapes` and
-`produced_at`. `Contract.manifest(shape, produced_at, ...)` fills in the table and the schema hash;
+Shape and `Part` constructors take keywords; `Contract` and `Manifest` take keywords after
+`shapes` and `parts`, `Manifest.single` after `produced_at`. `Contract.manifest(shape,
+produced_at, ...)` fills in the table and the schema hash;
 `Shape.window_ending_at` computes rolling windows. [Concepts](concepts.md#shapes) maps source
 behaviors to shapes.
 
@@ -162,8 +163,13 @@ behaviors to shapes.
 
 <!-- protocol: declaration -->
 
-`Manifest(table, shape, produced_at, *, window, since, generation, rows, schema_hash, tombstones,
-content_hash)` describes one read.
+`Manifest(produced_at, parts, *, snapshot)` describes one read of the source: the instant it saw
+the source and, per table, a `Part(shape, *, window, since, generation, rows, schema_hash,
+tombstones, content_hash)`. A read declares at least one table, each an identifier naming its part
+once. `Manifest.single(table, shape, produced_at, ...)` and `Contract.manifest(shape, produced_at,
+...)` build a read of one table; `manifest.part(table)` is a table's part and `manifest.only(table)`
+the read restricted to it. `Manifest.check(contract)` reads the contract's table's part against the
+contract and refuses a read without one.
 
 1. `window` is required exactly for window coverage, `since` exactly for changed-only shapes.
    Timestamp checkpoints are aware datetimes; generations are nonempty strings, and a generation
@@ -188,6 +194,10 @@ content_hash)` describes one read.
 6. `content_hash`, optional, is the lowercase hex SHA-256 of the delivered bytes. It is part of the
    manifest's identity, so a corrected file is a new delivery, and the receiver verifies it against
    the bytes it loads. Without it, identity does not name the content.
+7. `snapshot`, optional, is a nonempty token the sender gives to the read: a transaction's
+   exported snapshot, a system change number, an export job's id. It is part of the identity and
+   the sender's word, like `produced_at`; two jobs share a date by accident and a token only on
+   purpose.
 
 **Corrections.** A corrected file is a new delivery by its hash and needs a later truthful boundary.
 Invalidating an accepted delivery means rebuilding rows and ledger from the receipts before it, then
@@ -289,19 +299,22 @@ window column must never change.
 
 <!-- protocol: evaluation -->
 
-`Gate.evaluate(ledger, manifest, outcomes=(), *, now, source=None, joint=())` decides a delivery
-from three core checks: `manifest` (the declarations agree with each other and the contract),
-`receiver_time` and `transition` (the ledger admits the read). Then come the receiver's `outcomes`
-and the `joint` checks of a group. Any failed check rejects. `Gate.preflight(ledger, manifest, now=now)`
-returns the core checks alone; `Gate.reject(ledger, manifest, checks, now=now, source=None)`
-records a failure the receiver found.
+`Gate.evaluate(ledger, manifest, outcomes=(), *, now, source=None, joint=())` decides the
+ledger's table from the read's part for it, through three core checks: `manifest` (the declarations
+agree with each other and the contract), `receiver_time` and `transition` (the ledger admits the
+read). Then come the receiver's `outcomes` and the `joint` checks of a group. Any failed check
+rejects. A read with no part for the table decides nothing about it and is an error, not a
+rejection. `Gate.preflight(ledger, manifest, now=now)` returns the core checks alone;
+`Gate.reject(ledger, manifest, checks, now=now, source=None)` records a failure the receiver found.
 
 <!-- protocol: receipt -->
 
-A `Receipt` records one decision: the manifest, the contract in force, the checks, `outcome`,
-`received_at`, an optional `source`, `base_publication_id`, the publication identity, and
-`ledger_identity`, the identity of the ledger the decision leaves; neither identity is ever
-empty. `outcome` is `accepted`,
+A `Receipt` records one decision on one table. Its `manifest` is the read restricted to that
+table, and `read_identity` the identity of the whole read. It also records the contract in force,
+the checks, `outcome`, `received_at`, an optional `source`, `base_publication_id`, the publication
+identity, and `ledger_identity`, the identity of the ledger the decision leaves; no identity is ever
+empty.
+`outcome` is `accepted`,
 `rejected` or `replayed`; the `accepted` property is true for `accepted` and `replayed`, the
 `replayed` property only for `replayed`. An
 acceptance or a replay carries a `Transition`: the plan, and the regions over the coverage
@@ -310,9 +323,8 @@ afterwards. A rejection leaves ledger and publication as they were.
 <!-- protocol: receipt-size -->
 
 The ledger is never in a receipt: it is the result of applying the accepted receipts in order, and
-`ledger_identity` checks each step. A receipt grows with its coverage, never with history, rows or
-deleted keys. It is filed under the contract's table even when a rejected manifest names another,
-and its identity covers its checks.
+`ledger_identity` checks each step. A receipt grows with its coverage, never with history, rows,
+deleted keys or the other tables of its read, and its identity covers its checks.
 
 <!-- protocol: errors -->
 
@@ -383,30 +395,33 @@ floating-point sum) and every rule the source keeps between its tables holds bet
 ones.
 
 **Premise.** Every delivery comes from one consistent read of the source at `p`, stamped `p`, which
-dogana cannot verify. One read is one snapshot of every table. READ COMMITTED, the default of
+dogana cannot verify. One read is one snapshot of every table it declares. READ COMMITTED, the default of
 Postgres, Oracle and SQL Server, takes a new snapshot for each statement, so it is not one read. One
 read is REPEATABLE READ, SERIALIZABLE or one exported snapshot shared by workers in Postgres; `START
 TRANSACTION WITH CONSISTENT SNAPSHOT` in MySQL; a read-only transaction or queries `AS OF` one SCN
 (system change number) in Oracle; SNAPSHOT isolation in SQL Server. Separate export jobs are not one
-read, and one `produced_at` for them, such as one date in their file names, fabricates the instant.
-The theorem needs no common transaction at the receiver: tables each exact at `p`, each read with
-its ledger from one committed state, are consistent however they were published.
+read, and one manifest for them, stamped with one date such as the one in their file names,
+fabricates the instant; a `snapshot` token makes the claim explicit. The theorem needs no common
+transaction at the receiver: tables each exact at `p`, each read with its ledger from one committed
+state, are consistent however they were published.
 
-**Group.** `Group(contracts)` names tables read together, each once whatever its letter case. A
-table belongs to one group, since deliveries accepted together replay together: a parent with several
-children is one group. `Group.claims(ledgers, now, *, limit, windows=None)` returns every table's
-regions together, each table clipped to its window.
+**Group.** `Group(contracts)` names tables the receiver decides as one, each once whatever its
+letter case: the tables its readers join, read from one source. The receiver decides each table of
+a read once, in one group or alone. `Group.claims(ledgers, now, *, limit, windows=None)` returns
+every table's regions together, each table clipped to its window.
 
-**Delivery.** `Group.apply(ledgers, manifests, *, now, outcomes=None, sources=None)` takes one
-manifest per table, with the receiver's checks of each table's rows, and decides them as one:
+**Delivery.** `Group.apply(ledgers, manifest, *, now, outcomes=None, sources=None)` takes one
+read, with the receiver's checks of each table's rows, and decides the group's tables as one:
 
-1. Each table is decided alone, as `Gate.evaluate` does.
-2. The `together` check passes when every manifest has the same `produced_at` and every table is
-   accepted alone. Its detail digests every manifest identity, so a receipt carrying it was accepted
-   with exactly those deliveries.
-3. That check joins every receipt. If any table is rejected, every table's receipt is a rejection;
-   otherwise every receipt is an acceptance, and the receiver saves every table's rows and ledger in
-   one commit, or nothing.
+1. Each table of the group the read declares is decided alone, as `Gate.evaluate` does; parts for
+   tables outside the group are not decided. A read that declares none of the group's tables is an
+   error.
+2. The `together` check passes when the read declares every table of the group and every table is
+   accepted alone. Its detail names the read's identity, so a receipt carrying it was accepted with
+   exactly that read. `Gate.together(receipts)` is the check for receipts of one read.
+3. That check joins every receipt. If any table is rejected, or a table of the group has no part,
+   every receipt is a rejection; otherwise every receipt is an acceptance, and the receiver saves
+   every table's rows and ledger in one commit, or nothing.
 
 <!-- protocol: references -->
 
@@ -420,11 +435,10 @@ timestamp tombstones with `since` no later than the deletions date, and generati
 tombstones when both dates were already equal. A table without changes delivers an empty read of
 a tombstone changes shape at `p`. A reader of windows passes them to `Group.claims`.
 
-**Replay.** A group replays whole: the receiver answers a repeated group with the receipts it
-recorded when every manifest was accepted together, which the `together` digest identifies, after
-verifying every declared hash against the bytes. Deliveries accepted alone, in another group or never
-are a new decision, and the group needs a new read. Each table keeps its receipts and chain; a
-group adds no wire kind.
+**Replay.** A group replays whole: the receiver answers a repeated read with the receipts it
+recorded when the read was accepted, found by their `read_identity`, after verifying every declared
+hash against the bytes. A table's part declared again in another read is a new decision, and the
+group needs a new read. Each table keeps its receipts and chain; a group adds no wire kind.
 
 <!-- protocol: atomicity -->
 
@@ -438,8 +452,8 @@ one step.
 exact at an instant no earlier than `at_least`. Otherwise it returns one request per table with one
 `until`, later than every table's evidence and no earlier than `at_least`, each the cheapest read
 establishing `(until, until)` over its window. `until` is the earliest admissible boundary: the
-extractor reads every table in one snapshot taken at or after it and stamps every manifest with its
-instant.
+extractor reads every table in one snapshot taken at or after it and declares them in one manifest
+stamped with its instant.
 
 ## The receiver
 
@@ -450,9 +464,9 @@ instant.
 The receiver is the code that loads a read's rows into its database. dogana decides; the receiver does, in
 this order:
 
-1. Looks the manifest's identity up among its receipts. An accepted one is a replay, answered with
-   the original receipt once a declared `content_hash` matches the bytes; a repeated manifest over
-   other bytes is refused, and a replay never reads the rows again.
+1. Looks the read's identity and the table up among its receipts. An accepted one is a replay,
+   answered with the original receipt once a declared `content_hash` matches the bytes; a repeated
+   read over other bytes is refused, and a replay never reads the rows again.
 2. Runs `Gate.preflight`; a failed check is recorded with `Gate.reject`, and nothing else happens.
 3. Loads the rows where they can be checked without touching the published table, verifies them
    against the manifest, and passes the results to `Gate.evaluate` as `Check` values.
@@ -476,8 +490,10 @@ What the receiver owes, for the dates to describe the rows:
 4. Readers read rows and ledger from one committed state; separate reads can straddle a commit.
 
 **Chain.** The publication chain is SHA-256 of UTF-8
-`f"{previous}:{contract.identity}:{manifest.identity}"`, the first `previous` the string `None`;
-`publication_id` is its head. A receiver that records the head its rows were published under can
+`f"{previous}:{contract.identity}:{manifest.only(table).identity}"`, the first `previous` the
+string `None`; `publication_id` is its head. A table's chain sees a read through its own part, so a
+read of several tables and the same declaration sent for the table alone move it alike. A receiver
+that records the head its rows were published under can
 tell a ledger behind its rows, or a publication from outside dogana. It cannot see a row edit that
 keeps the head, a lost rejection or the loss of all evidence.
 
@@ -514,9 +530,10 @@ reconstruction uses each receipt's contract, then the requested one.
 
 ## Versioned JSON
 
-1. Structured values carry `version: 4` and `kind`, the class name. Earlier versions are refused:
+1. Structured values carry `version: 5` and `kind`, the class name. Earlier versions are refused:
    version 1 manifests (dogana 0.1) listed keys, version 2 receipts (0.2 and 0.3) carried ledgers,
-   version 3 contracts (0.4 to 0.6) carried a shrink limit.
+   and version 3 contracts (0.4 to 0.6) carried a shrink limit. Version 4 manifests (0.7) described
+   one table, without parts or a snapshot token.
 2. Field names match constructor arguments, and every field is present, defaults included. Tuples
    are arrays, enums strings, mappings objects. JSON has one number type: a number with a zero
    fraction, such as `4.0` or `-0.0`, is the integer it spells wherever an integer is expected, as
@@ -546,7 +563,7 @@ reconstruction uses each receipt's contract, then the requested one.
 [contract](examples/contract.json), [manifest](examples/manifest.json),
 [ledger](examples/ledger.json) and [receipt](examples/receipt.json) examples are executable,
 [identity vectors](examples/identity-vectors.json) fix canonical forms and hashes for other
-implementations, and [JSON Schemas](wire/README.md) cover all fourteen wire kinds.
+implementations, and [JSON Schemas](wire/README.md) cover all fifteen wire kinds.
 
 ## Boundaries
 

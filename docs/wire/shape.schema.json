@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:Shape",
+  "$id": "urn:dogana:wire:5:Shape",
   "title": "Shape",
   "type": "object",
   "properties": {
@@ -9,7 +9,7 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "coverage": {
       "enum": [
@@ -45,7 +45,7 @@
     "window_size": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/positiveDuration"
+          "$ref": "urn:dogana:wire:5:types#/$defs/positiveDuration"
         },
         {
           "type": "null"
@@ -55,7 +55,7 @@
     "lookback": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/nonnegativeDuration"
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonnegativeDuration"
         },
         {
           "type": "null"

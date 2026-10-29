@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:Manifest",
+  "$id": "urn:dogana:wire:5:Manifest",
   "title": "Manifest",
   "type": "object",
   "properties": {
@@ -9,72 +9,25 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
-    },
-    "table": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
-    },
-    "shape": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+      "const": 5
     },
     "produced_at": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:5:types#/$defs/datetime"
     },
-    "window": {
+    "parts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "urn:dogana:wire:5:Part"
+      }
+    },
+    "snapshot": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/window"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "since": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/checkpoint"
-    },
-    "generation": {
-      "anyOf": [
-        {
-          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "rows": {
-      "anyOf": [
-        {
-          "type": "integer",
-          "minimum": 0
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "schema_hash": {
-      "anyOf": [
-        {
-          "$ref": "urn:dogana:wire:4:types#/$defs/text"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "tombstones": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "content_hash": {
-      "anyOf": [
-        {
-          "$ref": "urn:dogana:wire:4:types#/$defs/sha256"
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
         },
         {
           "type": "null"
@@ -85,16 +38,9 @@
   "required": [
     "kind",
     "version",
-    "table",
-    "shape",
     "produced_at",
-    "window",
-    "since",
-    "generation",
-    "rows",
-    "schema_hash",
-    "tombstones",
-    "content_hash"
+    "parts",
+    "snapshot"
   ],
   "additionalProperties": false
 }

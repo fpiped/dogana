@@ -205,19 +205,28 @@ order dated October 10 and changed on Sunday evening.
 
 ## The manifest
 
-Every read arrives with a **manifest**, the sender's declaration about that one read:
+Every read arrives with a **manifest**, the sender's declaration about that one read. The read as
+a whole has:
 
-- the table and the shape;
 - `produced_at`, the instant the source was read (next section);
+- `snapshot`, optionally, the sender's own name for the read: a transaction's snapshot, a change
+  number, a job id;
+- a **part** for each table the read holds.
+
+Each part declares, for its table:
+
+- the shape;
 - the window, for a window read;
 - `since`, where a read of changes starts, and for a feed `generation`, the token or position it
   ends at;
 - `rows`, the number of current rows, and `tombstones`, the number of tombstones;
 - `content_hash`, the SHA-256 of the file's bytes.
 
-It usually travels as a JSON file beside the data file, such as `orders.csv.json`; the
-[example manifest](examples/manifest.json) shows one, and `dogana manifest` writes one from a
-shell.
+A read of one table has one part. Invoices and their lines read in one snapshot are one read with
+two parts, under one instant: the instant is declared once, not copied onto each table. The
+manifest usually travels as a JSON file beside the data file, such as `orders.csv.json`; the
+[example manifest](examples/manifest.json) shows one, and `dogana manifest` writes a one-table
+manifest from a shell.
 
 ## Which instant to declare
 
@@ -256,10 +265,11 @@ code that puts rows into the database. It is decided in three steps:
    transaction, so readers see all of them or none. If any check fails, the delivery is refused,
    rows and ledger stay as they were, and the refusal is recorded.
 
-A **receipt** is the record of one decision: the manifest, the checks and the outcome. The ledger
-can be rebuilt from the accepted receipts. The same manifest sent again is a **replay**: the loader
-finds the first receipt by the manifest's identity, answers with it and changes nothing, so a job
-that failed halfway can send its delivery again.
+A **receipt** is the record of one decision on one table: the table's part of the read, the
+identity of the whole read, the checks and the outcome. The ledger can be rebuilt from the accepted
+receipts. The same read sent again is a **replay**: the loader finds the first receipt by the
+read's identity and the table, answers with it and changes nothing, so a job that failed halfway
+can send its delivery again.
 
 ## Reading
 
@@ -313,19 +323,20 @@ Each table being exact on its own is not enough:
 Invoices are exact at 10:00 and lines at 10:05. A join finds line 11 but not its invoice.
 `exact_as_of` returns none, so the reader knows not to trust the join.
 
-**One instant needs one snapshot.** The sender reads every table in one snapshot and stamps every
-manifest with its instant. One transaction is not always one snapshot: at the default isolation
-level of most databases, two queries in one transaction can see different data [5]. The
-[protocol](protocol.md#tables-together) lists the settings that give one snapshot. dogana cannot
-check that the read was one snapshot.
+**One instant needs one snapshot.** The sender reads every table in one snapshot and declares them
+in one manifest, with one instant and a part per table. One transaction is not always one snapshot:
+at the default isolation level of most databases, two queries in one transaction can see different
+data [5]. The [protocol](protocol.md#tables-together) lists the settings that give one snapshot.
+dogana cannot check that the read was one snapshot. Two manifests are two reads, whatever their
+dates say, and dogana never joins them into one.
 
-**A group.** The receiver declares the tables read together as a **group**. `Group.apply` then
-decides their deliveries as one:
+**A group.** The receiver declares the tables it decides as one as a **group**: the tables its
+readers join, read from one source. `Group.apply` then decides a read for them:
 
-1. it decides each delivery as if it came alone;
-2. it requires the same `produced_at` on every manifest;
-3. if any delivery is refused, every delivery is refused. Otherwise the loader saves every
-   table's rows and ledger in one transaction, or nothing.
+1. it decides each table of the group the read declares as if it came alone;
+2. it requires the read to declare every table of the group;
+3. if any table is refused, every table is refused. Otherwise the loader saves every table's rows
+   and ledger in one transaction, or nothing.
 
 Rules the source keeps between the tables, such as "every invoice line names an existing invoice",
 are not checked: they need the rows, and the guarantee is `exact_as_of`, not a check. A loader that
@@ -404,7 +415,8 @@ Knowing when a table holds every row it should is an old question in database re
 | Complete read | A read that holds every current row of what it covers, such as a full dump or a window read. |
 | Tombstone | A row in a read that says its key was deleted. Its deleted column is true. |
 | Contract | The receiver's description of one table: its key, its columns and its shapes. |
-| Manifest | The sender's declaration about one read: its shape, instant, row count and hash. |
+| Manifest | The sender's declaration about one read: its instant and a part per table. |
+| Part | What a read declares about one of its tables: the shape, the counts and the hash. |
 | Read boundary | `produced_at`, the instant the source was read. |
 | Snapshot | A read that sees the whole source at one instant. |
 | Delivery | One read with its manifest, handed to dogana by the loader. |
@@ -412,8 +424,8 @@ Knowing when a table holds every row it should is an old question in database re
 | Loader | The receiver's code that puts rows into the database: it checks the rows, executes the plan and commits rows with the ledger. |
 | Plan | The row operations a receipt returns for the loader to execute. |
 | Receipt | The record of the decision on one delivery, whether accepted or refused. |
-| Replay | The same manifest sent again. dogana answers with the first receipt and changes nothing. |
+| Replay | The same read sent again. dogana answers with the first receipt and changes nothing. |
 | Claims | The state of each region at the moment a reader asks. |
 | Expired | The state of a region whose complete as of date is older than the limit the reader gives. |
 | Exact at p | Every region has both dates equal to p: the table holds exactly the rows the source had at p. |
-| Group | Tables read together, from one snapshot of the source. |
+| Group | Tables the receiver decides as one, read from one source. |

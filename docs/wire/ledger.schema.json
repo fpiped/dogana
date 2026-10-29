@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:Ledger",
+  "$id": "urn:dogana:wire:5:Ledger",
   "title": "Ledger",
   "type": "object",
   "properties": {
@@ -9,22 +9,22 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "contract": {
-      "$ref": "urn:dogana:wire:4:Contract"
+      "$ref": "urn:dogana:wire:5:Contract"
     },
     "regions": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:4:Region"
+        "$ref": "urn:dogana:wire:5:Region"
       },
       "minItems": 1
     },
     "generation": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
         },
         {
           "type": "integer"
@@ -37,7 +37,7 @@
     "publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
         },
         {
           "type": "null"

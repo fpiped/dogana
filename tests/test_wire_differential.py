@@ -74,7 +74,7 @@ EXAMPLES = list(example_documents())
 @pytest.fixture(scope="module")
 def encoded_documents():
     c = contract()
-    manifest = Manifest(c.table, "full", at(18))
+    manifest = Manifest.single(c.table, "full", at(18))
     checks = ()
     receipt = Gate.evaluate(Ledger(c), manifest, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
@@ -82,6 +82,7 @@ def encoded_documents():
     values = [
         c,
         manifest,
+        manifest.part(c.table),
         ledger,
         receipt,
         claims,
@@ -97,7 +98,7 @@ def encoded_documents():
         Shape.window(size=timedelta(days=1)),
     ]
     for window in ((0, 1), ("a", "z"), (date(2026, 10, 18), date(2026, 10, 19)), (at(18), at(19))):
-        values.append(Manifest(c.table, "daily", at(20), window=window))
+        values.append(Manifest.single(c.table, "daily", at(20), window=window))
     documents = [
         (f"encoder/{index}/{type(value).__name__}", value.to_dict()) for index, value in enumerate(values)
     ]
@@ -192,7 +193,7 @@ def mutations(document):
                     replaced(document, path, {k: v for k, v in value.items() if k != field}),
                 )
             if "kind" in value and "version" in value:
-                for version in (3, 5, True, "4", 4.0):
+                for version in (3, 4, True, "5", 5.0):
                     yield "version", path, replaced(document, (*path, "version"), version)
                 for kind in ("unknown", *KINDS):
                     if kind != value["kind"]:
@@ -269,7 +270,7 @@ def generation_schema(value):
 
 @cache
 def values_for(kind, field):
-    return from_schema(generation_schema(SCHEMAS[f"urn:dogana:wire:4:{kind}"]["properties"][field]))
+    return from_schema(generation_schema(SCHEMAS[f"urn:dogana:wire:5:{kind}"]["properties"][field]))
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -283,12 +284,12 @@ def test_schema_generated_fields_round_trip_or_raise_a_contract_error(
     for path, value in nodes(document):
         if not isinstance(value, dict) or "kind" not in value or "version" not in value:
             continue
-        for field, schema in SCHEMAS[f"urn:dogana:wire:4:{value['kind']}"]["properties"].items():
+        for field, schema in SCHEMAS[f"urn:dogana:wire:5:{value['kind']}"]["properties"].items():
             references = [
                 item["$ref"] for _, item in nodes(schema) if isinstance(item, dict) and "$ref" in item
             ]
             if field not in ("kind", "version") and all(
-                ref.startswith("urn:dogana:wire:4:types#") for ref in references
+                ref.startswith("urn:dogana:wire:5:types#") for ref in references
             ):
                 targets.append(((*path, field), value["kind"], field))
     path, owner, field = data.draw(st.sampled_from(targets), label="property")
@@ -333,7 +334,7 @@ def test_duration_decoding_refuses_to_round_away_fractional_microseconds(seconds
 
 
 def test_datetime_decoding_refuses_to_truncate_a_seventh_fractional_digit(validate_wire):
-    document = Manifest("stock", "full", at(18)).to_dict()
+    document = Manifest.single("stock", "full", at(18)).to_dict()
     document["produced_at"] = {"$datetime": "2026-10-18T00:00:00.1234567+00:00"}
     assert not schema_accepts(document, validate_wire)
     assert_agreement(document, validate_wire)
@@ -350,7 +351,7 @@ def test_receipts_refuse_empty_identity_fields(field, validate_wire):
 @pytest.mark.parametrize(
     "change",
     (
-        {"version": 4.0},
+        {"version": 5.0},
         {"rows": -0.0},
         {"tombstones": -0.0},
         {"window": [-0.0, 1]},
@@ -360,6 +361,10 @@ def test_receipts_refuse_empty_identity_fields(field, validate_wire):
     ids=("version", "rows", "tombstones", "window", "since", "generation"),
 )
 def test_schema_integer_values_decode_regardless_of_their_json_number_spelling(change, validate_wire):
-    document = Manifest("stock", "full", at(18)).to_dict() | change
+    document = Manifest.single("stock", "full", at(18)).to_dict()
+    if "version" in change:
+        document |= change
+    else:
+        document["parts"]["stock"] |= change
     validate_wire(document)
     assert_agreement(document, validate_wire)

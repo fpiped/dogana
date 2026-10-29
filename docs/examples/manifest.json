@@ -1,16 +1,22 @@
 {
-  "content_hash":null,
-  "generation":null,
   "kind":"Manifest",
+  "parts":{
+    "stock":{
+      "content_hash":null,
+      "generation":null,
+      "kind":"Part",
+      "rows":2,
+      "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
+      "shape":"full",
+      "since":null,
+      "tombstones":0,
+      "version":5,
+      "window":null
+    }
+  },
   "produced_at":{
     "$datetime":"2026-10-18T00:00:00+00:00"
   },
-  "rows":2,
-  "schema_hash":"14054a7d708a1c718d4aaa9a7e35fb5bdccb8c97ac31f25b778ac0af5c1d3ad5",
-  "shape":"full",
-  "since":null,
-  "table":"stock",
-  "tombstones":0,
-  "version":4,
-  "window":null
+  "snapshot":null,
+  "version":5
 }

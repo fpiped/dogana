@@ -24,8 +24,8 @@ from tests.support import accounting_contract as contract
 @pytest.mark.protocol("claims.4", "contract.shapes.3")
 def test_deletions_known_today_choose_the_cheapest_complete_shape_for_a_patched_region():
     c = contract()
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "since", at(19), since=at(18)))
     request = plan_delivery(ledger, Requirement(c.table, at(20), at(20), (10, 20)))
     assert request.shape == "daily"
     assert request.window == (10, 20)
@@ -36,7 +36,7 @@ def test_deletions_known_today_choose_the_cheapest_complete_shape_for_a_patched_
 @pytest.mark.protocol("claims.4")
 def test_a_clean_generation_base_uses_a_cheap_tombstone_feed_to_advance_both_dates():
     c = contract(shapes={"full": FULL, "feed": FEED})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation="g1"))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18), generation="g1"))
     request = plan_delivery(ledger, Requirement(c.table, at(19), at(19)))
     assert (request.shape, request.since) == ("feed", "g1")
 
@@ -44,7 +44,7 @@ def test_a_clean_generation_base_uses_a_cheap_tombstone_feed_to_advance_both_dat
 @pytest.mark.protocol("claims.4")
 def test_a_reader_needing_only_completeness_can_choose_a_changed_since_read():
     c = contract(shapes={"full": FULL, "since": SINCE})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
     request = plan_delivery(ledger, Requirement(c.table, at(19)))
     assert request.shape == "since"
     assert request.interval == (at(18), at(19))
@@ -53,7 +53,7 @@ def test_a_reader_needing_only_completeness_can_choose_a_changed_since_read():
 @pytest.mark.protocol("claims.4")
 def test_an_already_satisfied_reader_needs_no_extraction():
     c = contract()
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
     assert plan_delivery(ledger, Requirement(c.table, at(18), at(18))) is None
 
 
@@ -69,8 +69,8 @@ def test_an_unknown_base_demands_a_complete_read_and_a_contract_without_one_cann
 @pytest.mark.protocol("claims.5")
 def test_the_next_changed_since_interval_starts_at_the_weakest_region_boundary():
     c = contract()
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 20)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(19), window=(1, 20)))
     assert next_extraction(ledger, "since", at(20)).interval == (at(18), at(20))
     assert next_extraction(ledger, "recent", at(20), window=(1, 20)).since == at(19)
 
@@ -85,7 +85,7 @@ def test_the_next_rolling_window_uses_the_declared_width_and_column_type():
 @pytest.mark.protocol("transitions.2")
 def test_the_next_read_cannot_go_backwards_in_source_time():
     c = contract()
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(20)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(20)))
     with pytest.raises(PlanningError, match="advance"):
         next_extraction(ledger, "since", at(19))
 
@@ -93,8 +93,8 @@ def test_the_next_read_cannot_go_backwards_in_source_time():
 @pytest.mark.protocol("claims.4")
 def test_a_tombstone_feed_can_advance_completeness_when_its_old_deletion_date_already_satisfies_the_reader():
     c = contract(shapes={"full": FULL, "since": SINCE, "feed": FEED})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation="g1"))
-    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18), generation="g2"))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18), generation="g1"))
+    ledger = ledger.apply(Manifest.single(c.table, "since", at(19), since=at(18), generation="g2"))
     request = plan_delivery(ledger, Requirement(c.table, at(20), at(18)))
     assert request.shape == "feed"
 
@@ -103,20 +103,20 @@ def test_a_tombstone_feed_can_advance_completeness_when_its_old_deletion_date_al
 @pytest.mark.parametrize("window", [(0, 0), (at(18).date(), at(18).date()), (at(18), at(18))])
 def test_a_minimum_requirement_can_use_a_snapshot_later_than_newer_local_evidence(window):
     c = contract(window_type=type(window[0]).__name__, shapes={"full": FULL, "daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=window))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(20), window=window))
     request = plan_delivery(ledger, Requirement(c.table, at(19), at(19)))
     assert request.shape == "full"
     assert request.until == at(20) + timedelta(microseconds=1)
-    after = ledger.apply(Manifest(request.table, request.shape, request.until))
+    after = ledger.apply(Manifest.single(request.table, request.shape, request.until))
     assert after.claims(request.until, limit=timedelta.max).deletions_as_of >= at(19)
 
 
 @pytest.mark.protocol("claims.4")
 def test_an_admissible_boundary_considers_only_the_chosen_shapes_coverage():
     c = contract(shapes={"full": FULL, "daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(22), window=(1, 10)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(22), window=(1, 10)))
     request = plan_delivery(ledger, Requirement(c.table, at(19), at(19), (20, 30)))
     assert request.shape == "daily"
     assert request.until == at(19)
@@ -125,8 +125,8 @@ def test_an_admissible_boundary_considers_only_the_chosen_shapes_coverage():
 @pytest.mark.protocol("claims.4")
 def test_deletion_date_can_require_a_later_read_even_when_completeness_is_already_sufficient():
     c = contract(shapes={"full": FULL, "since": SINCE})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "since", at(20), since=at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "since", at(20), since=at(18)))
     request = plan_delivery(ledger, Requirement(c.table, at(19), at(19)))
     assert request.shape == "full"
     assert request.until == at(20) + timedelta(microseconds=1)
@@ -136,11 +136,11 @@ def test_deletion_date_can_require_a_later_read_even_when_completeness_is_alread
 def test_a_delayed_date_window_covers_every_date_since_the_previous_window():
     c = contract(window_type="date", shapes={"daily": WINDOW})
     first = next_extraction(Ledger(c), "daily", at(19, 12))
-    ledger = Ledger(c).apply(Manifest(c.table, first.shape, first.until, window=first.window))
+    ledger = Ledger(c).apply(Manifest.single(c.table, first.shape, first.until, window=first.window))
     later = at(19, 12) + timedelta(days=30, hours=13)
     request = next_extraction(ledger, "daily", later)
     assert request.window == (at(20).date(), later.date())
-    after = ledger.apply(Manifest(c.table, request.shape, request.until, window=request.window))
+    after = ledger.apply(Manifest.single(c.table, request.shape, request.until, window=request.window))
     assert (
         after.claims(later, limit=timedelta.max, window=(first.window[0], request.window[1])).complete_as_of
         is not None
@@ -151,10 +151,10 @@ def test_a_delayed_date_window_covers_every_date_since_the_previous_window():
 def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microsecond():
     daily = replace(WINDOW, window_size=timedelta(days=1))
     c = contract(window_type="datetime", shapes={"daily": daily})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(at(18), at(19))))
     request = next_extraction(ledger, "daily", at(21, 1))
     assert request.window == (at(19) + timedelta(microseconds=1), at(21, 1))
-    after = ledger.apply(Manifest(c.table, "daily", request.until, window=request.window))
+    after = ledger.apply(Manifest.single(c.table, "daily", request.until, window=request.window))
     assert (
         after.claims(request.until, limit=timedelta.max, window=(at(18), at(21, 1))).complete_as_of
         is not None
@@ -165,7 +165,7 @@ def test_datetime_windows_bridge_a_missed_run_from_the_first_uncovered_microseco
 def test_rolling_windows_use_coverage_bounds_rather_than_the_previous_read_time():
     daily = replace(WINDOW, window_size=timedelta(days=1))
     c = contract(window_type="datetime", shapes={"daily": daily})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(20), window=(at(18), at(19))))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(20), window=(at(18), at(19))))
     assert next_extraction(ledger, "daily", at(22)).window[0] == at(19) + timedelta(microseconds=1)
 
 
@@ -173,7 +173,9 @@ def test_rolling_windows_use_coverage_bounds_rather_than_the_previous_read_time(
 def test_ordinary_rolling_overlap_is_preserved_when_runs_are_close_together():
     c = contract(window_type="date", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(
-        Manifest(c.table, "daily", at(19), window=((at(19) - timedelta(days=29)).date(), at(19).date()))
+        Manifest.single(
+            c.table, "daily", at(19), window=((at(19) - timedelta(days=29)).date(), at(19).date())
+        )
     )
     request = next_extraction(ledger, "daily", at(20))
     assert request.window == ((at(20) - timedelta(days=29)).date(), at(20).date())
@@ -210,8 +212,8 @@ def test_a_partial_complete_keyless_window_prevents_an_overlapping_append_reques
         types={"day": "int"},
         start_at=at(17),
     )
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(19), window=(1, 10)))
     with pytest.raises(PlanningError, match="contiguous"):
         next_extraction(ledger, "append", at(20))
     assert plan_delivery(ledger, Requirement(c.table, at(20))).shape == "full"
@@ -222,23 +224,23 @@ def test_keyless_append_requests_start_at_retained_history_then_the_published_bo
     c = Contract("events", (), {"append": SINCE}, start_at=at(17))
     request = next_extraction(Ledger(c), "append", at(18))
     assert request.since == at(17)
-    ledger = Ledger(c).apply(Manifest(c.table, "append", at(18), since=at(17)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "append", at(18), since=at(17)))
     assert next_extraction(ledger, "append", at(19)).since == at(18)
 
 
 @pytest.mark.protocol("claims.5")
 def test_a_complete_window_does_not_break_the_table_generation_checkpoint():
     c = contract(shapes={"full": FULL, "daily": WINDOW, "feed": FEED})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18), generation="g1"))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18), generation="g1"))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(19), window=(1, 10)))
     assert next_extraction(ledger, "feed", at(20)).since == "g1"
 
 
 @pytest.mark.protocol("claims.5", "contract.shapes.5")
 def test_keyed_timestamp_lookback_is_subtracted_from_the_weakest_covered_completeness():
     c = contract(shapes={"full": FULL, "daily": WINDOW, "since": replace(SINCE, lookback=timedelta(hours=2))})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(19), window=(1, 10)))
     request = next_extraction(ledger, "since", at(20))
     assert request.since == at(18) - timedelta(hours=2)
     assert plan_delivery(ledger, Requirement(c.table, at(20))).since == request.since
@@ -249,8 +251,8 @@ def test_a_windowed_timestamp_lookback_uses_only_covered_evidence():
     c = contract(
         shapes={"full": FULL, "daily": WINDOW, "recent": replace(RECENT, lookback=timedelta(hours=1))}
     )
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(19), window=(1, 10)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(19), window=(1, 10)))
     assert next_extraction(ledger, "recent", at(20), window=(1, 10)).since == at(19) - timedelta(hours=1)
 
 
@@ -259,12 +261,12 @@ def test_a_windowed_timestamp_lookback_uses_only_covered_evidence():
 def test_timestamp_tombstones_can_repair_deletion_date_by_rereading_the_missing_deletions(lookback):
     tombstones = replace(SINCE, deletions=Deletions.TOMBSTONE, cost=1, lookback=lookback)
     c = contract(shapes={"full": FULL, "since": SINCE, "deletes": tombstones})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "since", at(19), since=at(18)))
     request = plan_delivery(ledger, Requirement(c.table, at(20), at(20)))
     assert request.shape == "deletes"
     assert request.since == min(at(18), at(19) - (lookback or timedelta(0)))
-    after = ledger.apply(Manifest(c.table, request.shape, request.until, since=request.since))
+    after = ledger.apply(Manifest.single(c.table, request.shape, request.until, since=request.since))
     assert after.claims(request.until, limit=timedelta.max).deletions_as_of == at(20)
 
 
@@ -277,8 +279,8 @@ def test_sufficient_deletion_date_does_not_force_timestamp_tombstones_to_reread_
             "deletes": replace(SINCE, deletions=Deletions.TOMBSTONE, cost=1),
         }
     )
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "since", at(19), since=at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "since", at(19), since=at(18)))
     request = plan_delivery(ledger, Requirement(c.table, at(20), at(18)))
     assert (request.shape, request.since) == ("deletes", at(19))
 
@@ -313,7 +315,7 @@ def test_group_planning_refuses_evidence_at_the_last_datetime():
     from dogana import Group, plan_together
 
     c = contract(shapes={"full": FULL})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", datetime.max.replace(tzinfo=UTC)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", datetime.max.replace(tzinfo=UTC)))
     with pytest.raises(PlanningError, match="the shared boundary exceeds the datetime range"):
         other = contract("other", shapes={"full": FULL})
         plan_together(Group((c, other)), {c.table: ledger, other.table: Ledger(other)}, at(19))
@@ -323,8 +325,8 @@ def test_group_planning_refuses_evidence_at_the_last_datetime():
 def test_an_unrepresentable_later_read_is_refused_without_overflow():
     c = contract(shapes={"full": FULL, "since": SINCE})
     latest = datetime.max.replace(tzinfo=UTC)
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    ledger = ledger.apply(Manifest(c.table, "since", latest, since=at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    ledger = ledger.apply(Manifest.single(c.table, "since", latest, since=at(18)))
     with pytest.raises(PlanningError, match="no admitted"):
         plan_delivery(ledger, Requirement(c.table, at(19), at(19)))
 
@@ -332,7 +334,7 @@ def test_an_unrepresentable_later_read_is_refused_without_overflow():
 @pytest.mark.protocol("contract.shapes.5")
 def test_lookback_underflow_is_reported_as_an_unavailable_request():
     c = contract(shapes={"full": FULL, "since": replace(SINCE, lookback=timedelta(days=1))})
-    ledger = Ledger(c).apply(Manifest(c.table, "full", datetime.min.replace(tzinfo=UTC)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", datetime.min.replace(tzinfo=UTC)))
     with pytest.raises(PlanningError, match="lookback"):
         next_extraction(ledger, "since", at(20))
     assert plan_delivery(ledger, Requirement(c.table, at(20))).shape == "full"
@@ -416,16 +418,16 @@ def test_a_rolling_anchor_includes_an_open_previous_endpoint(date_window):
 @pytest.mark.protocol("claims.5")
 def test_a_rolling_anchor_ignores_evidence_beyond_its_window_end():
     c = contract(window_type="datetime", shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(22), window=(at(25), at(26))))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(at(18), at(19))))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(22), window=(at(25), at(26))))
     assert next_extraction(ledger, "daily", at(23)).window[0] == at(19) + timedelta(microseconds=1)
 
 
 @pytest.mark.protocol("claims.5")
 def test_a_rolling_anchor_uses_the_newest_covered_endpoint():
     c = contract(window_type="datetime", shapes={"daily": replace(WINDOW, window_size=timedelta(days=1))})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(at(18), at(19))))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(22), window=(at(21), at(22))))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(at(18), at(19))))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(22), window=(at(21), at(22))))
     assert next_extraction(ledger, "daily", at(25)).window[0] == at(22) + timedelta(microseconds=1)
 
 
@@ -434,7 +436,7 @@ def test_a_whole_domain_base_does_not_extend_a_rolling_window_to_its_read_time()
     c = contract(
         window_type="datetime", shapes={"full": FULL, "daily": replace(WINDOW, window_size=timedelta(days=1))}
     )
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
     assert next_extraction(ledger, "daily", at(25)).window == (at(24), at(25))
 
 
@@ -456,7 +458,7 @@ def test_a_rolling_window_outside_the_datetime_range_is_refused():
 @pytest.mark.parametrize("shape", ["full", "since", "feed"])
 def test_every_shape_refuses_a_read_at_the_covered_evidence_boundary(shape):
     c = contract()
-    ledger = Ledger(c).apply(Manifest(c.table, "full", at(20), generation="g1"))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "full", at(20), generation="g1"))
     with pytest.raises(PlanningError):
         next_extraction(ledger, shape, at(20))
 
@@ -480,5 +482,5 @@ def test_an_initial_append_plan_can_advance_past_the_retained_history_start(requ
     request = plan_delivery(Ledger(c), Requirement(c.table, required, required))
     assert request.until == max(required, at(18) + timedelta(microseconds=1))
     assert request.since == at(18)
-    after = Ledger(c).apply(Manifest(c.table, request.shape, request.until, since=request.since))
+    after = Ledger(c).apply(Manifest.single(c.table, request.shape, request.until, since=request.since))
     assert after.claims(request.until, limit=timedelta.max).deletions_as_of >= required

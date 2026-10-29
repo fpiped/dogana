@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:ExtractionRequest",
+  "$id": "urn:dogana:wire:5:ExtractionRequest",
   "title": "ExtractionRequest",
   "type": "object",
   "properties": {
@@ -9,21 +9,21 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "table": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/identifier"
+      "$ref": "urn:dogana:wire:5:types#/$defs/identifier"
     },
     "shape": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
     },
     "until": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:5:types#/$defs/datetime"
     },
     "window": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/window"
+          "$ref": "urn:dogana:wire:5:types#/$defs/window"
         },
         {
           "type": "null"
@@ -31,7 +31,7 @@
       ]
     },
     "since": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/checkpoint"
+      "$ref": "urn:dogana:wire:5:types#/$defs/checkpoint"
     },
     "cost": {
       "type": "number",

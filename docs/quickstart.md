@@ -60,7 +60,8 @@ db.executescript(
     "create table orders (id integer, day text, amount integer);"
     "create table stock (id integer, qty integer);"
     "create table dogana_ledgers (table_name text primary key, document text);"
-    "create table dogana_receipts (identity text primary key, accepted integer, document text);"
+    "create table dogana_receipts (read text, table_name text, accepted integer, document text,"
+    " primary key (read, table_name));"
 )
 
 
@@ -88,16 +89,16 @@ def check(contract, manifest, live, deleted, path):
         ).encode()
     ).hexdigest()
     keys = [r["id"] for r in live] + [r["id"] for r in deleted]
-    inside = manifest.window is None or all(
-        manifest.window[0] <= date.fromisoformat(r[contract.window_column]) <= manifest.window[1]
-        for r in live
+    part = manifest.part(contract.table)
+    inside = part.window is None or all(
+        part.window[0] <= date.fromisoformat(r[contract.window_column]) <= part.window[1] for r in live
     )
     return (
-        Check("row_count", len(live) == manifest.rows and len(deleted) == manifest.tombstones),
+        Check("row_count", len(live) == part.rows and len(deleted) == part.tombstones),
         Check("schema_hash", contract.schema_hash is None or declared == contract.schema_hash),
         Check("key_integrity", len(set(keys)) == len(keys)),
         Check("rows_in_window", inside),
-        Check("content_hash", sha256(path.read_bytes()).hexdigest() == manifest.content_hash),
+        Check("content_hash", sha256(path.read_bytes()).hexdigest() == part.content_hash),
     )
 
 
@@ -125,7 +126,8 @@ def execute(plan, live, deleted):
 def deliver(contract, path, manifest, now):
     """Decide a file as the receiver does: replay, preflight, checks, then rows and ledger in one commit."""
     earlier = db.execute(
-        "select document from dogana_receipts where identity = ? and accepted", (manifest.identity,)
+        "select document from dogana_receipts where read = ? and table_name = ? and accepted",
+        (manifest.identity, contract.table),
     ).fetchone()
     if earlier:
         return replace(Receipt.from_json(earlier[0]), outcome=Outcome.REPLAYED)
@@ -142,8 +144,8 @@ def deliver(contract, path, manifest, now):
                 (contract.table, ledger.follow(receipt).to_json()),
             )
         db.execute(
-            "insert into dogana_receipts values (?, ?, ?)",
-            (manifest.identity, receipt.accepted, receipt.to_json()),
+            "insert into dogana_receipts values (?, ?, ?, ?)",
+            (manifest.identity, contract.table, receipt.accepted, receipt.to_json()),
         )
     return receipt
 ```
@@ -193,9 +195,9 @@ send("sunday", orders, "full", 18, [order(1, "2026-09-01", 100), order(2, "2026-
 sunday: accepted, orders [1, 2]
 ```
 
-The manifest travels beside the file as `sunday.csv.json`. It declares the shape, the instant the
-source was read, the number of rows and the SHA-256 of the file's bytes. Senders in other languages
-write it with `dogana manifest`.
+The manifest travels beside the file as `sunday.csv.json`. It declares the instant the source was
+read and, for the one table it holds, the shape, the number of rows and the SHA-256 of the file's
+bytes. Senders in other languages write it with `dogana manifest`.
 
 ## 4. A window file
 
@@ -335,7 +337,7 @@ ended and reports its deletions.
 ## 9. Decide related tables together
 
 ```python
-from dogana import Group
+from dogana import Group, Manifest, Part
 
 invoices = Contract("invoices", ("id",), {"full": Shape.full()}, types={"id": "int"})
 lines = Contract("invoice_lines", ("id",), {"full": Shape.full()}, types={"id": "int"})
@@ -343,35 +345,40 @@ group = Group((invoices, lines))
 ledgers = {"invoices": Ledger(invoices), "invoice_lines": Ledger(lines)}
 
 
-def together(invoices_at, lines_at):
-    """Both files read from one snapshot carry one instant; the loader then commits both or none."""
-    manifests = {
-        "invoices": invoices.manifest("full", datetime(2026, 10, invoices_at, tzinfo=UTC), rows=1),
-        "invoice_lines": lines.manifest("full", datetime(2026, 10, lines_at, tzinfo=UTC), rows=1),
-    }
-    receipts = group.apply(ledgers, manifests, now=datetime(2026, 10, 28, tzinfo=UTC))
-    outcomes = {table: receipt.outcome.value for table, receipt in receipts.items()}
-    print(outcomes, [check.detail for check in receipts["invoices"].checks if not check.passed])
+def read(day, **rows):
+    """One manifest for one snapshot of the source: one instant, and a part for each table it holds."""
+    parts = {table: Part(shape="full", rows=count) for table, count in rows.items()}
+    return Manifest(datetime(2026, 10, day, tzinfo=UTC), parts, snapshot=f"snap-{day}")
+
+
+def decide(manifest, **outcomes):
+    """Decide the read for the group; the loader then commits every table or none."""
+    receipts = group.apply(ledgers, manifest, now=datetime(2026, 10, 28, tzinfo=UTC), outcomes=outcomes)
+    results = {table: receipt.outcome.value for table, receipt in receipts.items()}
+    print(results, [check.detail for check in receipts["invoices"].checks if not check.passed])
     return receipts
 
 
-accepted = together(26, 26)
+accepted = decide(read(26, invoices=1, invoice_lines=1))
 after = {table: ledgers[table].follow(accepted[table]) for table in group.tables}
 print(
     f"exact as of {group.claims(after, datetime(2026, 10, 28, tzinfo=UTC), limit=timedelta.max).exact_as_of:%A}"
 )
-together(27, 26)
+decide(read(27, invoices=1, invoice_lines=1), invoice_lines=(Check("row_count", False),))
+decide(read(27, invoices=1))
 ```
 
 ```text
 {'invoices': 'accepted', 'invoice_lines': 'accepted'} []
 exact as of Monday
-{'invoices': 'rejected', 'invoice_lines': 'rejected'} ['read boundaries differ: invoice_lines 2026-10-26T00:00:00+00:00, invoices 2026-10-27T00:00:00+00:00']
+{'invoices': 'rejected', 'invoice_lines': 'rejected'} ['refused with invoice_lines']
+{'invoices': 'rejected'} ['the read declares no invoice_lines']
 ```
 
-A group names tables read together. Invoices and their lines are read in one snapshot, so both
-manifests carry the same instant, and `Group.apply` decides them as one. On Monday both are
-accepted; the loader commits both tables and both ledgers in one transaction, exactly as `deliver`
-does for one table, and both are exact as of Monday, so a join between them gives the source's
-answer. Files stamped with different instants cannot come from one snapshot: both are rejected, and
-nothing is committed.
+A group names the tables the loader decides as one. Invoices and their lines are read in one
+snapshot, so one manifest declares both: one instant, one `snapshot` token, and a part per table.
+`Group.apply` decides the read for the group. On Monday both tables are accepted; the loader
+commits both tables and both ledgers in one transaction, exactly as `deliver` does for one table,
+and both are exact as of Monday, so a join between them gives the source's answer. When the lines
+fail a check, the invoices are refused with them; a read that declares the invoices alone is
+refused too. Nothing is committed either time, and the two tables keep their common instant.

@@ -40,9 +40,9 @@ and the declaration counts only what was exported, no check can tell.
 
 1. You write a **contract** for each table: its key and the kinds of read you accept, called
    shapes.
-2. Every read arrives with a **manifest**, the sender's declaration: the shape, the instant the
-   source was read, the number of rows and of rows reporting a deletion, and the SHA-256 of the
-   file's bytes.
+2. Every read arrives with a **manifest**, the sender's declaration. It states the instant the
+   source was read and, for each table the read holds, the shape, the number of rows and of rows
+   reporting a deletion, and the SHA-256 of the file's bytes.
 3. A **gate** checks the manifest against the contract and against what is already proven. Your
    loader checks the rows against the manifest and reports the result. If any check fails, the whole
    delivery is refused.

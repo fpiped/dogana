@@ -31,8 +31,9 @@ Every one of these passes every check when broken, and makes the dates lie.
    deleted ones. Always set `content_hash`, the SHA-256 of the file's bytes; tombstone shapes need
    it.
 5. **Tables read together come from one snapshot** (REPEATABLE READ, SERIALIZABLE, an exported
-   snapshot, `AS OF` one SCN, SNAPSHOT isolation), every manifest stamped with its instant. READ
-   COMMITTED and separate jobs are not one snapshot; giving them one `produced_at` fabricates it.
+   snapshot, `AS OF` one SCN, SNAPSHOT isolation), declared in one manifest stamped with its
+   instant. READ COMMITTED and separate jobs are not one snapshot; one manifest for them fabricates
+   it.
 
 ## Contract and manifest
 
@@ -84,8 +85,8 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 
 ## Deliver and read
 
-- dogana never reads rows: the loader does, in this order. Look the manifest's identity up among
-  the receipts (an accepted one is a replay: answer with it, read nothing). `Gate.preflight(ledger,
+- dogana never reads rows: the loader does, in this order. Look the read's identity and the table
+  up among the receipts (an accepted one is a replay: answer with it, read nothing). `Gate.preflight(ledger,
   manifest, now=now)`; on a failure, `Gate.reject`. Check the staged rows against the manifest
   (counts, keys, window, column hash, `content_hash`) and pass the results as `Check` values to
   `Gate.evaluate(ledger, manifest, outcomes, now=now)`. On acceptance execute
@@ -102,9 +103,12 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 
 ## Tables together
 
-`Group((invoices, lines)).apply(ledgers, manifests, now=now, outcomes=checks)`: every delivery is
-decided alone, all must share one `produced_at`, and every table is accepted or every table is
-rejected; the loader then commits every table's rows and ledger together, or nothing. A reader trusts a join only when
+One snapshot of several tables is one manifest with a part per table:
+`Manifest(produced_at, {"invoices": Part(shape="full", rows=10), "invoice_lines": Part(shape="full",
+rows=40)}, snapshot="txn-42")`. `Group((invoices, lines)).apply(ledgers, manifest, now=now,
+outcomes=checks)`: every table is decided alone, the read must declare every table of the group, and
+every table is accepted or every table is rejected; the loader then commits every table's rows and
+ledger together, or nothing. A reader trusts a join only when
 `group.claims(ledgers, now, limit=timedelta.max).exact_as_of` is not `None`, reading rows and
 ledgers under one publication. Later deliveries must bring each table back to equal dates: complete
 reads, or changes with tombstones; a table without changes sends an empty read of its tombstone

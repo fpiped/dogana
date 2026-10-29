@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from hashlib import sha256
 
 from .contract import (
     AppendInterval,
@@ -81,7 +79,7 @@ class ApplyPlan(Wire):
                 actions = (Action(Operation.REPLACE_WINDOW, window),)
             case _:
                 actions = (Action(Operation.UPSERT),)
-                if manifest.tombstones:
+                if delivery.part.tombstones:
                     actions += (Action(Operation.TOMBSTONE),)
         return cls(contract.table, contract.key, contract.window_column, actions)
 
@@ -119,10 +117,12 @@ class Outcome(StrEnum):
 
 @dataclass(frozen=True)
 class Receipt(Wire):
-    """One decision: what was delivered and checked, what it changed, and where it sits in the chain.
+    """One decision on one table: what the read declared about it, the checks, what changed, and where
+    the decision sits in the chain.
 
-    The ledger is the fold of accepted receipts; a receipt names the ledger it leaves by identity, so
-    its size follows the delivery's coverage, never the table's history.
+    `manifest` holds the table's part of the read alone; `read_identity` names the whole read. The ledger
+    is the fold of accepted receipts; a receipt names the ledger it leaves by identity, so its size follows
+    the delivery's coverage, never the table's history.
     """
 
     manifest: Manifest
@@ -133,11 +133,14 @@ class Receipt(Wire):
     ledger_identity: str
     publication_id: str | None
     received_at: datetime
+    read_identity: str
     source: str | None = None
     base_publication_id: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.manifest.tables != (self.contract.table,):
+            raise InvalidContract("a receipt decides one table: its manifest holds that table's part alone")
         if self.accepted != (self.transition is not None):
             raise InvalidContract("only accepted receipts contain a transition")
         if self.accepted and not all(c.passed for c in self.checks):
@@ -146,7 +149,7 @@ class Receipt(Wire):
             raise InvalidContract("accepted receipts cannot attest a future source boundary")
         if not self.accepted and self.base_publication_id != self.publication_id:
             raise InvalidContract("rejected receipts retain their base publication")
-        if not self.ledger_identity or self.publication_id == "":
+        if not self.ledger_identity or not self.read_identity or self.publication_id == "":
             raise InvalidContract("a receipt's identities are never empty")
 
     @property
@@ -181,27 +184,20 @@ class Gate:
 
     @staticmethod
     def together(alone: tuple[Receipt, ...]) -> Check:
-        """The joint check of a group: one read boundary, and every table accepted on its own."""
-        reads = sorted((receipt.contract.table, receipt.manifest.produced_at) for receipt in alone)
+        """The joint check of a group: one read, every table accepted alone.
+
+        The passed check names the read, so a receipt carrying it was accepted with exactly that read.
+        """
+        reads = sorted((receipt.contract.table, receipt.read_identity) for receipt in alone)
+        if len({read for _, read in reads}) != 1:
+            named = ", ".join(f"{table} {read}" for table, read in reads)
+            return Check("together", False, f"receipts of different reads: {named}")
         refused = sorted(receipt.contract.table for receipt in alone if not receipt.accepted)
-        if len({boundary for _, boundary in reads}) != 1:
-            boundaries = ", ".join(f"{table} {boundary.isoformat()}" for table, boundary in reads)
-            return Check("together", False, f"read boundaries differ: {boundaries}")
         if refused:
             return Check("together", False, f"refused with {', '.join(refused)}")
-        return Gate.delivered(tuple((r.contract.table, r.manifest) for r in alone))
-
-    @staticmethod
-    def delivered(reads: tuple[tuple[str, Manifest], ...]) -> Check:
-        """The passed joint check of these manifests decided together.
-
-        Its digest names the delivery, so a receipt carrying it was accepted with exactly these files.
-        """
-        tables = ", ".join(sorted(table for table, _ in reads))
-        boundary = min(manifest.produced_at for _, manifest in reads)
-        named = sorted([table, manifest.identity] for table, manifest in reads)
-        digest = sha256(json.dumps(named, separators=(",", ":")).encode()).hexdigest()
-        return Check("together", True, f"{tables} as of {boundary.isoformat()}, delivery {digest}")
+        tables = ", ".join(table for table, _ in reads)
+        boundary = alone[0].manifest.produced_at.isoformat()
+        return Check("together", True, f"{tables} as of {boundary}, read {reads[0][1]}")
 
     @staticmethod
     def reject(
@@ -213,10 +209,11 @@ class Gate:
         source: str | None = None,
     ) -> Receipt:
         now = utc(now)
+        own = manifest.only(ledger.contract.table)
         if not checks or all(check.passed for check in checks):
             raise InvalidContract("a rejection needs a failed check")
         return Receipt(
-            manifest,
+            own,
             ledger.contract,
             checks,
             Outcome.REJECTED,
@@ -224,6 +221,7 @@ class Gate:
             ledger.identity,
             ledger.publication_id,
             now,
+            manifest.identity,
             source=source,
             base_publication_id=ledger.publication_id,
         )
@@ -239,27 +237,28 @@ class Gate:
         source: str | None = None,
         joint: tuple[Check, ...] = (),
     ) -> Receipt:
-        """Decide one delivery.
+        """Decide the ledger's table from a read: the part the read declares about it.
 
         `outcomes` are the checks the receiver ran on the rows against the manifest, recorded as its own;
-        `joint` holds the checks of the group the delivery travels with. A failed check of either rejects.
+        `joint` holds the checks of the group the table travels with. A failed check of either rejects.
         """
         now = utc(now)
+        own = manifest.only(ledger.contract.table)
         if not isinstance(outcomes, (tuple, list)) or any(not isinstance(c, Check) for c in outcomes):
             raise InvalidContract("row outcomes must be Check values")
         if any(not isinstance(c, Check) for c in joint):
             raise InvalidContract("joint outcomes must be Check values")
-        checks = cls.preflight(ledger, manifest, now=now)
+        checks = cls.preflight(ledger, own, now=now)
         if all(c.passed for c in checks):
             checks += tuple(outcomes)
         checks += tuple(joint)
         if not all(c.passed for c in checks):
             return cls.reject(ledger, manifest, checks, now=now, source=source)
-        after = ledger.apply(manifest)
-        coverage = coverage_window(manifest.check(ledger.contract))
-        transition = Transition(ApplyPlan.build(ledger.contract, manifest), after.covered(coverage))
+        after = ledger.apply(own)
+        coverage = coverage_window(own.check(ledger.contract))
+        transition = Transition(ApplyPlan.build(ledger.contract, own), after.covered(coverage))
         return Receipt(
-            manifest,
+            own,
             ledger.contract,
             checks,
             Outcome.ACCEPTED,
@@ -267,6 +266,7 @@ class Gate:
             after.identity,
             after.publication_id,
             now,
+            manifest.identity,
             source=source,
             base_publication_id=ledger.publication_id,
         )

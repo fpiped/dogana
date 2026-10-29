@@ -8,7 +8,7 @@ from hypothesis import strategies as st
 
 from dogana import Contract, Ledger, Manifest, Region, RejectedDelivery
 from dogana.contract import Window
-from tests.support import FULL, RECENT, SINCE, WINDOW
+from tests.support import FULL, RECENT, SINCE, WINDOW, part_of
 
 CONTRACT = Contract(
     "moves",
@@ -31,7 +31,7 @@ def manifests(draw: st.DrawFn) -> Manifest:
     since = None
     if not CONTRACT.shapes[shape].complete:
         since = produced - timedelta(hours=draw(st.integers(0, 500)))
-    return Manifest("moves", shape, produced, window=window, since=since, rows=0)
+    return Manifest.single("moves", shape, produced, window=window, since=since, rows=0)
 
 
 @pytest.mark.protocol("trust-model.2", "ledger.structure")
@@ -39,10 +39,10 @@ def manifests(draw: st.DrawFn) -> Manifest:
 @given(history=st.lists(manifests(), min_size=1, max_size=40))
 @example(
     history=[
-        Manifest("moves", "full", START),
-        Manifest("moves", "daily", START + timedelta(days=1), window=(START.date(), START.date())),
-        Manifest("moves", "since", START + timedelta(days=2), since=START),
-        Manifest("moves", "full", START),
+        Manifest.single("moves", "full", START),
+        Manifest.single("moves", "daily", START + timedelta(days=1), window=(START.date(), START.date())),
+        Manifest.single("moves", "since", START + timedelta(days=2), since=START),
+        Manifest.single("moves", "full", START),
     ]
 )
 def test_arbitrary_delivery_sequences_keep_every_ledger_invariant(history: list[Manifest]) -> None:
@@ -54,7 +54,7 @@ def test_arbitrary_delivery_sequences_keep_every_ledger_invariant(history: list[
         except RejectedDelivery:
             assert ledger.to_json() == before
             continue
-        coverage = Region(*manifest.window) if manifest.window else Region()
+        coverage = Region(*part_of(manifest).window) if part_of(manifest).window else Region()
         assert after.regions[0].low is None and after.regions[-1].high is None
         assert all(a.touches(b) for a, b in zip(after.regions, after.regions[1:], strict=False))
         for region in after.regions:
@@ -64,7 +64,7 @@ def test_arbitrary_delivery_sequences_keep_every_ledger_invariant(history: list[
             assert region.deletions_as_of is not None and region.deletions_as_of <= region.complete_as_of
             if region.intersection(coverage) is not None:
                 assert region.complete_as_of == manifest.produced_at
-                if CONTRACT.shapes[manifest.shape].complete:
+                if CONTRACT.shapes[part_of(manifest).shape].complete:
                     assert region.deletions_as_of == manifest.produced_at
         for new in after.regions:
             for old in ledger.regions:

@@ -50,7 +50,7 @@ def test_mutations_of_nested_wire_values_raise_public_contract_errors(name, cls,
     elif mutation == "kind":
         node["kind"] = "unknown"
     else:
-        node["version"] = data.draw(st.sampled_from((0, 1, 2, 3, True, "4")), label="version")
+        node["version"] = data.draw(st.sampled_from((0, 1, 2, 3, 4, True, "5")), label="version")
     with pytest.raises(InvalidContract):
         cls.from_json(json.dumps(value))
 
@@ -87,7 +87,7 @@ def test_surrogates_in_values_and_property_names_are_refused(codepoint):
         with pytest.raises(SerializationError, match="Unicode scalar"):
             canonical_json(value)
     with pytest.raises(InvalidContract, match="Unicode scalar"):
-        Manifest("stock", text, at(18))
+        Manifest.single("stock", text, at(18))
 
 
 @pytest.mark.protocol("versioned-json.5")
@@ -100,9 +100,9 @@ def test_lossy_integer_counts_and_bounds_are_refused(value):
         canonical_json(value)
     for change in ({"rows": value}, {"tombstones": value}, {"window": (0, value)}):
         with pytest.raises(InvalidContract, match="binary64"):
-            Manifest("stock", "full", at(18), **change)
-        raw = Manifest("stock", "full", at(18)).to_dict()
-        raw.update(json.loads(json.dumps(change)))
+            Manifest.single("stock", "full", at(18), **change)
+        raw = Manifest.single("stock", "full", at(18)).to_dict()
+        raw["parts"]["stock"].update(json.loads(json.dumps(change)))
         with pytest.raises(InvalidContract, match="binary64"):
             Manifest.from_dict(raw)
 
@@ -155,7 +155,7 @@ def test_recursive_python_containers_cannot_escape_wire_validation():
     from dogana import SerializationError
     from tests.support import at
 
-    raw = Manifest("stock", "full", at(18)).to_dict()
+    raw = Manifest.single("stock", "full", at(18)).to_dict()
     raw["keys"] = [raw]
     with pytest.raises(SerializationError):
         Manifest.from_dict(raw)

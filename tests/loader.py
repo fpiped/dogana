@@ -49,10 +49,11 @@ def check_rows(contract, manifest, rows, previous):
     rows, deleted, unmarked = split_rows(contract, rows)
     columns = rows.columns
     delivery = manifest.check(contract)
+    part = delivery.part
     names = ["row_count"]
     if contract.schema_hash is not None:
         names.append("schema_hash")
-    if manifest.window is not None:
+    if part.window is not None:
         names.append("rows_in_window")
     if contract.window_column is not None:
         names.append("window_present")
@@ -62,7 +63,7 @@ def check_rows(contract, manifest, rows, previous):
         names.append("key_integrity")
     schema_ok = contract.schema_hash is None or (
         schema_hash(columns) == contract.schema_hash
-        and manifest.schema_hash == contract.schema_hash
+        and part.schema_hash == contract.schema_hash
         and all(
             tuple(row) == tuple(columns)
             and all(
@@ -75,7 +76,7 @@ def check_rows(contract, manifest, rows, previous):
     )
     if not schema_ok:
         return tuple(
-            Check(name, manifest.rows == len(rows), "count")
+            Check(name, part.rows == len(rows), "count")
             if name == "row_count"
             else Check(name, False, "schema differs" if name == "schema_hash" else "not evaluated")
             for name in names
@@ -88,7 +89,7 @@ def check_rows(contract, manifest, rows, previous):
         return name in row and type(row[name]) is LOGICAL_TYPES[contract.types[name]].python_type
 
     live = [key(r) for r in rows]
-    window, col = manifest.window, contract.window_column
+    window, col = part.window, contract.window_column
 
     def inside(row):
         return window is None or typed(row, col) and window[0] <= row[col] <= window[1]
@@ -96,7 +97,7 @@ def check_rows(contract, manifest, rows, previous):
     published = {key(r): r for r in previous} if contract.key else {}
     cursor = contract.cursor_column
     outcomes = {
-        "row_count": manifest.rows == len(rows) and manifest.tombstones == len(deleted) and not unmarked,
+        "row_count": part.rows == len(rows) and part.tombstones == len(deleted) and not unmarked,
         "schema_hash": schema_ok,
         "key_integrity": all(typed(row, name) for row in rows for name in contract.key)
         and all(None not in k for k in deleted)
@@ -158,9 +159,12 @@ class Loader:
         return tuple(r for r in self.receipts if r.contract.table == table)
 
     def deliver(self, contract, rows, manifest, now):
-        """Decide a delivery as a receiver does: replay by identity, check the rows, decide, commit."""
+        """Decide a table of a read as a receiver does: replay by the read, check the rows, decide, commit."""
         for earlier in self.receipts:
-            if earlier.accepted and earlier.manifest.identity == manifest.identity:
+            if earlier.accepted and (earlier.read_identity, earlier.contract.table) == (
+                manifest.identity,
+                contract.table,
+            ):
                 return replace(earlier, outcome=Outcome.REPLAYED)
         ledger = self.ledger(contract)
         source = RowSource(rows, getattr(rows, "columns", None))

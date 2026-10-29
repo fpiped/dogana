@@ -127,7 +127,7 @@ def _apply_request(ledger: Ledger, request: ExtractionRequest) -> Ledger:
         generation = request.since
     try:
         return ledger.apply(
-            Manifest(
+            Manifest.single(
                 request.table,
                 request.shape,
                 request.until,

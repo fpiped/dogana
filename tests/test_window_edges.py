@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from dogana import Ledger, Manifest, Region
-from tests.support import WINDOW, at
+from tests.support import WINDOW, at, part_of
 from tests.support import accounting_contract as contract
 
 
@@ -27,10 +27,10 @@ def test_open_and_closed_discrete_windows_clip_only_their_exact_points(low, unit
 )
 def test_equal_adjacent_and_exactly_touching_windows_have_no_phantom_gap(low, unit):
     c = contract(window_type=type(low).__name__, shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(low, low)))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=(low + unit, low + 3 * unit)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(low, low)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(20), window=(low + unit, low + 3 * unit)))
     assert ledger.claims(at(20), limit=timedelta.max, window=(low, low + 3 * unit)).complete_as_of == at(19)
-    ledger = ledger.apply(Manifest(c.table, "daily", at(21), window=(low + 3 * unit, low + 4 * unit)))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(21), window=(low + 3 * unit, low + 4 * unit)))
     assert ledger.claims(
         at(21), limit=timedelta.max, window=(low + 3 * unit, low + 3 * unit)
     ).deletions_as_of == at(21)
@@ -45,8 +45,8 @@ def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings
     low = datetime(2026, 10, 25, 2, 30, tzinfo=rome, fold=0)
     high = datetime(2026, 10, 25, 2, 30, tzinfo=rome, fold=1)
     c = contract(window_type="datetime", shapes={"daily": WINDOW})
-    manifest = Manifest(c.table, "daily", at(26), window=(low, high))
-    assert manifest.window == (low.astimezone(UTC), high.astimezone(UTC))
+    manifest = Manifest.single(c.table, "daily", at(26), window=(low, high))
+    assert part_of(manifest).window == (low.astimezone(UTC), high.astimezone(UTC))
     ledger = Ledger(c).apply(manifest)
     assert ledger == Ledger.from_json(ledger.to_json())
     for offset in (0, 30, 60):
@@ -70,8 +70,8 @@ def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_
 @pytest.mark.protocol("contract.domains")
 def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap():
     c = contract(window_type="str", shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("a", "a")))
-    ledger = ledger.apply(Manifest(c.table, "daily", at(20), window=("a\x00", "a\x00")))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=("a", "a")))
+    ledger = ledger.apply(Manifest.single(c.table, "daily", at(20), window=("a\x00", "a\x00")))
     claims = ledger.claims(at(20), limit=timedelta.max, window=("a", "a\x00"))
     assert claims.complete_as_of == at(19)
     assert len(claims.regions) == 2
@@ -83,7 +83,7 @@ def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap(
 )
 def test_full_representable_window_delivery_leaves_no_unknown_exterior(low, high):
     c = contract(window_type=type(low).__name__, shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(low, high)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(low, high)))
     assert ledger.claims(at(19), limit=timedelta.max).complete_as_of == at(19)
     assert len(ledger.regions) == 1
     assert Ledger.from_json(ledger.to_json()) == ledger
@@ -92,7 +92,7 @@ def test_full_representable_window_delivery_leaves_no_unknown_exterior(low, high
 @pytest.mark.protocol("contract.domains")
 def test_first_string_partition_delivery_leaves_no_unknown_region_below_the_empty_string():
     c = contract(window_type="str", shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("", "")))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=("", "")))
     assert len(ledger.regions) == 2
     assert ledger.regions[0].complete_as_of == at(19)
 
@@ -146,7 +146,7 @@ def test_delivery_regions_only_touch_their_ordered_successor():
 @pytest.mark.parametrize("value", [2**53, 2**100, -(2**100)])
 def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value):
     c = contract(shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(value, value)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(value, value)))
     assert ledger.claims(at(19), limit=timedelta.max, window=(value, value)).complete_as_of == at(19)
     assert ledger.claims(at(19), limit=timedelta.max).complete_as_of is None
     assert len(ledger.regions) == 3
@@ -160,7 +160,7 @@ def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value)
 @pytest.mark.parametrize("maximum", [date.max, datetime.max.replace(tzinfo=UTC)])
 def test_delivery_at_the_last_scalar_preserves_the_preceding_unknown_domain(maximum):
     c = contract(window_type=type(maximum).__name__, shapes={"daily": WINDOW})
-    ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=(maximum, maximum)))
+    ledger = Ledger(c).apply(Manifest.single(c.table, "daily", at(19), window=(maximum, maximum)))
     assert len(ledger.regions) == 2
     assert ledger.regions[0].complete_as_of is None
     assert ledger.regions[1].complete_as_of == at(19)

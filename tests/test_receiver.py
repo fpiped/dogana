@@ -7,7 +7,7 @@ import pytest
 
 from dogana import ApplyPlan, Gate, InconsistentPublication, Ledger, Operation, Outcome, State
 from tests.loader import Loader
-from tests.support import FULL, SINCE, at, contract
+from tests.support import FULL, SINCE, at, contract, revised
 
 
 def rows(*keys, day=18):
@@ -52,7 +52,7 @@ def test_a_repeated_manifest_replays_unread_and_a_corrected_file_is_a_new_delive
     again = loader.deliver(c, rows(2), manifest, at(19))
     assert again.outcome is Outcome.REPLAYED and again.identity == first.identity
     assert loader.read(c.table) == rows(1)
-    corrected = replace(manifest, content_hash="a" * 64)
+    corrected = revised(manifest, content_hash="a" * 64)
     assert corrected.identity != manifest.identity
     assert not loader.deliver(c, rows(2), corrected, at(19)).accepted
     later = loader.deliver(c, rows(2), replace(corrected, produced_at=at(19)), at(19))
@@ -107,3 +107,26 @@ def test_changes_without_deletions_keep_a_removed_row_until_a_complete_read():
     assert loader.deliver(c, rows(1), c.manifest("full", at(20), rows=1), at(20)).accepted
     assert loader.read(c.table) == rows(1)
     assert loader.ledger(c).claims(at(20), limit=timedelta.max).exact_as_of == at(20)
+
+
+@pytest.mark.protocol("receiver.1")
+def test_a_read_of_two_tables_replays_per_table_and_a_part_sent_alone_is_a_new_decision():
+    from dogana import Manifest, Part
+
+    loader, orders, lines = Loader(), contract("orders"), contract("order_lines")
+    read = Manifest(
+        at(18),
+        {
+            "orders": Part(shape="full", rows=1, schema_hash=orders.schema_hash),
+            "order_lines": Part(shape="full", rows=2, schema_hash=lines.schema_hash),
+        },
+    )
+    first = loader.deliver(orders, rows(1), read, at(18))
+    assert first.accepted and first.read_identity == read.identity
+    assert loader.deliver(orders, rows(2), read, at(19)).outcome is Outcome.REPLAYED
+    assert loader.deliver(lines, rows(1, 2), read, at(19)).accepted
+    assert loader.deliver(lines, rows(3), read, at(19)).outcome is Outcome.REPLAYED
+    assert loader.read("orders") == rows(1) and loader.read("order_lines") == rows(1, 2)
+    alone = loader.deliver(orders, rows(1), read.only("orders"), at(19))
+    assert not alone.accepted and alone.read_identity != read.identity
+    assert [check.name for check in alone.checks if not check.passed] == ["transition"]

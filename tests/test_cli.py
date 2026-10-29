@@ -1,7 +1,6 @@
 import json
 import subprocess
 import sys
-from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -10,7 +9,7 @@ import pytest
 
 from dogana import Checkpoint, Contract, Gate, Ledger, Manifest, Shape
 from dogana.cli import main
-from tests.support import schema_hash
+from tests.support import part_of, revised, schema_hash
 
 COLUMNS = {"id": "int", "day": "date", "value": "str"}
 BOUNDARY = "2026-10-26T06:00:00Z"
@@ -48,6 +47,10 @@ def written(data):
     return Manifest.from_json(Path(str(data) + ".json").read_text())
 
 
+def declared(data):
+    return part_of(written(data))
+
+
 FULL = ("--shape", "full", "--produced-at", BOUNDARY, "--rows", "2")
 
 
@@ -56,10 +59,14 @@ def test_a_manifest_declares_the_counts_hashes_the_bytes_and_lands_beside_the_fi
     assert run(tmp_path, "manifest", str(data), *FULL) == 0
     assert capsys.readouterr().out == f"{data}.json\n"
     manifest = written(data)
-    assert (manifest.rows, manifest.tombstones) == (2, 0)
-    assert manifest.content_hash == sha256(data.read_bytes()).hexdigest()
-    assert manifest.schema_hash == contract().schema_hash
+    part = manifest.part("orders")
+    assert (part.rows, part.tombstones) == (2, 0)
+    assert part.content_hash == sha256(data.read_bytes()).hexdigest()
+    assert part.schema_hash == contract().schema_hash
     assert manifest.produced_at == datetime(2026, 10, 26, 6, tzinfo=UTC)
+    assert manifest.snapshot is None
+    assert run(tmp_path, "manifest", str(data), *FULL, "--snapshot", "txn-42", "--force") == 0
+    assert written(data).snapshot == "txn-42"
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "orders.contract.json",
         "orders.csv",
@@ -75,7 +82,7 @@ def test_the_rows_are_declared_by_the_sender_never_counted(files, capsys):
     assert "--rows" in capsys.readouterr().err
     data.write_text("not, a, table\n")
     assert run(tmp_path, "manifest", str(data), *FULL) == 0
-    assert written(data).rows == 2
+    assert declared(data).rows == 2
 
 
 def test_the_written_sidecar_is_what_the_example_file_drop_accepts(files):
@@ -114,9 +121,9 @@ def test_windows_are_typed_by_the_window_column_or_derived_from_the_shape(files)
     daily = ("--shape", "daily", "--produced-at", BOUNDARY, "--rows", "2")
     window = ("--window", "2026-10-01", "2026-10-26")
     assert run(tmp_path, "manifest", str(data), *daily, *window) == 0
-    assert written(data).window == (date(2026, 10, 1), date(2026, 10, 26))
+    assert declared(data).window == (date(2026, 10, 1), date(2026, 10, 26))
     assert run(tmp_path, "manifest", str(data), *daily, "--force") == 0
-    assert written(data).window == (date(2026, 9, 27), date(2026, 10, 26))
+    assert declared(data).window == (date(2026, 9, 27), date(2026, 10, 26))
 
 
 @pytest.mark.parametrize(
@@ -142,8 +149,8 @@ def test_a_tombstone_shape_declares_its_tombstones(files):
     tmp_path, data = files
     arguments = ("--shape", "feed", "--since", "g1", "--generation", "g2", "--rows", "1", "--tombstones", "2")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
-    manifest = written(data)
-    assert (manifest.rows, manifest.tombstones, manifest.since, manifest.generation) == (1, 2, "g1", "g2")
+    part = written(data).part("orders")
+    assert (part.rows, part.tombstones, part.since, part.generation) == (1, 2, "g1", "g2")
 
 
 def test_sequence_positions_are_integers(tmp_path):
@@ -158,7 +165,7 @@ def test_sequence_positions_are_integers(tmp_path):
     data.write_text("id\n1\n")
     arguments = ("--shape", "changes", "--since", "100", "--generation", "150", "--rows", "1")
     assert run(tmp_path, "manifest", str(data), "--produced-at", BOUNDARY, *arguments) == 0
-    assert (written(data).since, written(data).generation) == (100, 150)
+    assert (declared(data).since, declared(data).generation) == (100, 150)
 
 
 def test_a_missing_file_is_named(files, capsys):
@@ -189,7 +196,7 @@ def test_check_refuses_a_schema_hash_the_gate_would_refuse(files, capsys):
         rows=2,
         content_hash=sha256(data.read_bytes()).hexdigest(),
     )
-    (tmp_path / "orders.csv.json").write_text(replace(manifest, schema_hash="0" * 64).to_json())
+    (tmp_path / "orders.csv.json").write_text(revised(manifest, schema_hash="0" * 64).to_json())
     assert run(tmp_path, "check", str(data)) == 1
     assert "manifest column hash differs from the contract's" in capsys.readouterr().err
 

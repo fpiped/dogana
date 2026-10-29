@@ -1,16 +1,16 @@
 {
   "examples": {
     "contract": "73e7a37939f0583ff390d280f0d621184532643e8067ca6b93d70b0829751737",
-    "manifest": "8144bee1f04bf16b9bf79f1f997c6e472931da16325fa7091070ce80a9210799",
-    "ledger": "a47cab9c2c742ea3839bafb02c581f9342d77433273f4cddd67c238857346cd5",
-    "receipt": "b575a8a04c4d1d04f2a405f4a5c9ef29cd34f476f1ed1ef567a848400563d168"
+    "manifest": "b277afc4f94fdbf0fa3be174f2375c6692134b6c3ee17cc21540e3263dd0d1b8",
+    "ledger": "fca4032d7b05e82c3863db1fa0643c2e9921687370d59c61dce94eb4165fc3e1",
+    "receipt": "a7ba43c4d2bda7752adee898b257c1805c21c9472b6462a43e403e89ec9619ce"
   },
   "vectors": [
     {
       "name": "shape-defaults",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -26,7 +26,7 @@
       "name": "shape-numbers-and-durations",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "window",
         "completeness": "changed_only",
         "deletions": "tombstone",
@@ -46,49 +46,61 @@
       "name": "minimal-manifest",
       "wire": {
         "kind": "Manifest",
-        "version": 4,
-        "table": "stock",
-        "shape": "full",
+        "version": 5,
         "produced_at": {
           "$datetime": "2026-10-18T00:00:00+00:00"
         },
-        "window": null,
-        "since": null,
-        "generation": null,
-        "rows": null,
-        "schema_hash": null,
-        "tombstones": 0,
-        "content_hash": null
+        "parts": {
+          "stock": {
+            "kind": "Part",
+            "version": 5,
+            "shape": "full",
+            "window": null,
+            "since": null,
+            "generation": null,
+            "rows": null,
+            "schema_hash": null,
+            "tombstones": 0,
+            "content_hash": null
+          }
+        },
+        "snapshot": null
       },
-      "canonical": "{\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"},\"shape\":\"full\",\"table\":\"stock\"}",
-      "sha256": "31b5b0420d68fd744536c43bc48c79c11be628a8a5dea862cbc907a50e230b96"
+      "canonical": "{\"kind\":\"Manifest\",\"parts\":{\"stock\":{\"kind\":\"Part\",\"shape\":\"full\"}},\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00+00:00\"}}",
+      "sha256": "769373dea8b70c9560aa8ee77c434708c6da4d2ce2fefb1d9e6777850236408c"
     },
     {
       "name": "unicode-shape-and-utc",
       "wire": {
         "kind": "Manifest",
-        "version": 4,
-        "table": "stock",
-        "shape": "récent",
+        "version": 5,
         "produced_at": {
           "$datetime": "2026-10-18T02:00:00.123456+02:00"
         },
-        "window": null,
-        "since": null,
-        "generation": null,
-        "rows": 2,
-        "schema_hash": null,
-        "tombstones": 2,
-        "content_hash": "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
+        "parts": {
+          "stock": {
+            "kind": "Part",
+            "version": 5,
+            "shape": "récent",
+            "window": null,
+            "since": null,
+            "generation": null,
+            "rows": 2,
+            "schema_hash": null,
+            "tombstones": 2,
+            "content_hash": "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
+          }
+        },
+        "snapshot": null
       },
-      "canonical": "{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"kind\":\"Manifest\",\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"},\"rows\":2,\"shape\":\"récent\",\"table\":\"stock\",\"tombstones\":2}",
-      "sha256": "4ad6c477daccfcab252c50399eb8c9ab436d638d25657be00b5ba9930e11f6b6"
+      "canonical": "{\"kind\":\"Manifest\",\"parts\":{\"stock\":{\"content_hash\":\"d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed\",\"kind\":\"Part\",\"rows\":2,\"shape\":\"récent\",\"tombstones\":2}},\"produced_at\":{\"$datetime\":\"2026-10-18T00:00:00.123456+00:00\"}}",
+      "sha256": "001d33ff7b8f69694c35fce21694914b9923bd6053d9d619098b1cdd791a3492"
     },
     {
       "name": "shape-small-cost",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -104,7 +116,7 @@
       "name": "shape-fixed-cost",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -120,7 +132,7 @@
       "name": "shape-exponent-cost",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -136,7 +148,7 @@
       "name": "shape-negative-zero",
       "wire": {
         "kind": "Shape",
-        "version": 4,
+        "version": 5,
         "coverage": "all",
         "completeness": "complete",
         "deletions": "absence",
@@ -152,7 +164,7 @@
       "name": "utf16-shape-name-order",
       "wire": {
         "kind": "Contract",
-        "version": 4,
+        "version": 5,
         "table": "stock",
         "key": [
           "id"
@@ -160,7 +172,7 @@
         "shapes": {
           "�": {
             "kind": "Shape",
-            "version": 4,
+            "version": 5,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -171,7 +183,7 @@
           },
           "😀": {
             "kind": "Shape",
-            "version": 4,
+            "version": 5,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -197,7 +209,7 @@
       "name": "contract-types-and-external-hash",
       "wire": {
         "kind": "Contract",
-        "version": 4,
+        "version": 5,
         "table": "events",
         "key": [
           "id"
@@ -205,7 +217,7 @@
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 4,
+            "version": 5,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",
@@ -216,7 +228,7 @@
           },
           "daily": {
             "kind": "Shape",
-            "version": 4,
+            "version": 5,
             "coverage": "window",
             "completeness": "complete",
             "deletions": "absence",
@@ -244,13 +256,13 @@
       "name": "unbound-contract-defaults",
       "wire": {
         "kind": "Contract",
-        "version": 4,
+        "version": 5,
         "table": "events",
         "key": [],
         "shapes": {
           "full": {
             "kind": "Shape",
-            "version": 4,
+            "version": 5,
             "coverage": "all",
             "completeness": "complete",
             "deletions": "absence",

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dogana:wire:5:Part",
+  "title": "Part",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "Part"
+    },
+    "version": {
+      "type": "integer",
+      "const": 5
+    },
+    "shape": {
+      "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:5:types#/$defs/window"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "since": {
+      "$ref": "urn:dogana:wire:5:types#/$defs/checkpoint"
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_hash": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:5:types#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tombstones": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "content_hash": {
+      "anyOf": [
+        {
+          "$ref": "urn:dogana:wire:5:types#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "version",
+    "shape",
+    "window",
+    "since",
+    "generation",
+    "rows",
+    "schema_hash",
+    "tombstones",
+    "content_hash"
+  ],
+  "additionalProperties": false
+}

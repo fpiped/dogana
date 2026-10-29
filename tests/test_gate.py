@@ -17,7 +17,7 @@ from dogana import (
     Region,
     Transition,
 )
-from tests.support import FULL, SINCE, WINDOW, at, fold
+from tests.support import FULL, SINCE, WINDOW, at, fold, revised
 from tests.support import accounting_contract as contract
 
 
@@ -31,7 +31,7 @@ def outcomes(c, m, fail=None):
 def test_a_failed_required_check_never_changes_the_published_ledger(failure):
     c = contract()
     ledger = Ledger(c)
-    manifest = Manifest(c.table, "daily", at(18), window=(1, 30), rows=10, schema_hash=c.schema_hash)
+    manifest = Manifest.single(c.table, "daily", at(18), window=(1, 30), rows=10, schema_hash=c.schema_hash)
     receipt = Gate.evaluate(ledger, manifest, outcomes(c, manifest, failure), now=at(25))
     assert not receipt.accepted
     assert receipt.ledger_identity == ledger.identity
@@ -44,7 +44,7 @@ def test_a_failed_required_check_never_changes_the_published_ledger(failure):
 @pytest.mark.protocol("checks.receipt", "checks.evaluation")
 def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication():
     c = contract()
-    m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
+    m = Manifest.single(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
     receipt = Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(25))
     assert receipt.accepted
     assert receipt.manifest == m
@@ -53,7 +53,7 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
     assert receipt.ledger_identity == Ledger(c).apply(m).identity
     assert fold(receipt).claims(receipt.received_at, limit=timedelta.max).deletions_as_of == at(18)
     assert Receipt.from_json(receipt.to_json()) == receipt
-    changed = replace(m, rows=3)
+    changed = revised(m, rows=3)
     assert changed.identity != m.identity
 
 
@@ -100,7 +100,7 @@ def test_checks_need_names_and_transitions_need_evidence(kind):
 )
 def test_apply_plans_name_the_store_operations_without_accessing_rows(shape, kwargs, operations):
     c = contract()
-    plan = ApplyPlan.build(c, Manifest(c.table, shape, at(18), **kwargs))
+    plan = ApplyPlan.build(c, Manifest.single(c.table, shape, at(18), **kwargs))
     assert [a.operation for a in plan.actions] == operations
     assert ApplyPlan.from_json(plan.to_json()) == plan
 
@@ -109,9 +109,9 @@ def test_apply_plans_name_the_store_operations_without_accessing_rows(shape, kwa
 def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_append():
     shapes = {"full": FULL, "plant": replace(WINDOW, window_size=None), "log": SINCE}
     c = Contract("receipts", (), shapes, window_column="id", types={"id": "int"}, start_at=at(1))
-    whole = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
-    plant = ApplyPlan.build(c, Manifest(c.table, "plant", at(18), window=(1, 1)))
-    log = ApplyPlan.build(c, Manifest(c.table, "log", at(19), since=at(18)))
+    whole = ApplyPlan.build(c, Manifest.single(c.table, "full", at(18)))
+    plant = ApplyPlan.build(c, Manifest.single(c.table, "plant", at(18), window=(1, 1)))
+    log = ApplyPlan.build(c, Manifest.single(c.table, "log", at(19), since=at(18)))
     assert [a.operation for a in whole.actions + plant.actions + log.actions] == [
         Operation.REPLACE_ALL,
         Operation.REPLACE_WINDOW,
@@ -122,16 +122,16 @@ def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_
 @pytest.mark.protocol("transitions.1", "checks.evaluation")
 def test_an_unadmitted_manifest_still_leaves_a_rejected_receipt():
     c = contract()
-    receipt = Gate.evaluate(Ledger(c), Manifest(c.table, "surprise", at(18)), now=at(25))
+    receipt = Gate.evaluate(Ledger(c), Manifest.single(c.table, "surprise", at(18)), now=at(25))
     assert not receipt.accepted
     assert receipt.checks[0].name == "manifest"
 
 
 def test_a_repeated_full_delivery_requires_the_store_receipt_lookup_before_gate_evaluation():
     c = contract()
-    m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
+    m = Manifest.single(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
     first = Gate.evaluate(Ledger(c), m, outcomes(c, m), now=at(25))
-    newer = Manifest(c.table, "full", at(19), rows=3, schema_hash=c.schema_hash)
+    newer = Manifest.single(c.table, "full", at(19), rows=3, schema_hash=c.schema_hash)
     second = Gate.evaluate(fold(first), newer, outcomes(c, newer), now=at(25))
     replay = Gate.evaluate(fold(first, second), m, now=at(25))
     assert not replay.accepted
@@ -143,12 +143,12 @@ def test_a_repeated_full_delivery_requires_the_store_receipt_lookup_before_gate_
 @pytest.mark.protocol("transitions.7", "trust-model.5")
 def test_future_dated_full_delivery_is_refused_without_blocking_the_next_honest_delivery():
     c = contract()
-    future = Manifest(c.table, "full", at(26))
+    future = Manifest.single(c.table, "full", at(26))
     refused = Gate.evaluate(Ledger(c), future, outcomes(c, future), now=at(25))
     assert not refused.accepted
     assert any(check.name == "receiver_time" and not check.passed for check in refused.checks)
     assert refused.received_at == at(25)
-    honest = Manifest(c.table, "full", at(25))
+    honest = Manifest.single(c.table, "full", at(25))
     accepted = Gate.evaluate(Ledger(c).follow(refused), honest, outcomes(c, honest), now=at(25))
     assert accepted.accepted
 
@@ -158,7 +158,7 @@ def test_delayed_full_delivery_receipt_records_expiry_at_receiver_time_and_sourc
     from dogana import State
 
     c = contract()
-    manifest = Manifest(c.table, "full", at(17))
+    manifest = Manifest.single(c.table, "full", at(17))
     receipt = Gate.evaluate(Ledger(c), manifest, outcomes(c, manifest), now=at(25), source="stock.csv")
     assert receipt.accepted
     assert fold(receipt).claims(receipt.received_at, limit=timedelta(days=7)).state is State.EXPIRED
@@ -170,7 +170,7 @@ def test_delayed_full_delivery_receipt_records_expiry_at_receiver_time_and_sourc
 
 def test_full_delivery_preflight_and_evaluation_require_receiver_time():
     c = contract()
-    manifest = Manifest(c.table, "full", at(18))
+    manifest = Manifest.single(c.table, "full", at(18))
     for call in (Gate.preflight, Gate.evaluate):
         with pytest.raises(TypeError, match="now"):
             call(Ledger(c), manifest)
@@ -184,14 +184,16 @@ def test_invalid_full_delivery_cannot_hide_an_unexpected_programming_error(monke
     c = contract()
     monkeypatch.setattr(Ledger, "apply", broken_apply)
     with pytest.raises(TypeError, match="unexpected failure"):
-        Gate.preflight(Ledger(c), Manifest(c.table, "full", at(18)), now=at(18))
+        Gate.preflight(Ledger(c), Manifest.single(c.table, "full", at(18)), now=at(18))
 
 
 @pytest.mark.protocol("checks.evaluation")
 def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
     c = contract()
-    base = Ledger(c).apply(Manifest(c.table, "full", at(18)))
-    receipt = Gate.reject(base, Manifest(c.table, "full", at(19)), (Check("row_count", False),), now=at(20))
+    base = Ledger(c).apply(Manifest.single(c.table, "full", at(18)))
+    receipt = Gate.reject(
+        base, Manifest.single(c.table, "full", at(19)), (Check("row_count", False),), now=at(20)
+    )
     assert not receipt.accepted
     assert receipt.base_publication_id == receipt.publication_id == base.publication_id
     assert receipt.ledger_identity == base.identity
@@ -219,7 +221,7 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
     from dogana import Region, Transition
 
     c = contract()
-    plan = ApplyPlan.build(c, Manifest(c.table, "full", at(18)))
+    plan = ApplyPlan.build(c, Manifest.single(c.table, "full", at(18)))
     transition = Transition(plan, [Region(complete_as_of=at(18), deletions_as_of=at(18))])
     assert Transition.from_json(transition.to_json()) == transition
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
@@ -229,7 +231,7 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
 @pytest.mark.parametrize("digest", [None, "wrong"])
 def test_a_manifest_whose_column_hash_differs_from_the_contracts_is_refused_before_any_row(digest):
     c = contract(schema_hash="opaque:columns")
-    m = Manifest(c.table, "full", at(18), schema_hash=digest)
+    m = Manifest.single(c.table, "full", at(18), schema_hash=digest)
     with pytest.raises(InvalidContract, match="column hash"):
         m.check(c)
     receipt = Gate.evaluate(Ledger(c), m, now=at(18))
@@ -240,5 +242,43 @@ def test_a_manifest_whose_column_hash_differs_from_the_contracts_is_refused_befo
 def test_a_contract_without_a_column_hash_accepts_any_declared_hash():
     c = contract()
     assert Gate.evaluate(Ledger(c), c.manifest("full", at(18)), now=at(18)).accepted
-    declared = Manifest(c.table, "full", at(18), schema_hash="declared-by-the-sender")
+    declared = Manifest.single(c.table, "full", at(18), schema_hash="declared-by-the-sender")
     assert Gate.evaluate(Ledger(c), declared, now=at(18)).accepted
+
+
+@pytest.mark.protocol("manifest.declaration", "checks.evaluation", "checks.receipt", "receiver.chain")
+def test_a_table_is_decided_from_its_part_of_a_read_and_a_read_without_one_decides_nothing():
+    from dogana import Manifest, Part, RejectedDelivery
+
+    c, other = contract(), contract("other")
+    read = Manifest(
+        at(18),
+        {
+            c.table: Part(shape="full", rows=1, schema_hash=c.schema_hash),
+            "other": Part(shape="full", rows=2, schema_hash=other.schema_hash),
+        },
+    )
+    assert read.tables == (c.table, "other") and read.part("other").rows == 2
+    own = read.only(c.table)
+    assert own == Manifest(at(18), {c.table: read.part(c.table)}) and own.only(c.table) is own
+    assert read.only("other").identity != own.identity != read.identity
+    assert Ledger(c).apply(read) == Ledger(c).apply(own)
+    assert hash(read) == hash(Manifest.from_json(read.to_json()))
+    receipt = Gate.evaluate(Ledger(c), read, now=at(18))
+    assert receipt.accepted and receipt.manifest == own and receipt.read_identity == read.identity
+    assert Gate.evaluate(Ledger(c), own, now=at(18)).read_identity == own.identity
+    assert Ledger(c).follow(receipt) == Ledger(c).apply(own)
+    refused = Gate.reject(Ledger(c), read, (Check("row_count", False),), now=at(18))
+    assert refused.manifest == own and refused.read_identity == read.identity
+    with pytest.raises(InvalidContract, match="no part for table 'other'"):
+        own.part("other")
+    with pytest.raises(InvalidContract, match="no part for table"):
+        Gate.evaluate(Ledger(other), own, now=at(18))
+    with pytest.raises(InvalidContract, match="no part for table"):
+        Gate.reject(Ledger(other), own, (Check("row_count", False),), now=at(18))
+    with pytest.raises(RejectedDelivery, match="no part for table"):
+        Ledger(other).apply(own)
+    with pytest.raises(InvalidContract, match="holds that table's part alone"):
+        replace(receipt, manifest=read)
+    with pytest.raises(InvalidContract, match="never empty"):
+        replace(receipt, read_identity="")

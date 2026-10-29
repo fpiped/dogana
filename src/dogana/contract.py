@@ -359,8 +359,9 @@ class Contract(Wire):
         rows: int | None = None,
         tombstones: int = 0,
         content_hash: str | None = None,
+        snapshot: str | None = None,
     ) -> Manifest:
-        manifest = Manifest(
+        manifest = Manifest.single(
             self.table,
             shape,
             produced_at,
@@ -371,17 +372,17 @@ class Contract(Wire):
             schema_hash=self.schema_hash,
             tombstones=tombstones,
             content_hash=content_hash,
+            snapshot=snapshot,
         )
         manifest.check(self)
         return manifest
 
 
-@dataclass(frozen=True)
-class Manifest(Wire):
-    table: str
+@dataclass(frozen=True, kw_only=True)
+class Part(Wire):
+    """What a read declares about one table: the shape and its parameters, the counts, the hashes."""
+
     shape: str
-    produced_at: datetime
-    _: KW_ONLY
     window: Window | None = None
     since: str | datetime | int | None = None
     generation: str | int | None = None
@@ -392,7 +393,6 @@ class Manifest(Wire):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        identifier(self.table)
         if not self.shape:
             raise InvalidContract("shape must be a nonempty string")
         object.__setattr__(self, "window", bounds(self.window))
@@ -407,63 +407,133 @@ class Manifest(Wire):
         if self.content_hash is not None and not re.fullmatch(r"[0-9a-f]{64}", self.content_hash):
             raise InvalidContract("content_hash must be the lowercase hex SHA-256 of the delivered bytes")
 
-    def check(self, contract: Contract) -> ParsedDelivery:
-        if not isinstance(contract, Contract):
-            raise InvalidContract("manifest validation requires a Contract")
-        if self.table != contract.table:
-            raise InvalidContract("manifest table differs from contract")
-        shape = contract.shape(self.shape)
-        if (shape.coverage is Coverage.WINDOW) != (self.window is not None):
-            raise InvalidContract("only a window shape supplies a window")
-        if self.window is not None and self.generation is not None:
-            raise InvalidContract("a window delivery cannot issue a table generation")
-        if shape.complete != (self.since is None):
-            raise InvalidContract("only changed-only deliveries supply since")
-        if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(self.since, datetime):
-            raise InvalidContract("timestamp checkpoints must be datetimes")
-        if shape.checkpoint is Checkpoint.TIMESTAMP and self.since == self.produced_at and self._carries_rows:
-            raise InvalidContract("an empty interval carries no rows")
-        if shape.checkpoint is Checkpoint.GENERATION and (
-            not isinstance(self.since, str) or not self.since or not isinstance(self.generation, str)
-        ):
-            raise InvalidContract("generation feeds require nonempty since and generation tokens")
-        if shape.checkpoint is Checkpoint.SEQUENCE:
-            if type(self.since) is not int or type(self.generation) is not int:
-                raise InvalidContract("sequence reads require integer since and generation positions")
-            if self.generation < self.since:
-                raise InvalidContract("a sequence read cannot end before its start")
-            if self.generation == self.since and self._carries_rows:
-                raise InvalidContract("an empty interval carries no rows")
-        positions = any(s.checkpoint is Checkpoint.SEQUENCE for s in contract.shapes.values())
-        if self.generation is not None and (type(self.generation) is int) != positions:
-            raise InvalidContract("a delivery issues the table's kind of position")
-        if self.tombstones and shape.deletions is not Deletions.TOMBSTONE:
-            raise InvalidContract("only tombstone shapes carry deleted keys")
-        if self.window is not None:
-            assert contract.window_column is not None
-            if type(self.window[0]) is not LOGICAL_TYPES[contract.types[contract.window_column]].python_type:
-                raise InvalidContract("window bound types differ from the contract types")
-        if contract.schema_hash is not None and self.schema_hash != contract.schema_hash:
-            raise InvalidContract("manifest column hash differs from the contract's")
-        if shape.complete:
-            return (
-                FullDelivery(self, shape) if self.window is None else WindowDelivery(self, shape, self.window)
-            )
-        if isinstance(self.since, str):
-            assert isinstance(self.generation, str)
-            return GenerationChanges(self, shape, self.since, self.generation)
-        if type(self.since) is int:
-            assert type(self.generation) is int
-            return SequenceChanges(self, shape, self.since, self.generation)
-        assert isinstance(self.since, datetime)
-        if not contract.key:
-            return AppendInterval(self, shape, self.since)
-        coverage = WindowCoverage(self.window) if self.window is not None else AllCoverage()
-        return TimestampChanges(self, shape, self.since, coverage)
-
     @property
     def _carries_rows(self) -> bool:
         return bool(self.rows or self.tombstones)
+
+
+@dataclass(frozen=True)
+class Manifest(Wire):
+    """The sender's declaration of one read: the instant it saw the source, and a part per table."""
+
+    produced_at: datetime
+    parts: Mapping[str, Part]
+    _: KW_ONLY
+    snapshot: str | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.parts:
+            raise InvalidContract("a manifest declares at least one table")
+        for table, part in self.parts.items():
+            identifier(table)
+            if not isinstance(part, Part):
+                raise InvalidContract("a manifest's parts are Part values")
+        object.__setattr__(self, "parts", MappingProxyType(dict(self.parts)))
+        if self.snapshot is not None and not self.snapshot:
+            raise InvalidContract("a snapshot token is a nonempty string")
+
+    def __hash__(self) -> int:
+        return hash((self.produced_at, tuple(sorted(self.parts.items())), self.snapshot))
+
+    @classmethod
+    def single(
+        cls,
+        table: str,
+        shape: str,
+        produced_at: datetime,
+        *,
+        window: Window | None = None,
+        since: str | datetime | int | None = None,
+        generation: str | int | None = None,
+        rows: int | None = None,
+        schema_hash: str | None = None,
+        tombstones: int = 0,
+        content_hash: str | None = None,
+        snapshot: str | None = None,
+    ) -> Manifest:
+        """A read of one table."""
+        part = Part(
+            shape=shape,
+            window=window,
+            since=since,
+            generation=generation,
+            rows=rows,
+            schema_hash=schema_hash,
+            tombstones=tombstones,
+            content_hash=content_hash,
+        )
+        return cls(produced_at, {table: part}, snapshot=snapshot)
+
+    @property
+    def tables(self) -> tuple[str, ...]:
+        return tuple(self.parts)
+
+    def part(self, table: str) -> Part:
+        try:
+            return self.parts[table]
+        except KeyError:
+            raise InvalidContract(f"the read has no part for table {table!r}") from None
+
+    def only(self, table: str) -> Manifest:
+        """This read's declaration about one table alone, as a receipt records it."""
+        if self.tables == (table,):
+            return self
+        return Manifest(self.produced_at, {table: self.part(table)}, snapshot=self.snapshot)
+
+    def check(self, contract: Contract) -> ParsedDelivery:
+        """The delivery this read declares for the contract's table, refused when the declarations clash."""
+        if not isinstance(contract, Contract):
+            raise InvalidContract("manifest validation requires a Contract")
+        part = self.part(contract.table)
+        shape = contract.shape(part.shape)
+        if (shape.coverage is Coverage.WINDOW) != (part.window is not None):
+            raise InvalidContract("only a window shape supplies a window")
+        if part.window is not None and part.generation is not None:
+            raise InvalidContract("a window delivery cannot issue a table generation")
+        if shape.complete != (part.since is None):
+            raise InvalidContract("only changed-only deliveries supply since")
+        if shape.checkpoint is Checkpoint.TIMESTAMP and not isinstance(part.since, datetime):
+            raise InvalidContract("timestamp checkpoints must be datetimes")
+        if shape.checkpoint is Checkpoint.TIMESTAMP and part.since == self.produced_at and part._carries_rows:
+            raise InvalidContract("an empty interval carries no rows")
+        if shape.checkpoint is Checkpoint.GENERATION and (
+            not isinstance(part.since, str) or not part.since or not isinstance(part.generation, str)
+        ):
+            raise InvalidContract("generation feeds require nonempty since and generation tokens")
+        if shape.checkpoint is Checkpoint.SEQUENCE:
+            if type(part.since) is not int or type(part.generation) is not int:
+                raise InvalidContract("sequence reads require integer since and generation positions")
+            if part.generation < part.since:
+                raise InvalidContract("a sequence read cannot end before its start")
+            if part.generation == part.since and part._carries_rows:
+                raise InvalidContract("an empty interval carries no rows")
+        positions = any(s.checkpoint is Checkpoint.SEQUENCE for s in contract.shapes.values())
+        if part.generation is not None and (type(part.generation) is int) != positions:
+            raise InvalidContract("a delivery issues the table's kind of position")
+        if part.tombstones and shape.deletions is not Deletions.TOMBSTONE:
+            raise InvalidContract("only tombstone shapes carry deleted keys")
+        if part.window is not None:
+            assert contract.window_column is not None
+            if type(part.window[0]) is not LOGICAL_TYPES[contract.types[contract.window_column]].python_type:
+                raise InvalidContract("window bound types differ from the contract types")
+        if contract.schema_hash is not None and part.schema_hash != contract.schema_hash:
+            raise InvalidContract("manifest column hash differs from the contract's")
+        if shape.complete:
+            if part.window is None:
+                return FullDelivery(self, part, shape)
+            return WindowDelivery(self, part, shape, part.window)
+        if isinstance(part.since, str):
+            assert isinstance(part.generation, str)
+            return GenerationChanges(self, part, shape, part.since, part.generation)
+        if type(part.since) is int:
+            assert type(part.generation) is int
+            return SequenceChanges(self, part, shape, part.since, part.generation)
+        assert isinstance(part.since, datetime)
+        if not contract.key:
+            return AppendInterval(self, part, shape, part.since)
+        coverage = WindowCoverage(part.window) if part.window is not None else AllCoverage()
+        return TimestampChanges(self, part, shape, part.since, coverage)
 
 
 @dataclass(frozen=True)
@@ -482,12 +552,14 @@ DeliveryCoverage: TypeAlias = AllCoverage | WindowCoverage
 @dataclass(frozen=True)
 class FullDelivery:
     manifest: Manifest
+    part: Part
     shape: Shape
 
 
 @dataclass(frozen=True)
 class WindowDelivery:
     manifest: Manifest
+    part: Part
     shape: Shape
     window: Window
 
@@ -495,6 +567,7 @@ class WindowDelivery:
 @dataclass(frozen=True)
 class TimestampChanges:
     manifest: Manifest
+    part: Part
     shape: Shape
     since: datetime
     coverage: DeliveryCoverage
@@ -503,6 +576,7 @@ class TimestampChanges:
 @dataclass(frozen=True)
 class GenerationChanges:
     manifest: Manifest
+    part: Part
     shape: Shape
     since: str
     generation: str
@@ -511,6 +585,7 @@ class GenerationChanges:
 @dataclass(frozen=True)
 class AppendInterval:
     manifest: Manifest
+    part: Part
     shape: Shape
     since: datetime
 
@@ -518,6 +593,7 @@ class AppendInterval:
 @dataclass(frozen=True)
 class SequenceChanges:
     manifest: Manifest
+    part: Part
     shape: Shape
     since: int
     through: int

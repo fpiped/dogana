@@ -16,7 +16,7 @@ def publication(ledger, day):
 def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     c = contract()
     first = publication(Ledger(c), 18)
-    refused = Gate.evaluate(fold(first), Manifest(c.table, "full", at(17)), now=at(25))
+    refused = Gate.evaluate(fold(first), Manifest.single(c.table, "full", at(17)), now=at(25))
     second = publication(fold(first), 19)
     rebuilt = Ledger.from_receipts(c, iter((first, refused, second)))
     assert rebuilt == Ledger(c).apply(first.manifest).apply(second.manifest)
@@ -128,7 +128,7 @@ def test_many_full_deliveries_keep_receipt_size_bounded_by_regions_not_history()
     sizes = []
     for index in range(1000):
         boundary = at(18) + timedelta(seconds=index)
-        manifest = Manifest(c.table, "full", boundary)
+        manifest = Manifest.single(c.table, "full", boundary)
         checks = ()
         receipt = Gate.evaluate(ledger, manifest, checks, now=boundary)
         assert receipt.accepted

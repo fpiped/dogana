@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:dogana:wire:4:Receipt",
+  "$id": "urn:dogana:wire:5:Receipt",
   "title": "Receipt",
   "type": "object",
   "properties": {
@@ -9,18 +9,18 @@
     },
     "version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "manifest": {
-      "$ref": "urn:dogana:wire:4:Manifest"
+      "$ref": "urn:dogana:wire:5:Manifest"
     },
     "contract": {
-      "$ref": "urn:dogana:wire:4:Contract"
+      "$ref": "urn:dogana:wire:5:Contract"
     },
     "checks": {
       "type": "array",
       "items": {
-        "$ref": "urn:dogana:wire:4:Check"
+        "$ref": "urn:dogana:wire:5:Check"
       }
     },
     "outcome": {
@@ -33,7 +33,7 @@
     "transition": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:Transition"
+          "$ref": "urn:dogana:wire:5:Transition"
         },
         {
           "type": "null"
@@ -41,12 +41,12 @@
       ]
     },
     "ledger_identity": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+      "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
     },
     "publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/nonemptyText"
+          "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
         },
         {
           "type": "null"
@@ -54,12 +54,15 @@
       ]
     },
     "received_at": {
-      "$ref": "urn:dogana:wire:4:types#/$defs/datetime"
+      "$ref": "urn:dogana:wire:5:types#/$defs/datetime"
+    },
+    "read_identity": {
+      "$ref": "urn:dogana:wire:5:types#/$defs/nonemptyText"
     },
     "source": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/text"
+          "$ref": "urn:dogana:wire:5:types#/$defs/text"
         },
         {
           "type": "null"
@@ -69,7 +72,7 @@
     "base_publication_id": {
       "anyOf": [
         {
-          "$ref": "urn:dogana:wire:4:types#/$defs/text"
+          "$ref": "urn:dogana:wire:5:types#/$defs/text"
         },
         {
           "type": "null"
@@ -88,6 +91,7 @@
     "ledger_identity",
     "publication_id",
     "received_at",
+    "read_identity",
     "source",
     "base_publication_id"
   ],
@@ -111,7 +115,7 @@
       "else": {
         "properties": {
           "transition": {
-            "$ref": "urn:dogana:wire:4:Transition"
+            "$ref": "urn:dogana:wire:5:Transition"
           },
           "checks": {
             "items": {

@@ -15,7 +15,7 @@
       "deletions":"absence",
       "kind":"Shape",
       "lookback":null,
-      "version":4,
+      "version":5,
       "window_size":null
     }
   },
@@ -24,6 +24,6 @@
   "types":{
     "id":"int"
   },
-  "version":4,
+  "version":5,
   "window_column":null
 }

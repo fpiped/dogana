@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- A manifest describes one read of the source, however many tables it holds: `Manifest(produced_at,
+  parts, *, snapshot=None)` carries the instant once and a `Part(shape, *, window, since,
+  generation, rows, schema_hash, tombstones, content_hash)` per table. `Manifest.single(table,
+  shape, produced_at, ...)` and `Contract.manifest(...)` build a read of one table;
+  `manifest.part(table)` is a table's part and `manifest.only(table)` the read restricted to it.
+  Invoices and their lines read in one snapshot are one manifest, so their common instant is
+  declared once instead of copied onto each table and compared.
+- `Group.apply(ledgers, manifest, ...)` takes the one read: every table of the group it declares is
+  decided alone, the read must declare every table of the group, and every table is accepted or
+  every table is rejected. `Gate.together` checks receipts of one read and names it in its detail;
+  `Gate.delivered` is gone. The rule that a table belongs to one group is gone with it: a group is
+  the receiver's choice of what to decide as one, and each table of a read is decided once.
+- A receipt holds its table's part of the read as a one-table manifest and `read_identity`, the
+  identity of the whole read, so the receipts of a read are found by it. The publication chain
+  hashes the one-table manifest: a table's chain sees a read through its own part.
+- A manifest may carry a `snapshot` token, the sender's name for the read: a transaction's exported
+  snapshot, a system change number, an export job's id. It is part of the manifest's identity and
+  the sender's word, like `produced_at`; two jobs share a date by accident and a token only on
+  purpose. `dogana manifest` takes `--snapshot`.
+- The wire format is version 5: `Part` joins the kinds, fifteen in all, and a receipt carries
+  `read_identity`. Ledgers and documents written by 0.7.x are refused, and a table moves on with a
+  new full delivery.
+
 ## 0.7.1 (2026-10-29)
 
 - The README and Concepts open on the two jobs behind every loaded table. Whoever reads the source

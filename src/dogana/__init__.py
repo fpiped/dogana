@@ -1,6 +1,6 @@
 """Delivery evidence, decisions and reader claims."""
 
-from .contract import Checkpoint, Completeness, Contract, Coverage, Deletions, Manifest, Shape
+from .contract import Checkpoint, Completeness, Contract, Coverage, Deletions, Manifest, Part, Shape
 from .errors import (
     DoganaError,
     InconsistentPublication,
@@ -32,6 +32,7 @@ __all__ = [
     "InvalidContract",
     "Ledger",
     "Manifest",
+    "Part",
     "Operation",
     "Outcome",
     "PlanningError",

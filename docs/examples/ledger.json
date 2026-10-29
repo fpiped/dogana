@@ -16,7 +16,7 @@
         "deletions":"absence",
         "kind":"Shape",
         "lookback":null,
-        "version":4,
+        "version":5,
         "window_size":null
       }
     },
@@ -25,12 +25,12 @@
     "types":{
       "id":"int"
     },
-    "version":4,
+    "version":5,
     "window_column":null
   },
   "generation":null,
   "kind":"Ledger",
-  "publication_id":"e10f4991b1e3c187800944a7d107cf6b2c8f02641ba397ff94db153d7b11e06d",
+  "publication_id":"c6336f44f6d8760249ce6d937e9d2eb37b64b85f73e41ad5a1ccbfb19c178eae",
   "regions":[
     {
       "complete_as_of":{
@@ -44,8 +44,8 @@
       "kind":"Region",
       "low":null,
       "low_open":false,
-      "version":4
+      "version":5
     }
   ],
-  "version":4
+  "version":5
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dogana import Contract, InvalidContract, Ledger, Manifest, Receipt, SerializationError, Shape
+from dogana import Contract, InvalidContract, Ledger, Manifest, Part, Receipt, SerializationError, Shape
 from tests.support import COLUMNS, SINCE, at
 from tests.support import accounting_contract as contract
 
@@ -17,12 +17,12 @@ EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types():
     for window in [(1, 30), ("IT01", "IT01"), (at(18).date(), at(19).date()), (at(18), at(19))]:
         c = contract(window_type=type(window[0]).__name__)
-        m = Manifest(c.table, "daily", at(20), window=window, rows=2, schema_hash=c.schema_hash)
+        m = Manifest.single(c.table, "daily", at(20), window=window, rows=2, schema_hash=c.schema_hash)
         ledger = Ledger(c).apply(m)
         for value in (c, m, ledger):
             assert type(value).from_dict(value.to_dict()) == value
             assert type(value).from_json(value.to_json()) == value
-            assert json.loads(value.to_json())["version"] == 4
+            assert json.loads(value.to_json())["version"] == 5
 
 
 @pytest.mark.protocol("versioned-json.1", "versioned-json.6")
@@ -45,11 +45,14 @@ def test_unsupported_or_invalid_wire_contracts_are_refused(change):
 @pytest.mark.parametrize(
     "name,cls", [("contract", Contract), ("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)]
 )
-def test_every_version_3_document_is_refused_naming_both_versions(name, cls):
-    value = json.loads((EXAMPLES / f"{name}.json").read_text()) | {"version": 3}
-    if name == "contract":
+@pytest.mark.parametrize("version", [3, 4])
+def test_every_earlier_version_is_refused_naming_both_versions(name, cls, version):
+    value = json.loads((EXAMPLES / f"{name}.json").read_text()) | {"version": version}
+    if name == "contract" and version == 3:
         value["max_shrink_fraction"] = 0.5
-    with pytest.raises(SerializationError, match="unsupported wire version 3: this dogana reads version 4"):
+    with pytest.raises(
+        SerializationError, match=f"unsupported wire version {version}: this dogana reads version 5"
+    ):
         cls.from_dict(value)
 
 
@@ -75,7 +78,7 @@ def test_a_duration_that_would_round_or_is_negative_is_refused_not_rounded(secon
     ],
 )
 def test_a_datetime_outside_the_wire_grammar_is_refused_not_truncated(text):
-    raw = Manifest("stock", "full", at(18)).to_dict()
+    raw = Manifest.single("stock", "full", at(18)).to_dict()
     with pytest.raises(SerializationError, match="datetime tag"):
         Manifest.from_dict(raw | {"produced_at": {"$datetime": text}})
     zulu = Manifest.from_dict(raw | {"produced_at": {"$datetime": "2026-10-18T00:00:00Z"}})
@@ -85,8 +88,8 @@ def test_a_datetime_outside_the_wire_grammar_is_refused_not_truncated(text):
 @pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("text", ["2026-10-18T00:00:00", "20261018", "2026-W42-1"])
 def test_a_date_tag_with_more_than_a_date_is_refused(text):
-    raw = Manifest("stock", "daily", at(18), window=(at(18).date(), at(18).date())).to_dict()
-    raw["window"] = [{"$date": text}, {"$date": "2026-10-18"}]
+    raw = Manifest.single("stock", "daily", at(18), window=(at(18).date(), at(18).date())).to_dict()
+    raw["parts"]["stock"]["window"] = [{"$date": text}, {"$date": "2026-10-18"}]
     with pytest.raises(SerializationError, match="date tag"):
         Manifest.from_dict(raw)
 
@@ -102,7 +105,7 @@ def test_a_receipt_never_carries_an_empty_identity(field):
 @pytest.mark.protocol("versioned-json.2")
 def test_a_manifest_cannot_be_decoded_as_a_contract():
     with pytest.raises(SerializationError):
-        Contract.from_json(Manifest("stock", "full", at(18)).to_json())
+        Contract.from_json(Manifest.single("stock", "full", at(18)).to_json())
 
 
 ENTRY_POINTS = {"cli.py", "__main__.py"}
@@ -224,10 +227,13 @@ def test_wire_decoding_refuses_non_string_python_mapping_keys():
 
 
 @pytest.mark.protocol("versioned-json.2")
-@pytest.mark.parametrize("change", [{"table": 1}, {"generation": True}, {"schema_hash": 4}, {"rows": True}])
+@pytest.mark.parametrize(
+    "change",
+    [{"parts": 1}, {"parts": {"stock": 1}}, {"generation": True}, {"schema_hash": 4}, {"rows": True}],
+)
 def test_manifest_wire_types_are_checked_before_any_accounting(change):
-    value = Manifest("stock", "full", at(18)).to_dict()
-    value.update(change)
+    value = Manifest.single("stock", "full", at(18)).to_dict()
+    (value if "parts" in change else value["parts"]["stock"]).update(change)
     with pytest.raises(SerializationError):
         Manifest.from_dict(value)
 
@@ -249,7 +255,7 @@ from datetime import datetime, timedelta, timezone
 from dogana import Contract, Shape, Manifest, Ledger, Gate, Check, State
 shape = Shape(coverage='all', completeness='complete', deletions='absence', checkpoint='none')
 c = Contract('stock', ('id',), {'full': shape}, types={'id': 'int'})
-m = Manifest('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0, schema_hash=c.schema_hash)
+m = Manifest.single('stock', 'full', datetime(2026, 10, 18, tzinfo=timezone.utc), rows=0)
 checks = ()
 receipt = Gate.evaluate(Ledger(c), m, checks, now=m.produced_at)
 assert receipt.accepted
@@ -263,8 +269,8 @@ assert Ledger.from_json(ledger.to_json()) == ledger
 @pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("change", [{"keys": "12"}, {"tombstones": "12"}])
 def test_strings_cannot_be_normalized_into_lists_of_named_keys(change):
-    raw = Manifest("stock", "full", at(18)).to_dict()
-    raw.update(change)
+    raw = Manifest.single("stock", "full", at(18)).to_dict()
+    (raw["parts"]["stock"] if "tombstones" in change else raw).update(change)
     with pytest.raises(SerializationError):
         Manifest.from_dict(raw)
 
@@ -303,7 +309,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
     from tests.support import FULL
 
     c = contract()
-    m = Manifest(c.table, "full", at(18))
+    m = Manifest.single(c.table, "full", at(18))
     checks = ()
     receipt = Gate.evaluate(Ledger(c), m, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
@@ -312,6 +318,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         FULL,
         c,
         m,
+        m.part(c.table),
         Region(),
         ledger,
         claims.regions[0],
@@ -328,6 +335,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         Shape,
         Contract,
         Manifest,
+        Part,
         Region,
         Ledger,
         RegionClaim,
@@ -362,7 +370,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
     assert type(ProtocolShape.from_json(FULL.to_json())) is ProtocolShape
     for kind in ("PrivateValue", "Wire"):
         with pytest.raises(SerializationError, match="unknown wire kind"):
-            Wire.from_dict({"version": 4, "kind": kind})
+            Wire.from_dict({"version": 5, "kind": kind})
     with pytest.raises(SerializationError, match="unknown wire kind"):
         Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
@@ -391,9 +399,9 @@ def test_identity_excludes_versions_recursively(monkeypatch):
 
     value = Ledger(contract())
     identity = value.identity
-    monkeypatch.setattr(Wire, "version", 4)
-    assert value._document(identity=False)["version"] == 4
-    assert value._document(identity=False)["contract"]["version"] == 4
+    monkeypatch.setattr(Wire, "version", 5)
+    assert value._document(identity=False)["version"] == 5
+    assert value._document(identity=False)["contract"]["version"] == 5
     assert value.identity == identity
 
 
@@ -402,10 +410,10 @@ def test_timestamp_offsets_do_not_change_manifest_identity():
     from dataclasses import replace
     from datetime import timedelta, timezone
 
-    m = Manifest("stock", "feed", at(18), tombstones=3)
+    m = Manifest.single("stock", "feed", at(18), tombstones=3)
     other = replace(m, produced_at=at(18).astimezone(timezone(timedelta(hours=2))))
     assert other.identity == m.identity
-    assert m.identity_dict()["tombstones"] == 3
+    assert m.identity_dict()["parts"]["stock"]["tombstones"] == 3
     assert m.identity_dict()["produced_at"] == {"$datetime": "2026-10-18T00:00:00+00:00"}
 
 
@@ -416,7 +424,7 @@ def test_replay_outcome_preserves_the_original_receipt_identity_and_clock():
     from dogana import Gate, Receipt
 
     c = contract()
-    m = Manifest(c.table, "full", at(18))
+    m = Manifest.single(c.table, "full", at(18))
     checks = ()
     original = Gate.evaluate(Ledger(c), m, checks, now=at(19), source="stock.csv")
     replay = replace(original, outcome="replayed")
@@ -448,7 +456,7 @@ def test_new_default_fields_remain_required_on_the_wire():
 
     for value, field in (
         (contract(), "cursor_column"),
-        (Manifest("stock", "full", at(18)), "content_hash"),
+        (Part(shape="full"), "content_hash"),
         (Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none"), "lookback"),
     ):
         raw = value.to_dict()
@@ -488,10 +496,10 @@ def test_integer_identity_rejects_lossy_or_overflowing_binary64_values(value):
 
 @pytest.mark.protocol("versioned-json.5")
 def test_wire_json_preserves_integer_values_while_identity_uses_ecmascript_numbers():
-    value = Manifest("stock", "daily", at(18), window=(0, 2**68))
-    assert value.to_dict()["window"] == [0, 2**68]
+    value = Manifest.single("stock", "daily", at(18), window=(0, 2**68))
+    assert value.to_dict()["parts"]["stock"]["window"] == [0, 2**68]
     assert Manifest.from_json(value.to_json()) == value
-    assert value.identity_dict()["window"] == [0, 2**68]
+    assert value.identity_dict()["parts"]["stock"]["window"] == [0, 2**68]
     assert '"window":[0,295147905179352830000]' in value.identity_json()
 
 
@@ -512,4 +520,4 @@ def test_removed_schema_and_column_wire_kind_are_refused():
     with pytest.raises(SerializationError, match="unknown fields"):
         Contract.from_dict(contract().to_dict() | {"schema": []})
     with pytest.raises(SerializationError, match="unknown wire kind"):
-        Wire.from_dict({"kind": "Column", "version": 4, "name": "id", "type": "int"})
+        Wire.from_dict({"kind": "Column", "version": 5, "name": "id", "type": "int"})

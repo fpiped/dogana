@@ -159,7 +159,7 @@ def test_external_column_hash_keeps_the_original_ordered_pair_bytes():
     assert sha256(encoded).hexdigest() == expected
     contract = Contract.from_json((EXAMPLES / "contract.json").read_text())
     manifest = Manifest.from_json((EXAMPLES / "manifest.json").read_text())
-    assert contract.schema_hash == manifest.schema_hash == expected
+    assert contract.schema_hash == manifest.part("stock").schema_hash == expected
     assert contract.types == {"id": "int"}
 
 

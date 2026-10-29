@@ -92,6 +92,11 @@ def _parser() -> argparse.ArgumentParser:
     write.add_argument(
         "--tombstones", type=int, metavar="N", help="rows marked deleted in FILE, for a tombstone shape"
     )
+    write.add_argument(
+        "--snapshot",
+        metavar="TOKEN",
+        help="the sender's name for the read: a transaction's snapshot, a change number, a job id",
+    )
     write.add_argument("-o", "--output", metavar="PATH", help="where to write, or - for standard output")
     write.add_argument("--force", action="store_true", help="replace an existing manifest")
     write.set_defaults(run=_write_manifest, command="manifest")
@@ -151,6 +156,7 @@ def _write_manifest(args: argparse.Namespace) -> int:
         rows=args.rows,
         tombstones=args.tombstones or 0,
         content_hash=_file_digest(args.file),
+        snapshot=args.snapshot,
     )
     document = manifest.to_json() + "\n"
     if args.output == "-":
@@ -167,22 +173,16 @@ def _check(args: argparse.Namespace) -> int:
     path = args.manifest if args.manifest is not None else _sidecar(args.file)
     manifest = Manifest.from_json(path.read_text(encoding="utf-8"))
     manifest.check(contract)
-    if contract.schema_hash is not None and manifest.schema_hash != contract.schema_hash:
-        print(
-            f"dogana check: schema_hash: the manifest declares {manifest.schema_hash}, "
-            f"the contract {contract.schema_hash}",
-            file=sys.stderr,
-        )
-        return 1
+    part = manifest.part(contract.table)
     digest = _file_digest(args.file)
-    if manifest.content_hash is None:
+    if part.content_hash is None:
         print(
             f"dogana check: {path} declares no content_hash, so {args.file} was not compared", file=sys.stderr
         )
         return 1
-    if digest != manifest.content_hash:
+    if digest != part.content_hash:
         print(
-            f"dogana check: content_hash: the manifest declares {manifest.content_hash}, "
+            f"dogana check: content_hash: the manifest declares {part.content_hash}, "
             f"{args.file} hashes to {digest}",
             file=sys.stderr,
         )

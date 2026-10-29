@@ -398,12 +398,12 @@ class Ledger(Wire):
             window = coverage_window(delivery)
             self._check_window_type(window)
         except InvalidContract as exc:
-            raise _rejection(manifest, str(exc)) from exc
+            raise _rejection(self.contract.table, manifest, str(exc)) from exc
         low, high = _window_cuts(window)
         target = tuple(evidence for _, _, evidence in _segments(self._cuts, low, high))
         for name, passed, detail in _guards(self, delivery, target):
             if not passed:
-                raise _rejection(manifest, f"{name}: {detail}")
+                raise _rejection(self.contract.table, manifest, f"{name}: {detail}")
         return Ledger(
             self.contract,
             generation=_cursor(self.generation, delivery),
@@ -502,7 +502,7 @@ def _transition(delivery: ParsedDelivery, old: Evidence) -> Known:
 def _cursor(previous: str | int | None, delivery: ParsedDelivery) -> str | int | None:
     match delivery:
         case FullDelivery():
-            return delivery.manifest.generation
+            return delivery.part.generation
         case GenerationChanges():
             return delivery.generation
         case SequenceChanges():
@@ -510,18 +510,24 @@ def _cursor(previous: str | int | None, delivery: ParsedDelivery) -> str | int |
         case WindowDelivery() | TimestampChanges(coverage=WindowCoverage()):
             return previous
         case TimestampChanges() | AppendInterval():
-            return previous if delivery.manifest.generation is None else delivery.manifest.generation
+            return previous if delivery.part.generation is None else delivery.part.generation
         case _:
             assert_never(delivery)
 
 
 def _publication(previous: str | None, contract: Contract, manifest: Manifest) -> str:
-    return sha256(f"{previous}:{contract.identity}:{manifest.identity}".encode()).hexdigest()
+    """The chain sees a read through its table's part: the identity hashed is the one-table manifest's."""
+    own = manifest.only(contract.table).identity
+    return sha256(f"{previous}:{contract.identity}:{own}".encode()).hexdigest()
 
 
-def _rejection(manifest: Manifest, detail: str) -> RejectedDelivery:
+def _rejection(table: str, manifest: Manifest, detail: str) -> RejectedDelivery:
+    part = manifest.parts.get(table)
+    declared = (
+        f"shape={part.shape!r} since={part.since} window={part.window!r}"
+        if part is not None
+        else f"declares {', '.join(manifest.tables)}"
+    )
     return RejectedDelivery(
-        f"table={manifest.table!r} shape={manifest.shape!r} "
-        f"produced_at={manifest.produced_at.isoformat()} since={manifest.since} "
-        f"window={manifest.window!r}: {detail}"
+        f"table={table!r} produced_at={manifest.produced_at.isoformat()} {declared}: {detail}"
     )
