@@ -92,7 +92,7 @@ def check_rows(contract, manifest, rows, previous):
     def inside(row):
         return window is None or typed(row, col) and window[0] <= row[col] <= window[1]
 
-    published = {key(r): r for r in previous}
+    published = {key(r): r for r in previous} if contract.key else {}
     cursor = contract.cursor_column
     outcomes = {
         "row_count": manifest.rows == len(rows) and manifest.tombstones == len(deleted) and not unmarked,
