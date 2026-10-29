@@ -1,6 +1,6 @@
 [project]
 name = "dogana"
-version = "0.7.0"
+version = "0.7.1"
 description = "A Python library that tracks which rows of a table loaded from another system you can trust, and as of when"
 readme = "README.md"
 license = "Apache-2.0"
