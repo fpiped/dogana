@@ -166,13 +166,6 @@ class Region(Wire):
         low, high = max(low, other_low), min(high, other_high)
         return _region(low, high, self.evidence) if low < high else None
 
-    def outside(self, inside: Region) -> tuple[Region, ...]:
-        low, high = self._bounds
-        start, end = inside._bounds
-        return tuple(
-            _region(a, b, self.evidence) for a, b in ((low, min(start, high)), (max(end, low), high)) if a < b
-        )
-
     def touches(self, other: Region) -> bool:
         return self._bounds[1] == other._bounds[0]
 

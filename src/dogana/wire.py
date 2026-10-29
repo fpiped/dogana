@@ -176,10 +176,6 @@ def _number(value: int | float) -> str:
     return sign + coefficient + "e" + ("+" if point > 0 else "") + str(point - 1)
 
 
-def encode(value: object) -> JSONValue:
-    return _encode(value, identity=False)
-
-
 def _encode(value: object, *, identity: bool) -> JSONValue:
     if isinstance(value, Wire):
         return value._document(identity=identity)

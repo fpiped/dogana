@@ -242,4 +242,5 @@ def plan_together(
         if later == boundary:
             return requests
         boundary = later
+    # Defensive: replanning past every bootstrap start_at stabilizes on the second pass.
     raise PlanningError("the tables have no shared read boundary")
