@@ -1,12 +1,12 @@
 # Concepts
 
-One example runs through this page: a shop whose ERP exports its `orders` table, and a loader that
+One example runs through this page: a shop whose order system exports its `orders` table, and a loader that
 puts the rows into the shop's own database. The [protocol](protocol.md) states the same rules
 exactly, edge cases included.
 
 ## The problem
 
-The **source** is the system that owns a table: an ERP, a SaaS API, a database you do not control.
+The **source** is the system that owns a table: an order system, a SaaS API, a partner's database.
 Loading its table into your own database is two jobs, and they are often done by two parties.
 
 The **sender** reads the source: it runs an export, a query or an API call. At that moment it knows
@@ -387,7 +387,7 @@ Knowing when a table holds every row it should is an old question in database re
 
 | Term | Meaning |
 |---|---|
-| Source | The system that owns the table, such as an ERP, a SaaS API or a database. |
+| Source | The system that owns the table, such as an order system, a SaaS API or a partner's database. |
 | Read | The rows the source held at one instant, in one shape. |
 | Sender | Whoever provides reads from the source and writes their manifests. |
 | Receiver | Whoever runs dogana and decides whether to accept each delivery. |
