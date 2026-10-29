@@ -15,8 +15,8 @@
 <!-- --8<-- [start:body] -->
 # Make messy data integration trustworthy
 
-dogana is a Python library for tables you load from another system. It tells you, for each
-table, how far you can trust it to match that system, and as of when.
+dogana is a Python library for tables you load from another system. It tells you how far each
+table matches that system, and as of when.
 
 Loading a table from another system is two jobs. One **reads** the source: it runs an export, a
 query or an API call, and knows what it got, at what instant, in what shape, how many rows. The
