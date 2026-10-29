@@ -2,11 +2,11 @@
 
 ## 0.7.1 (2026-10-29)
 
-- The README and Concepts open on the two jobs behind every loaded table: whoever reads the source
-  knows what it read, whoever writes the table sees only rows, and the manifest carries the one to
-  the other, one script or two vendors alike. Files are one way a read arrives; the docs say
-  "read" and "delivery" where they said "file". The package's one-line description says "loaded
-  from another system". No code changed.
+- The README and Concepts open on the two jobs behind every loaded table. Whoever reads the source
+  knows what it read; whoever writes the table sees only rows; the manifest carries the one to the
+  other, one script or two vendors alike. Files are one way a read arrives, so the docs say "read"
+  and "delivery" where they said "file". The package's one-line description says "loaded from
+  another system". No code changed.
 
 ## 0.7.0 (2026-10-29)
 
