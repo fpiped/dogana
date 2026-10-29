@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-10-29)
 
 - A manifest describes one read of the source, however many tables it holds: `Manifest(produced_at,
   parts, *, snapshot=None)` carries the instant once and a `Part(shape, *, window, since,
