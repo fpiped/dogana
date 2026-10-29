@@ -9,6 +9,7 @@ from a checkout.
 
 `dogana`, also `python -m dogana`, hashes files but never parses them.
 
+<!-- illustration: command syntax with placeholders and optional arguments -->
 ```text
 dogana manifest FILE --contract PATH --shape NAME --produced-at TIME --rows N [options]
 dogana check FILE --contract PATH [--manifest PATH]
@@ -31,6 +32,35 @@ now by default: one line per region, cut to `--window` if given, then the table'
 exact instant. With `--limit-days`, a region proven longer ago than that is expired. Date and
 integer bounds print closed.
 
+<!-- test setup: reproduce the claims output with a real window delivery and the command line
+
+```python
+import json
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+
+from dogana import Contract, Shape, deliver
+from dogana.cli import main
+from example_store import DuckDBStore
+
+orders = Contract(
+    "orders",
+    ("id",),
+    {"daily": Shape.window(size=timedelta(days=30))},
+    window_column="day",
+    types={"id": "int", "day": "date"},
+)
+now = datetime(2026, 10, 26, 6, tzinfo=UTC)
+store = DuckDBStore("landing.duckdb")
+manifest = orders.manifest("daily", now, window=(date(2026, 9, 27), date(2026, 10, 26)), rows=1)
+assert deliver(store, orders, [{"id": 1, "day": date(2026, 10, 26)}], manifest, now=now).accepted
+ledger = store.load_ledger(orders)
+Path("orders.ledger.json").write_text(ledger.to_json(), encoding="utf-8")
+assert main(["claims", "orders.ledger.json", "--at", now.isoformat()]) == 0
+```
+
+-->
+
 ```text
 orders (-inf, 2026-09-26]: unknown; complete as of unknown; deletions as of unknown
 orders [2026-09-27, 2026-10-26]: complete; complete as of 2026-10-26T06:00:00+00:00; deletions as of 2026-10-26T06:00:00+00:00
@@ -46,6 +76,7 @@ mismatch, an unreadable file, an existing manifest) and 2 when the command is ca
 A loader can use the gate without implementing `Store`. After answering a replay with its accepted
 receipt, a new manifest takes six calls:
 
+<!-- illustration: loader pseudocode; the caller supplies storage and row checks -->
 ```python
 ledger = load_consistent_ledger(contract)
 requirements = Gate.requirements(contract, manifest)
@@ -124,6 +155,14 @@ A ledger `document` holds `contract`, `regions`, `generation` and `publication_i
 holds `low`, `high`, `low_open`, `high_open`, `complete_as_of` and `deletions_as_of`, null when
 unknown or unbounded (see the [ledger fixture](examples/ledger.json)). This view exposes them:
 
+<!-- test setup: query the DuckDB file populated above
+
+```python
+connection = store.connection
+```
+
+-->
+
 ```sql
 create or replace view dogana_regions as
 select l.table_name,
@@ -138,6 +177,30 @@ select l.table_name,
 from __dogana_ledgers l,
      json_each(l.document, '$.regions') r;
 ```
+
+<!-- test setup: compare every view column with the ledger, including unknown regions
+
+```python
+rows = connection.execute("select * from dogana_regions order by region_index").fetchall()
+assert len(rows) == len(ledger.regions) == 3
+for index, (row, region) in enumerate(zip(rows, ledger.regions, strict=True)):
+    document = region.to_dict()
+    assert (json.loads(row[3]), json.loads(row[4])) == (document["low"], document["high"])
+    assert row == (
+        "orders",
+        ledger.publication_id,
+        index,
+        row[3],
+        row[4],
+        region.low_open,
+        region.high_open,
+        region.complete_as_of,
+        region.deletions_as_of,
+    ), (row, region)
+store.close()
+```
+
+-->
 
 The view reads current evidence, without pinning a publication or computing freshness. SQL `min`
 ignores nulls, so require every region's date to be non-null before aggregating, as the

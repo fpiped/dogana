@@ -23,6 +23,7 @@ Create the [`dogana_regions` view](reference.md#internal-tables-and-ledger-json)
 database. Source freshness can read the weakest deletion date
 ([freshness](https://docs.getdbt.com/reference/resource-configs/freshness), dbt 1.10 and later):
 
+<!-- illustration: dbt source configuration; requires dbt and its adapter, neither ships here -->
 ```yaml
 version: 2
 sources:
@@ -48,6 +49,57 @@ A [singular test](https://docs.getdbt.com/docs/build/data-tests#singular-data-te
 cutoff, `required_as_of` an ISO UTC timestamp, fails when the ledger is missing, a region is unknown
 or the deletion date is too old; compare `complete_as_of` too when the consumer needs both:
 
+<!-- test setup: populate a DuckDB file and reuse the view defined in Reference
+
+```python
+import re
+from datetime import UTC, datetime, timedelta
+
+from dogana import Contract, Ledger, Region, Shape, deliver
+from example_store import DuckDBStore
+
+now = datetime(2026, 10, 26, tzinfo=UTC)
+store = DuckDBStore("landing.duckdb")
+connection = store.connection
+contracts = {
+    table: Contract(
+        table,
+        ("id",),
+        {"full": Shape.full(), "window": Shape.window()},
+        window_column="id",
+        types={"id": "int"},
+    )
+    for table in ("orders", "order_lines")
+}
+for table, contract in contracts.items():
+    assert deliver(store, contract, [{"id": 1}], contract.manifest("full", now, rows=1), now=now).accepted
+reference = (documentation / "docs/reference.md").read_text(encoding="utf-8")
+view = re.search(r"^```sql[^\n]*\n(.*?)^```", reference, re.MULTILINE | re.DOTALL)
+assert view is not None
+connection.execute(view[1])
+original = connection.execute("select * from __dogana_ledgers order by table_name").fetchall()
+
+
+def restore():
+    connection.execute("delete from __dogana_ledgers")
+    connection.executemany("insert into __dogana_ledgers values (?, ?)", original)
+
+
+def evidence(table, regions):
+    ledger = Ledger(contracts[table], regions=tuple(regions))
+    connection.execute(
+        "update __dogana_ledgers set document = ? where table_name = ?", [ledger.to_json(), table]
+    )
+
+
+sql_bindings = {
+    "{{ source('landing', 'dogana_regions') }}": "main.dogana_regions",
+    '{{ var("required_as_of") }}': now.isoformat(),
+}
+```
+
+-->
+
 ```sql
 select 'orders' as table_name
 from {{ source('landing', 'dogana_regions') }}
@@ -56,6 +108,25 @@ having count(*) = 0
     or count(deletions_as_of) < count(*)
     or min(deletions_as_of) < cast('{{ var("required_as_of") }}' as timestamptz)
 ```
+
+<!-- test setup: a cutoff accepts current evidence and refuses missing, unknown and stale evidence
+
+```python
+assert sql_result == []
+cutoff_query = sql_query
+connection.execute("delete from __dogana_ledgers where table_name = 'orders'")
+assert connection.execute(cutoff_query).fetchall() == [("orders",)]
+restore()
+evidence("orders", [Region(None, None)])
+assert connection.execute(cutoff_query).fetchall() == [("orders",)]
+evidence("orders", [Region(None, None, complete_as_of=now, deletions_as_of=now - timedelta(days=1))])
+assert connection.execute(cutoff_query).fetchall() == [("orders",)]
+evidence("orders", [Region(None, 0, complete_as_of=now, deletions_as_of=now), Region(0, None, low_open=True)])
+assert connection.execute(cutoff_query).fetchall() == [("orders",)]
+restore()
+```
+
+-->
 
 For tables delivered together, this test fails unless they share one instant, their `exact_as_of`;
 add window bounds when the models read part of a table:
@@ -70,6 +141,34 @@ having count(distinct table_name) < 2
     or count(distinct deletions_as_of) <> 1
     or min(complete_as_of) <> min(deletions_as_of)
 ```
+
+<!-- test setup: a common instant requires every date in every region of both tables
+
+```python
+assert sql_result == []
+together_query = sql_query
+failure = [("orders, order_lines",)]
+connection.execute("delete from __dogana_ledgers where table_name = 'order_lines'")
+assert connection.execute(together_query).fetchall() == failure
+connection.execute("delete from __dogana_ledgers")
+assert connection.execute(together_query).fetchall() == failure
+restore()
+earlier = now - timedelta(days=1)
+evidence("order_lines", [Region(None, None, complete_as_of=earlier, deletions_as_of=earlier)])
+assert connection.execute(together_query).fetchall() == failure
+evidence("order_lines", [Region(None, None, complete_as_of=now, deletions_as_of=earlier)])
+assert connection.execute(together_query).fetchall() == failure
+evidence("order_lines", [Region(None, None)])
+assert connection.execute(together_query).fetchall() == failure
+evidence(
+    "order_lines", [Region(None, 0, complete_as_of=now, deletions_as_of=now), Region(0, None, low_open=True)]
+)
+assert connection.execute(together_query).fetchall() == failure
+restore()
+store.close()
+```
+
+-->
 
 Run tests and models against one pinned publication. [dbt snapshots](https://docs.getdbt.com/docs/build/snapshots)
 detect hard deletes only over complete coverage: restrict the input and the target to one fixed

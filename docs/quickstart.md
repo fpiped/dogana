@@ -5,6 +5,7 @@ example store from the repository: it keeps the tables in a DuckDB database and 
 a folder. From a checkout of the repository (`git clone https://github.com/fpiped/dogana`), with
 uv and an active virtual environment (`uv venv`, then `source .venv/bin/activate`):
 
+<!-- illustration: checkout installation; the suite installs both packages before running examples -->
 ```sh
 uv pip install -e . -e examples/duckdb
 ```

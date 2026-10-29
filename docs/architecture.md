@@ -5,6 +5,7 @@ and why.
 
 ## Layers
 
+<!-- illustration: package layer diagram, not command output -->
 ```text
 core          contract ledger gate group planner wire errors     standard library only, no I/O
               interfaces (Store, TogetherStore, Extractor)

@@ -125,6 +125,7 @@ A **tombstone** is a row in a file that says its key was deleted. The table's co
 names a boolean column, the **deleted column**. A row where that column is true is a tombstone, and
 its other values may be empty:
 
+<!-- illustration: CSV sample showing a live row and a tombstone, not command output -->
 ```text
 id,order_date,amount,deleted
 7,2026-10-26,120,false
@@ -161,6 +162,10 @@ A **contract** is the receiver's description of one table. It names:
   file with other columns is refused.
 
 ```python
+from datetime import timedelta
+
+from dogana import Contract, Shape
+
 orders = Contract(
     "orders",
     key=("id",),
