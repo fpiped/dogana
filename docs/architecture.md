@@ -32,7 +32,7 @@ of the core's modules alone still validates a manifest, applies it and answers c
   checks the loader reports on the rows and turns the decision into a `Receipt` with an
   `ApplyPlan`, the row operations the loader executes. The core describes row operations and never
   reads rows.
-- **`group.py`**: `Group`, tables read together. `Group.apply` decides their files as one, and
+- **`group.py`**: `Group`, tables read together. `Group.apply` decides their deliveries as one, and
   `Claims.exact_as_of` is the instant at which all of them equal the source, if there is one.
 - **`planner.py`**: because `Ledger.apply` has no side effects, the planner simulates each admitted
   read on the current ledger and keeps the cheapest one that establishes the required dates.

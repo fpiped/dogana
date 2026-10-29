@@ -15,12 +15,12 @@
 <!-- --8<-- [start:body] -->
 # Make messy data integration trustworthy
 
-dogana is a Python library for tables you load from files another system exports. It tells you,
+dogana is a Python library for tables you load from another system. It tells you,
 for each table, how far you can trust it to match that system.
 
-Most data still arrives as exported files: a full dump on Sunday, the orders of the last 30 days
-every night, the rows changed since yesterday. Each kind of file proves something different, and
-almost none says which rows were deleted. Once the rows are loaded, nobody remembers which file
+A source gives you reads: a full dump on Sunday, the orders of the last 30 days every night, the
+rows changed since yesterday. Each kind of read proves something different, and almost none says
+which rows were deleted. Once the rows are loaded, nobody remembers which read
 proved what.
 
 dogana keeps that record as two dates. It keeps them for the whole table, or separately for each
@@ -29,21 +29,21 @@ range of one column whose value never changes on a row, such as the order date:
 - **complete as of**: every row the source had at that instant is here;
 - **deletions as of**: no row the source deleted before that instant is still here.
 
-A file moves a date only as far as it proves. dogana never sees the source: it checks each file
-against what the sender, whoever exports it, declares about it. If the export misses rows the source
-has, and the declaration counts only what was exported, no check can tell.
+A read moves a date only as far as it proves. dogana never sees the source: it checks each delivery
+against what the sender, whoever provides the read, declares about it. If the export misses rows
+the source has, and the declaration counts only what was exported, no check can tell.
 
 ## How it works
 
-1. You write a **contract** for each table: its key and the kinds of file you accept, called
+1. You write a **contract** for each table: its key and the kinds of read you accept, called
    shapes.
-2. Every file arrives with a **manifest**, the sender's declaration: the shape, the instant the
+2. Every read arrives with a **manifest**, the sender's declaration: the shape, the instant the
    source was read, the number of rows and of rows reporting a deletion, and the SHA-256 of the
    file's bytes.
 3. A **gate** checks the manifest against the contract and against what is already proven. Your
    loader checks the rows against the manifest and reports the result. If any check fails, the whole
-   file is refused.
-4. A **ledger** holds the two dates and moves them only as far as each accepted file proves.
+   delivery is refused.
+4. A **ledger** holds the two dates and moves them only as far as each accepted read proves.
    Before trusting the rows, a reader asks the ledger.
 5. Related tables, such as orders and their lines, can be read in one snapshot, one read that sees
    every table at the same instant, and delivered **together**. When both then have both dates
@@ -57,7 +57,7 @@ dogana keeps of each decision.
 
 ## In thirty seconds
 
-A full dump on Sunday, then only the rows changed since. This example skips the files and the row
+A full dump on Sunday, then only the rows changed since. This example skips the rows and their
 checks: it hands two manifests straight to a ledger, to show how the dates move. The quick start
 runs the same steps on real files.
 
@@ -87,7 +87,7 @@ print(
 patched: complete as of Monday, deletions as of Sunday
 ```
 
-Monday's file brought every new and updated row, but said nothing about deletions: a row deleted
+Monday's read brought every new and updated row, but said nothing about deletions: a row deleted
 at the source since Sunday may still be here. That is what patched means.
 
 ## Use it

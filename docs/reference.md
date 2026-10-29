@@ -93,9 +93,9 @@ The plan's actions, which `execute` performs on the published table:
 
 | Action | Meaning |
 |---|---|
-| `replace_all` | Delete every row, then insert the file's live rows. |
-| `replace_window` | Delete the rows whose window value is inside the window, and earlier copies of the file's keys, then insert. |
-| `upsert` | Delete the published rows sharing a key with a live row of the file, then insert those rows. |
+| `replace_all` | Delete every row, then insert the read's live rows. |
+| `replace_window` | Delete the rows whose window value is inside the window, and earlier copies of the read's keys, then insert. |
+| `upsert` | Delete the published rows sharing a key with a live row of the read, then insert those rows. |
 | `tombstone` | Delete the published rows whose keys the tombstones name. |
 | `append` | Insert every row without matching. Keyless replacement matches no keys. |
 

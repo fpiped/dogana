@@ -1,11 +1,11 @@
 ---
 name: dogana
-description: How to use dogana to load tables from exports with dates that say how far to trust the rows. Use when writing contracts, manifests, deliveries, claims, groups of tables read together, or a store, and when choosing a shape or a read time for an export.
+description: How to use dogana to load tables from reads with dates that say how far to trust the rows. Use when writing contracts, manifests, deliveries, claims, groups of tables read together, or a store, and when choosing a shape or a read time.
 ---
 
 # dogana
 
-dogana tracks how far a table loaded from exported files matches its source. It checks each file
+dogana tracks how far a table loaded from source reads matches its source. It checks each delivery
 against the declaration that comes with it (the manifest) and the receiver's description of the
 table (the contract). It keeps per table two dates: **complete as of** (every row the source had
 then is here) and **deletions as of** (no row the source deleted before then is still here). The
@@ -16,9 +16,9 @@ the specification is `docs/protocol.md`.
 
 Every one of these passes every check when broken, and makes the dates lie.
 
-1. **`produced_at` is the instant of the source the file shows**: the snapshot's instant, or the
+1. **`produced_at` is the instant of the source the read shows**: the snapshot's instant, or the
    upper bound a changes query selects (`updated_at <= :until`). Never the scheduler's logical
-   date, the run time, or when the file was written. A read that is not one snapshot, such as a
+   date, the run time, or when the delivery was prepared. A read that is not one snapshot, such as a
    paged API, shows no single instant.
 2. **The window column never changes for a row**: an order, invoice or event date, never
    `updated_at`. "Rows updated in the last N days" is `Shape.changes()`, not a window.
@@ -27,7 +27,7 @@ Every one of these passes every check when broken, and makes the dates lie.
    deleted column only if setting it moves the cursor column (usually `updated_at`), nothing deletes
    physically, and the flag is on the table being loaded. Once a table has history, the deleted
    column is fixed like the key: changing it means a new full delivery into a new table.
-4. **Counts come from the export**, not from re-reading the file: `rows` live rows, `tombstones`
+4. **Counts come from the source read**, not from recounting the delivered rows: `rows` live rows, `tombstones`
    deleted ones. Always set `content_hash`, the SHA-256 of the file's bytes; tombstone shapes need
    it.
 5. **Tables read together come from one snapshot** (REPEATABLE READ, SERIALIZABLE, an exported
@@ -67,7 +67,7 @@ manifest = orders.manifest(
 ```
 
 `types` lists exactly the key, window, cursor and deleted columns. Pass the data contract's column
-hash as `schema_hash` to refuse files with other columns. Deleted keys travel in the file as rows
+hash as `schema_hash` to refuse deliveries with other columns. Deleted keys travel in the read as rows
 whose deleted column is true; the manifest only counts them. From a shell or another language:
 `dogana manifest FILE --contract contract.json --shape changes --produced-at TIME --rows N`, and
 `dogana check FILE --contract contract.json` before handing the file over.
@@ -102,12 +102,12 @@ whose deleted column is true; the manifest only counts them. From a shell or ano
 
 ## Tables together
 
-`Group((invoices, lines)).apply(ledgers, manifests, now=now, outcomes=checks)`: every file is
+`Group((invoices, lines)).apply(ledgers, manifests, now=now, outcomes=checks)`: every delivery is
 decided alone, all must share one `produced_at`, and every table is accepted or every table is
 rejected; the loader then commits every table's rows and ledger together, or nothing. A reader trusts a join only when
 `group.claims(ledgers, now, limit=timedelta.max).exact_as_of` is not `None`, reading rows and
 ledgers under one publication. Later deliveries must bring each table back to equal dates: complete
-files, or changes with tombstones; a table without changes sends an empty file of its tombstone
+reads, or changes with tombstones; a table without changes sends an empty read of its tombstone
 changes shape at the same instant.
 
 ## The loader

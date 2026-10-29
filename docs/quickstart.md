@@ -11,7 +11,8 @@ uv pip install -e .
 ```
 
 The blocks form one script: run them in order, in an empty directory. Steps 1 to 6 follow a table
-of orders through a week of files. Steps 7 and 8 add deletions and a second table.
+of orders through a week of files. A query result or an API response is delivered the same way,
+with the same manifest. Steps 7 and 8 add deletions and a second table.
 [Concepts](concepts.md) explains every term.
 
 ## 1. Write the contract

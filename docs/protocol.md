@@ -26,13 +26,13 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
    declarations prove**. The core checks that regions partition the domain, date order, continuity
    and that evidence outside coverage is unchanged. It does not authenticate senders, verify
    business values or certify a query's answer.
-3. The receiver owns the rows. The dates describe the rows only if the receiver refuses a file whose
+3. The receiver owns the rows. The dates describe the rows only if the receiver refuses a delivery whose
    contents contradict its manifest, and saves rows and ledger in the same commit, so that no reader
    sees one without the other. dogana names neither how to check nor how to commit; it records the
    checks the receiver reports, and [the receiver](#the-receiver) states what it owes.
-4. A `datetime`, in a file or a manifest, carries its UTC offset or is refused.
-5. `produced_at` is the instant of the source the file shows: the extractor guarantees every
-   change up to it, that instant included. When the download finished, when the file arrived and a
+4. A `datetime`, in a read or a manifest, carries its UTC offset or is refused.
+5. `produced_at` is the instant of the source the read shows: the extractor guarantees every
+   change up to it, that instant included. When the download finished, when the delivery arrived and a
    scheduler's logical date are not that instant. The gate rejects `produced_at` later than the
    receiver's time `now`. A read that is not one snapshot, such as an API paged for forty minutes,
    shows no single instant: whatever it declares is wrong by the rows created or deleted while it
@@ -57,7 +57,7 @@ Keys and window bounds use ordered scalar types, a cursor `datetime` or `int`, t
 **Column hash.** The data contract owns the columns; the delivery contract references them by an
 opaque `schema_hash`, from an ODCS (Open Data Contract Standard) document, a dbt model or a column
 list. When present, a manifest that does not carry the same hash is refused, and the receiver
-computes the hash of the file it loads and refuses a file with other columns; when absent, no
+computes the hash of the columns it loads and refuses a delivery with other columns; when absent, no
 column check is required. For an ODCS schema object, build one `[name, type]`
 pair per property, in declared order. The type is one of dogana's six type names, or `decimal(p,s)`
 for an exact decimal; the receiver maps physical and nested types to these names. Hash
@@ -95,9 +95,9 @@ With a `datetime` cursor, every live row of a timestamp read has its cursor in
 checked against the declared interval.
 
 **Deleted column.** A `bool` column, distinct from key, window and cursor. A contract has one
-exactly when it has a tombstone shape. In a file, a row where it is true is a tombstone: it names a
+exactly when it has a tombstone shape. In a read, a row where it is true is a tombstone: it names a
 deleted key, and its other values are not published and may be null, though typed where present. A
-row where it is false is live. A null is neither, and fails the row count. A file may omit the
+row where it is false is live. A null is neither, and fails the row count. A read may omit the
 column, and then every row is live; only a tombstone shape may deliver true. The column is never
 published, and the column hash leaves it out.
 
@@ -141,7 +141,7 @@ With the flag as the deleted column, dates speak of the rows whose flag is false
    table uses one kind of position. That leaves ten shapes: complete, over the table or a window;
    changed-only over the table, with each of the three checkpoints, or over a window, by timestamp
    only. Each changed-only shape comes with or without tombstones.
-3. `cost`, nonnegative, default one, is how expensive the file is to ask for; only the planner reads
+3. `cost`, nonnegative, default one, is how expensive the read is to ask for; only the planner reads
    it.
 4. `window_size`, optional and positive, is a planning hint, not a limit on pushed windows. Rolling
    durations need date or datetime windows, typed as in `types`: DATE widths are whole UTC calendar
@@ -178,8 +178,8 @@ content_hash)` describes one read.
 3. A delivery that issues a position issues the table's kind: an integer when the contract has
    sequence shapes, else a string. A complete whole-table delivery may issue one; a complete window
    never does.
-4. A changed-only file holds one final row per key: the live row, or a tombstone when the key ends
-   deleted. `rows` counts live rows and `tombstones` tombstones, every row of the file between them;
+4. A changed-only read holds one final row per key: the live row, or a tombstone when the key ends
+   deleted. `rows` counts live rows and `tombstones` tombstones, every row of the read between them;
    keys never travel in the manifest. Tombstones need a tombstone shape, and a zero-length interval
    holds no rows and no tombstones.
 5. Timestamp reads with a cursor column cover `(since, produced_at]`; without one, keyed reads may
@@ -265,7 +265,7 @@ no keys. The core describes operations and never reads rows.
 <!-- protocol: implied -->
 
 A manifest implies facts about the rows it describes, and the receiver verifies them before
-deciding. The file holds `rows` live rows and `tombstones` tombstones, and no deleted value is
+deciding. The read holds `rows` live rows and `tombstones` tombstones, and no deleted value is
 null. Its columns hash to `schema_hash` and its bytes to `content_hash`. Every key, live or
 tombstoned, is non-null and appears once. Every window value is non-null and, for a window
 delivery, inside the window. With a `datetime` cursor, every live cursor value of a timestamp read
@@ -283,7 +283,7 @@ result the receiver keeps for itself.
 <!-- protocol: blocked -->
 
 A window delivery's plan replaces its window and nothing else: a key already published in another
-region is not moved, and a receiver refuses a file that carries one, since that region keeps its
+region is not moved, and a receiver refuses a delivery that carries one, since that region keeps its
 claim. A row whose window value changes at the source can still leave a hole no check sees, so the
 window column must never change.
 
@@ -366,7 +366,7 @@ expires none. Claims never show a past state of the ledger.
    `window_size`, extended back to meet the last complete evidence. For a timestamp shape, `since`
    is the earliest covered `complete_as_of` minus `lookback`; an append needs every covered region
    to share one `complete_as_of`; a generation request starts from the held generation. Declare
-   `until` as `produced_at` only if the read saw the source at `until`. Files a sender
+   `until` as `produced_at` only if the read saw the source at `until`. Reads a sender
    pushes and reads a receiver pulls pass the same gate.
 
 ## Tables together
@@ -382,7 +382,7 @@ This requires that both sides compare and compute alike (collation, nulls, the o
 floating-point sum) and every rule the source keeps between its tables holds between the published
 ones.
 
-**Premise.** Every file comes from one consistent read of the source at `p`, stamped `p`, which
+**Premise.** Every delivery comes from one consistent read of the source at `p`, stamped `p`, which
 dogana cannot verify. One read is one snapshot of every table. READ COMMITTED, the default of
 Postgres, Oracle and SQL Server, takes a new snapshot for each statement, so it is not one read. One
 read is REPEATABLE READ, SERIALIZABLE or one exported snapshot shared by workers in Postgres; `START
@@ -393,7 +393,7 @@ The theorem needs no common transaction at the receiver: tables each exact at `p
 its ledger from one committed state, are consistent however they were published.
 
 **Group.** `Group(contracts)` names tables read together, each once whatever its letter case. A
-table belongs to one group, since files accepted together replay together: a parent with several
+table belongs to one group, since deliveries accepted together replay together: a parent with several
 children is one group. `Group.claims(ledgers, now, *, limit, windows=None)` returns every table's
 regions together, each table clipped to its window.
 
@@ -403,7 +403,7 @@ manifest per table, with the receiver's checks of each table's rows, and decides
 1. Each table is decided alone, as `Gate.evaluate` does.
 2. The `together` check passes when every manifest has the same `produced_at` and every table is
    accepted alone. Its detail digests every manifest identity, so a receipt carrying it was accepted
-   with exactly those files.
+   with exactly those deliveries.
 3. That check joins every receipt. If any table is rejected, every table's receipt is a rejection;
    otherwise every receipt is an acceptance, and the receiver saves every table's rows and ledger in
    one commit, or nothing.
@@ -417,12 +417,12 @@ the tripwire joins the staged tables before committing.
 **Reaching `(p, p)`.** `together` does not require the result to be exact; each table's shape
 decides it over that table's coverage. These reach `(p, p)`: a complete delivery, a keyless append,
 timestamp tombstones with `since` no later than the deletions date, and generation or sequence
-tombstones when both dates were already equal. A table without changes delivers an empty file of
+tombstones when both dates were already equal. A table without changes delivers an empty read of
 a tombstone changes shape at `p`. A reader of windows passes them to `Group.claims`.
 
 **Replay.** A group replays whole: the receiver answers a repeated group with the receipts it
 recorded when every manifest was accepted together, which the `together` digest identifies, after
-verifying every declared hash against the bytes. Files accepted alone, in another group or never
+verifying every declared hash against the bytes. Deliveries accepted alone, in another group or never
 are a new decision, and the group needs a new read. Each table keeps its receipts and chain; a
 group adds no wire kind.
 
@@ -447,7 +447,7 @@ instant.
 
 <!-- protocol: sequence -->
 
-The receiver is the code that loads a file into its database. dogana decides; the receiver does, in
+The receiver is the code that loads a read's rows into its database. dogana decides; the receiver does, in
 this order:
 
 1. Looks the manifest's identity up among its receipts. An accepted one is a replay, answered with

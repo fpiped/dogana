@@ -6,7 +6,7 @@ asks. No adapter ships; these are designs.
 
 ## dlt
 
-A dlt pipeline is a loader: the normalized load package is the staged file, the checks read it, and
+A dlt pipeline is a loader: the normalized load package is the staged read, the checks read it, and
 the load writes the accepted rows in the same transaction or table-format commit as ledger and
 receipt. Loading first and writing the ledger after is not atomic.
 
