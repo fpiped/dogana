@@ -16,4 +16,4 @@ def test_llms_txt_links_every_page_of_the_site_as_markdown(tmp_path):
     for link in links:
         text = (tmp_path / link).read_text(encoding="utf-8")
         assert text.strip() and text.strip() in full
-    assert "--8<--" not in full
+    assert "--8<--" not in full and "<!--" not in full

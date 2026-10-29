@@ -15,11 +15,14 @@ def nav() -> list[tuple[str, str]]:
 
 
 def page(path: str) -> str:
-    """A page's Markdown, with the home page's README include resolved."""
+    """A page's Markdown, with the home page's README include resolved and HTML comments removed."""
     if path == "index.md":
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        return readme.split("[start:body] -->\n", 1)[1].split("<!-- --8<-- [end:body]", 1)[0]
-    return (ROOT / "docs" / path).read_text(encoding="utf-8")
+        text = readme.split("[start:body] -->\n", 1)[1].split("<!-- --8<-- [end:body]", 1)[0]
+    else:
+        text = (ROOT / "docs" / path).read_text(encoding="utf-8")
+    # Comments carry test setup and illustration marks for the suite, not content for a reader.
+    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.DOTALL)
 
 
 def main(site: Path) -> None:

@@ -16,7 +16,7 @@ A release is a GitHub release whose tag, vX.Y.Z, names the version in pyproject.
 workflow builds the package and publishes it to PyPI.
 A change to the public API or to a rule updates src/dogana/.agents/skills/dogana/SKILL.md too.
 
-Documentation examples are tested by tests/test_readme.py, which discovers README.md and every
+Documentation examples are tested by tests/test_docs.py, which discovers README.md and every
 Markdown page under docs/. Each page runs in one fresh Python process from an empty directory,
 with dogana and the example store installed. Python blocks share variables in source order;
 fence attributes such as `python title="example"` do not disable execution. A following `text`
