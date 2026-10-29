@@ -4,11 +4,10 @@ Run `python scripts/traceability.py` in the development environment. It collects
 suite without running tests, including the inherited tests from `src/dogana/conformance`.
 `--list` prints every ID, its status and its source line. `--strict` also fails on coverage gaps.
 
-CI fails on unknown claims, malformed markers, stale exemptions, duplicate protocol IDs,
-unlabelled prose or failed test collection. Unclaimed rules are reported without failing for now:
-the existing gaps must be closed before CI can enforce complete coverage. Enable `--strict` in
-the workflow when they are closed. A marker records relevant assertions, not exhaustive clause
-coverage or proof of a source's promises. Existing tests retain their delivery-pattern names.
+CI runs with `--strict` and fails on unclaimed rules, unknown claims, malformed markers, stale
+exemptions, duplicate protocol IDs, unlabelled prose or failed test collection. The five coverage
+gaps are closed. A marker records relevant assertions, not exhaustive clause coverage or proof of
+a source's promises. Existing tests retain their delivery-pattern names.
 
 ## IDs
 
@@ -44,22 +43,22 @@ exempted with reasons in `UNTESTABLE` in `scripts/traceability.py`, the only exe
 Mixed units still need tests for their observable clauses. Claiming an exempt unit fails until
 the claim or exemption is corrected.
 
-## Current gaps
+## Coverage
 
-The audit of `715ea82` with the added markers finds 135 units: 118 claimed, 5 unclaimed and
-12 marked untestable. All numbered transition rules and all eleven transition table rows are
-claimed by the mapping of 296 test functions. No new behavioral tests were added.
+All 135 units are accounted for: 123 claimed, 0 unclaimed and 12 marked untestable. All numbered
+transition rules and all eleven transition table rows are claimed. Five focused tests close the
+previous gaps:
 
-- `checks.window_present`: Deliver a full file with a null window value and assert a
-  `window_present` refusal without changing the publication.
-- `claims.3`: Compare an anti-join and exact aggregates against source truth after an unreported
-  deletion, showing the reversed requirements and the need for both dates.
-- `contract.deleted-content`: Deliver two hashless tombstone files with equal manifests but
-  different deleted keys and assert the second replays without reading it, then contrast hashes.
-- `contract.soft-delete-fallback`: Model a source that physically removes a row after flagging it
-  and show that a no-deletions changes shape retains it until a complete read removes it.
-- `trust-model.1`: Deliver a truncated full export with a matching receiver count and assert
-  acceptance, then refuse it with the larger count declared by the source's original read.
+- `checks.window_present`: A full file with a null window value fails `window_present` and leaves
+  rows, ledger and publication unchanged.
+- `claims.3`: An unreported movement deletion hides a valid anti-join answer and makes exact
+  counts and sums wrong; a complete read restores the answers.
+- `contract.deleted-content`: Equal hashless tombstone manifests replay without reading changed
+  deleted keys; different hashes make a new delivery, subject to time admission.
+- `contract.soft-delete-fallback`: A no-deletions changes shape retains a flagged row after
+  physical removal and stays patched until a complete read removes it.
+- `trust-model.1`: A truncated full export passes with its exported count and fails `row_count`
+  with the larger count from the source's original read.
 
 The review found no pre-existing protocol markers. During mapping,
 `test_schema_failure_marks_dependent_checks_not_evaluated` was left claiming only `checks.blocked`:
@@ -75,8 +74,10 @@ cover cost representation and the default, and planner tests cover selection; no
 relevant test claims. Snapshot truth, the theorem's premises and the source's soft-delete promises
 remain outside what receiver tests can establish.
 
-Validation: 1000 tests passed and 14 skipped on Python 3.14.7; Ruff, strict mypy (including the
-script) and the strict site build passed. Manual checks verified stable IDs after insertions,
-failure on unknown inherited claims, malformed markers, duplicate IDs, unlabelled prose and
-stale exemptions, and failure on gaps with `--strict`. Markdown rendering kept the protocol's
-visible text, table content, links and heading anchors unchanged.
+Validation: 1236 tests passed and 12 skipped on Python 3.14.7, with 99 percent coverage. Ruff,
+strict mypy (including the example store and script) and strict traceability passed.
+
+The original mapping audit verified stable IDs after insertions, failure on unknown inherited
+claims, malformed markers, duplicate IDs, unlabelled prose and stale exemptions, and failure on
+gaps with `--strict`. Markdown rendering kept the protocol's visible text, table content, links
+and heading anchors unchanged.

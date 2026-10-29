@@ -21,7 +21,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv venv && uv pip install -e . -e examples/duckdb --group dev
       - run: .venv/bin/coverage run -m pytest -q && .venv/bin/coverage report
-      - run: .venv/bin/python scripts/traceability.py
+      - run: .venv/bin/python scripts/traceability.py --strict
       - run: uvx ruff check . && uvx ruff format --check .
       - run: .venv/bin/python -m mypy --strict src examples/duckdb scripts/traceability.py
 

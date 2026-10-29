@@ -14,9 +14,11 @@ from dogana import (
     Reference,
     Shape,
     State,
+    deliver,
     plan_together,
 )
-from tests.support import SINCE, at, contract
+from tests.memory_store import MemoryStore
+from tests.support import FULL, SINCE, at, contract
 
 ORDERS = contract("orders")
 LINES = contract("order_lines")
@@ -122,6 +124,60 @@ def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
             limit=timedelta.max,
             windows={"moves": (at(1).date(), at(2).date())},
         )
+
+
+@pytest.mark.protocol("claims.3")
+def test_patched_movements_hide_valid_antijoin_answers_and_make_exact_counts_and_sums_wrong():
+    store = MemoryStore()
+    items = contract("items", columns=None, shapes={"full": FULL})
+    movements = contract("movements", columns=None, shapes={"full": FULL, "since": SINCE})
+    source_items = [{"id": 1}, {"id": 2}, {"id": 3}]
+    source_movements = [
+        {"id": 10, "item_id": 1, "amount": 5},
+        {"id": 20, "item_id": 2, "amount": 7},
+    ]
+    baseline = deliver(store, movements, source_movements, movements.manifest("full", at(18), rows=2), at(18))
+    assert baseline.accepted
+
+    deleted = source_movements.pop()
+    inserted = {"id": 30, "item_id": 1, "amount": 3}
+    source_movements.append(inserted)
+    exact_items = deliver(store, items, source_items, items.manifest("full", at(19), rows=3), at(19))
+    changed = deliver(
+        store, movements, [inserted], movements.manifest("since", at(19), since=at(18), rows=1), at(19)
+    )
+    assert exact_items.accepted and changed.accepted
+    assert store.load_ledger(items).claims(at(19), limit=timedelta.max).exact_as_of == at(19)
+    claims = store.load_ledger(movements).claims(at(19), limit=timedelta.max)
+    assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (
+        State.PATCHED,
+        at(19),
+        at(18),
+    )
+    published_items, published_movements = store.read(items.table), store.read(movements.table)
+    assert published_items == source_items
+    assert deleted in published_movements and deleted not in source_movements
+    assert all(movement in published_movements for movement in source_movements)
+
+    def without_movements(items, movements):
+        return {item["id"] for item in items if not any(m["item_id"] == item["id"] for m in movements)}
+
+    def aggregates(movements):
+        return len(movements), sum(m["amount"] for m in movements)
+
+    answer = without_movements(published_items, published_movements)
+    truth = without_movements(source_items, source_movements)
+    assert answer == {3}
+    assert truth == {2, 3}
+    assert answer < truth
+    assert aggregates(published_movements) == (3, 15)
+    assert aggregates(source_movements) == (2, 8)
+
+    repaired = deliver(store, movements, source_movements, movements.manifest("full", at(20), rows=2), at(20))
+    assert repaired.accepted
+    assert store.load_ledger(movements).claims(at(20), limit=timedelta.max).exact_as_of == at(20)
+    assert without_movements(store.read(items.table), store.read(movements.table)) == truth
+    assert aggregates(store.read(movements.table)) == aggregates(source_movements)
 
 
 @pytest.mark.protocol("tables-together.delivery.2")

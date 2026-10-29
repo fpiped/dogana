@@ -1,8 +1,12 @@
+import json
 from dataclasses import replace
+from datetime import timedelta
+from hashlib import sha256
 
 import pytest
 
 from dogana import (
+    Deletions,
     DoganaError,
     InconsistentPublication,
     InvalidContract,
@@ -11,12 +15,13 @@ from dogana import (
     RejectedDelivery,
     SerializationError,
     StampAhead,
+    State,
     StoreError,
     deliver,
 )
-from tests.integration.support import row
-from tests.memory_store import MemoryStore
-from tests.support import at, contract
+from tests.integration.support import marked, row
+from tests.memory_store import MemoryStore, RowSource
+from tests.support import COLUMNS, FULL, SINCE, at, contract
 
 
 def seed(store):
@@ -119,6 +124,155 @@ def test_a_full_publication_without_a_schema_hash_checks_the_bound_columns():
     assert receipt.accepted
     assert "schema_hash" not in {check.name for check in receipt.checks}
     assert store.read(c.table) == [row(1)]
+
+
+@pytest.mark.protocol("checks.window_present")
+def test_a_full_delivery_with_a_null_window_value_is_refused_without_changing_the_publication():
+    store = MemoryStore()
+    c, first = seed(store)
+    ledger = store.load_ledger(c)
+    source = RowSource([{**row(2), "day": None}], COLUMNS)
+    refused = deliver(store, c, source, c.manifest("full", at(19), rows=1), at(20))
+
+    assert not refused.accepted
+    assert [check.name for check in refused.checks if not check.passed] == ["window_present"]
+    assert refused.publication_id == store.publication_stamp(c.table) == first.publication_id
+    assert store.load_ledger(c) == ledger
+    assert store.read(c.table) == [row(1)]
+    assert store.receipts(c.table) == (first, refused)
+
+
+@pytest.mark.protocol("contract.deleted-content")
+def test_equal_tombstone_manifests_replay_without_reading_changed_keys_unless_content_is_hashed(tmp_path):
+    class FileMemoryStore(MemoryStore):
+        def __init__(self):
+            super().__init__()
+            self.digests = {}
+            self.reads = []
+
+        def digest(self, source):
+            self.reads.append(source)
+            return sha256(source.read_bytes()).hexdigest()
+
+        def hold(self, source, manifest, c):
+            if not hasattr(source, "read_bytes"):
+                return super().hold(source, manifest, c)
+            self.reads.append(source)
+            content = source.read_bytes()
+            candidate = super().hold(json.loads(content), manifest, c)
+            self.digests[candidate] = sha256(content).hexdigest()
+            return candidate
+
+        def check(self, candidate, c, manifest, requirements):
+            checks = tuple(
+                replace(check, passed=self.digests[candidate] == manifest.content_hash)
+                if check.name == "content_hash"
+                else check
+                for check in super().check(candidate, c, manifest, requirements)
+            )
+            base, stamp, _ = self.checked[candidate]
+            self.checked[candidate] = base, stamp, checks
+            return checks
+
+    c = contract(
+        columns=None, shapes={"full": FULL, "changes": replace(SINCE, deletions=Deletions.TOMBSTONE)}
+    )
+    files = [tmp_path / "delete-one.json", tmp_path / "delete-two.json"]
+    for key, path in enumerate(files, 1):
+        path.write_text(json.dumps(marked([], tombstones=(key,))))
+    manifest = c.manifest("changes", at(19), since=at(18), rows=0, tombstones=1)
+
+    for hashed in (False, True):
+        store = FileMemoryStore()
+        initial = deliver(store, c, [{"id": 1}, {"id": 2}], c.manifest("full", at(18), rows=2), at(20))
+        assert initial.accepted
+        manifests = [
+            replace(manifest, content_hash=sha256(path.read_bytes()).hexdigest()) if hashed else manifest
+            for path in files
+        ]
+        first = deliver(store, c, files[0], manifests[0], at(20))
+        assert first.accepted and not first.replayed
+        assert store.read(c.table) == [{"id": 2}]
+        store.reads.clear()
+
+        second = deliver(store, c, files[1], manifests[1], at(20))
+        if hashed:
+            assert manifests[0].identity != manifests[1].identity
+            assert not second.accepted and not second.replayed
+            assert any(check.name == "transition" and not check.passed for check in second.checks)
+            later = deliver(store, c, files[1], replace(manifests[1], produced_at=at(20)), at(20))
+            assert later.accepted and not later.replayed
+            assert store.reads == [files[1]]
+            assert store.read(c.table) == []
+        else:
+            assert manifests[0] == manifests[1]
+            assert second == replace(first, outcome="replayed")
+            assert store.reads == []
+            assert store.read(c.table) == [{"id": 2}]
+            assert store.load_ledger(c).identity == first.ledger_identity
+            assert store.receipts(c.table) == (initial, first)
+
+
+@pytest.mark.protocol("contract.soft-delete-fallback")
+def test_changes_without_deletions_keep_a_physically_removed_soft_deleted_row_until_a_full_read():
+    store = MemoryStore()
+    c = contract(columns=None, shapes={"full": FULL, "since": SINCE})
+    source = [{"id": 1, "inactive": False}, {"id": 2, "inactive": False}]
+    first = deliver(store, c, source, c.manifest("full", at(18), rows=2), at(18))
+    assert first.accepted
+
+    source[0] = {"id": 1, "inactive": True}
+    flagged = deliver(store, c, [source[0]], c.manifest("since", at(19), since=at(18), rows=1), at(19))
+    assert flagged.accepted
+    assert store.read(c.table) == [source[1], source[0]]
+    claims = store.load_ledger(c).claims(at(19), limit=timedelta.max)
+    assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (
+        State.PATCHED,
+        at(19),
+        at(18),
+    )
+
+    removed = source.pop(0)
+    changes = deliver(store, c, [], c.manifest("since", at(20), since=at(19), rows=0), at(20))
+    assert changes.accepted
+    assert store.read(c.table) == [source[0], removed]
+    claims = store.load_ledger(c).claims(at(20), limit=timedelta.max)
+    assert (claims.state, claims.complete_as_of, claims.deletions_as_of) == (
+        State.PATCHED,
+        at(20),
+        at(18),
+    )
+
+    complete = deliver(store, c, source, c.manifest("full", at(21), rows=1), at(21))
+    assert complete.accepted
+    assert store.read(c.table) == source
+    claims = store.load_ledger(c).claims(at(21), limit=timedelta.max)
+    assert (claims.state, claims.exact_as_of) == (State.COMPLETE, at(21))
+
+
+@pytest.mark.protocol("trust-model.1")
+def test_a_truncated_full_export_passes_only_when_its_declared_count_also_omits_the_missing_rows():
+    source = [row(2), row(3)]
+    exported = source[:1]
+    for declared, accepted in ((len(exported), True), (len(source), False)):
+        store = MemoryStore()
+        c, first = seed(store)
+        ledger = store.load_ledger(c)
+        manifest = c.manifest("full", at(19), rows=declared)
+        receipt = deliver(store, c, exported, manifest, at(20))
+
+        assert receipt.accepted is accepted
+        assert next(check.passed for check in receipt.checks if check.name == "row_count") is accepted
+        if accepted:
+            assert store.read(c.table) == exported
+            assert source[1] not in store.read(c.table)
+            assert store.load_ledger(c).claims(at(19), limit=timedelta.max).exact_as_of == at(19)
+        else:
+            assert [check.name for check in receipt.checks if not check.passed] == ["row_count"]
+            assert store.read(c.table) == [row(1)]
+            assert store.load_ledger(c) == ledger
+            assert store.publication_stamp(c.table) == receipt.publication_id == first.publication_id
+        assert store.receipts(c.table) == (first, receipt)
 
 
 @pytest.mark.protocol("store.chain-and-recovery")
