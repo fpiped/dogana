@@ -27,6 +27,9 @@ the contract declares, so an honest delivery never fails one.
   them; `Group.claims(ledgers, now, limit=..., windows=...)` returns a group's regions together,
   with `windows` by keyword, and `exact_as_of` is the instant that does. `Claims(regions)` still
   builds a value from any regions.
+- A JSON number with a zero fraction, such as `4.0`, is the integer it spells wherever an integer
+  is expected, as JSON Schema reads it. A test generates and mutates documents from the schemas and
+  checks that decoder and schemas agree.
 - The decoder refuses what the schemas refuse, instead of rounding it. It refuses a duration below a
   microsecond or not exactly representable, or a negative one. It refuses a datetime with more than
   six fractional digits or outside RFC 3339, a date with a time part, and a receipt with an empty

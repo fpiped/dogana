@@ -508,9 +508,10 @@ reconstruction uses each receipt's contract, then the requested one.
    version 1 manifests (dogana 0.1) listed keys, version 2 receipts (0.2 and 0.3) carried ledgers,
    version 3 contracts (0.4 to 0.6) carried a shrink limit.
 2. Field names match constructor arguments, and every field is present, defaults included. Tuples
-   are arrays, enums strings, mappings objects. Missing or unknown fields, unknown versions or
-   kinds, wrong types, overflowing tags and naive datetimes raise `SerializationError` before
-   normalization.
+   are arrays, enums strings, mappings objects. JSON has one number type: a number with a zero
+   fraction, such as `4.0` or `-0.0`, is the integer it spells wherever an integer is expected, as
+   JSON Schema reads it. Missing or unknown fields, unknown versions or kinds, wrong types,
+   overflowing tags and naive datetimes raise `SerializationError` before normalization.
 3. Tags: dates `{"$date":"2026-10-18"}`; datetimes `{"$datetime":"2026-10-18T00:00:00+00:00"}`,
    RFC 3339 with `Z` or an offset and at most six fractional digits, emitted in UTC without
    fractional seconds when zero, else with six digits; durations `{"$seconds":604800}`, nonnegative

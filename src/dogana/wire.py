@@ -233,8 +233,9 @@ def decode(value: object) -> object:
         return date.fromisoformat(value["$date"])
     if set(value) == {"$seconds"} and type(value["$seconds"]) in (int, float):
         return _duration(value["$seconds"])
-    if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, bool):
-        if type(value.get("version")) is not int or value["version"] != Wire.version:
+    if isinstance(value.get("kind"), str) or type(value.get("version")) in (int, float, bool):
+        version = _integral(value.get("version"), int)
+        if type(version) is not int or version != Wire.version:
             raise SerializationError(
                 f"unsupported wire version {value.get('version')!r}: this dogana reads version {Wire.version}"
             )
@@ -253,12 +254,35 @@ def decode(value: object) -> object:
         if extra:
             raise SerializationError(f"unknown fields for {kind}: {', '.join(sorted(extra))}")
         hints = _hints(schema)
-        decoded = {name: _decode_field(value[name], hints[name]) for name in names}
+        decoded = {name: _integral(_decode_field(value[name], hints[name]), hints[name]) for name in names}
         for name, item in decoded.items():
             if not _matches(item, hints[name]):
                 raise SerializationError(f"invalid value for {kind}.{name}={item!r}")
         return cast(_Constructor, cls)(**decoded)
     return {key: decode(item) for key, item in value.items()}
+
+
+def _integral(value: object, annotation: object) -> object:
+    """JSON has one number type: a zero-fraction number is the integer it spells, where no float fits."""
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin in (Union, UnionType):
+        if any(option is float for option in args):
+            return value
+        options = [option for option in args if option is not type(None)]
+        return _integral(value, options[0]) if len(options) == 1 else _integral(value, _scalar(args))
+    if origin is tuple and isinstance(value, (tuple, list)):
+        hints = (args[0],) * len(value) if len(args) == 2 and args[1] is Ellipsis else args
+        if len(hints) != len(value):
+            return value
+        return tuple(_integral(item, hint) for item, hint in zip(value, hints, strict=True))
+    if annotation is not float and type(value) is float and value.is_integer() and abs(value) <= 2**53:
+        return int(value)
+    return value
+
+
+def _scalar(options: tuple[object, ...]) -> object:
+    """The one annotation of a scalar union, int when it admits an integer, else the first option."""
+    return int if any(option is int for option in options) else options[0]
 
 
 def _decode_field(value: object, annotation: object) -> object:

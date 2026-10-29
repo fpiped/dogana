@@ -80,7 +80,7 @@ def encoded_documents():
     checks = tuple(Check(requirement.name, True) for requirement in Gate.requirements(c, manifest))
     receipt = Gate.evaluate(Ledger(c), manifest, checks, now=at(18))
     ledger = Ledger(c).follow(receipt)
-    claims = ledger.claims(at(19), limit=None)
+    claims = ledger.claims(at(19), limit=timedelta.max)
     values = [
         c,
         manifest,
@@ -148,7 +148,8 @@ def discrepancy(document, validate_wire, *, via_json):
     except InvalidContract as exc:
         # Cross-field constraints, date ordering, UTC overflow, exact binary64
         # integers and duration range are stricter than the structural schemas.
-        if valid and not semantic_refusal(exc):
+        # A duration the schema admits but that would round is refused by Versioned JSON rule 3.
+        if valid and not semantic_refusal(exc) and not loses_microseconds(document):
             return f"{evidence}\nstructural refusal: {type(exc).__name__}: {exc}"
         return None
     except Exception as exc:
