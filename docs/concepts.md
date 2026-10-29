@@ -1,7 +1,7 @@
 # Concepts
 
-One example runs through this page: a shop whose order system exports its `orders` table, and a loader that
-puts the rows into the shop's own database. The [protocol](protocol.md) states the same rules
+One example runs through this page: a shop whose order system exports its `orders` table, and a
+loader that puts the rows into the shop's own database. The [protocol](protocol.md) states the same rules
 exactly, edge cases included.
 
 ## The problem
