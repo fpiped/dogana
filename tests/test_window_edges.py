@@ -8,6 +8,7 @@ from tests.support import WINDOW, at
 from tests.support import accounting_contract as contract
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "low,unit", [(2**52, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
 )
@@ -20,6 +21,7 @@ def test_open_and_closed_discrete_windows_clip_only_their_exact_points(low, unit
         assert (region.intersection(point) is not None) is expected
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "low,unit", [(2**52, 1), (date(2026, 1, 1), timedelta(days=1)), (at(18), timedelta(microseconds=1))]
 )
@@ -37,6 +39,7 @@ def test_equal_adjacent_and_exactly_touching_windows_have_no_phantom_gap(low, un
     ).deletions_as_of == at(20)
 
 
+@pytest.mark.protocol("contract.domains")
 def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings():
     rome = ZoneInfo("Europe/Rome")
     low = datetime(2026, 10, 25, 2, 30, tzinfo=rome, fold=0)
@@ -53,6 +56,7 @@ def test_fall_back_window_bounds_are_utc_instants_not_equal_local_clock_readings
     assert ledger.claims(at(26), limit=timedelta.max, window=(outside, outside)).deletions_as_of is None
 
 
+@pytest.mark.protocol("contract.domains")
 def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_gap():
     rome = ZoneInfo("Europe/Rome")
     low = datetime(2026, 3, 29, 1, 30, tzinfo=rome)
@@ -63,6 +67,7 @@ def test_spring_forward_window_measures_elapsed_utc_time_across_the_local_clock_
     assert region.high == datetime(2026, 3, 29, 1, 30, tzinfo=UTC)
 
 
+@pytest.mark.protocol("contract.domains")
 def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap():
     c = contract(window_type="str", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("a", "a")))
@@ -72,6 +77,7 @@ def test_adjacent_string_deliveries_cover_their_successor_without_a_phantom_gap(
     assert len(claims.regions) == 2
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "low,high", [(date.min, date.max), (datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC))]
 )
@@ -83,6 +89,7 @@ def test_full_representable_window_delivery_leaves_no_unknown_exterior(low, high
     assert Ledger.from_json(ledger.to_json()) == ledger
 
 
+@pytest.mark.protocol("contract.domains")
 def test_first_string_partition_delivery_leaves_no_unknown_region_below_the_empty_string():
     c = contract(window_type="str", shapes={"daily": WINDOW})
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(19), window=("", "")))
@@ -90,6 +97,7 @@ def test_first_string_partition_delivery_leaves_no_unknown_region_below_the_empt
     assert ledger.regions[0].complete_as_of == at(19)
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "region",
     [
@@ -106,12 +114,14 @@ def test_delivery_regions_cannot_contain_an_empty_scalar_interval(region):
         Region(**region)
 
 
+@pytest.mark.protocol("contract.domains")
 def test_delivery_regions_only_touch_their_ordered_successor():
     left, right = Region(1, 9), Region(10, 20)
     assert left.touches(right)
     assert not right.touches(left)
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize("value", [2**53, 2**100, -(2**100)])
 def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value):
     c = contract(shapes={"daily": WINDOW})
@@ -125,6 +135,7 @@ def test_integer_successor_cuts_need_not_be_representable_as_wire_numbers(value)
     assert ledger.regions[2].low == value and ledger.regions[2].low_open
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize("maximum", [date.max, datetime.max.replace(tzinfo=UTC)])
 def test_delivery_at_the_last_scalar_preserves_the_preceding_unknown_domain(maximum):
     c = contract(window_type=type(maximum).__name__, shapes={"daily": WINDOW})

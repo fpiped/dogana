@@ -27,6 +27,7 @@ def full(c, day):
     return Ledger(c).apply(Manifest(c.table, "full", at(day), rows=0, schema_hash=c.schema_hash))
 
 
+@pytest.mark.protocol("tables-together.group-and-reference")
 def test_a_reference_names_distinct_columns_with_valid_identifiers():
     with pytest.raises(InvalidContract, match="distinct columns"):
         Reference("order_lines", (), "orders")
@@ -37,6 +38,7 @@ def test_a_reference_names_distinct_columns_with_valid_identifiers():
     assert str(LINE) == "order_lines(order_id) references orders"
 
 
+@pytest.mark.protocol("tables-together.group-and-reference")
 def test_a_group_names_each_table_once_and_references_only_its_tables():
     with pytest.raises(InvalidContract, match="each of its tables once"):
         Group((ORDERS, ORDERS))
@@ -53,6 +55,7 @@ def test_a_group_names_each_table_once_and_references_only_its_tables():
     assert Group([ORDERS, LINES], [LINE]).tables == ("orders", "order_lines")
 
 
+@pytest.mark.protocol("tables-together.exact")
 def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant():
     ledger = full(ORDERS, 18)
     assert ledger.claims(at(18), limit=timedelta.max).exact_as_of == at(18)
@@ -68,6 +71,7 @@ def test_a_table_is_exact_only_when_every_region_holds_both_dates_at_one_instant
     assert full(ORDERS, 18).claims(at(30), limit=timedelta(days=7)).exact_as_of == at(18)
 
 
+@pytest.mark.protocol("claims.2", "tables-together.group-and-reference")
 def test_a_group_expires_by_the_readers_limit_and_judges_only_the_windows_it_is_given():
     ledgers = {"orders": full(ORDERS, 18), "order_lines": full(LINES, 18)}
     group = Group((ORDERS, LINES))
@@ -91,6 +95,7 @@ def test_a_group_expires_by_the_readers_limit_and_judges_only_the_windows_it_is_
     assert both.exact_as_of == at(19)
 
 
+@pytest.mark.protocol("tables-together.exact")
 def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
     early, late = full(ORDERS, 18), full(LINES, 19)
     combined = Group((ORDERS, LINES)).claims(
@@ -119,6 +124,7 @@ def test_two_exact_tables_share_an_instant_only_when_their_instants_are_equal():
         )
 
 
+@pytest.mark.protocol("tables-together.delivery.2")
 def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own():
     def alone(c, day, passed=True):
         manifest = Manifest(c.table, "full", at(day), rows=0, schema_hash=c.schema_hash)
@@ -144,6 +150,7 @@ def test_the_joint_check_needs_one_boundary_and_every_table_accepted_on_its_own(
     )
 
 
+@pytest.mark.protocol("tables-together.delivery.4")
 def test_a_failed_joint_check_turns_an_acceptable_delivery_into_a_rejection():
     manifest = Manifest("orders", "full", at(18), rows=0, schema_hash=ORDERS.schema_hash)
     outcomes = tuple(Check(r.name, True) for r in Gate.requirements(ORDERS, manifest))
@@ -157,6 +164,7 @@ def test_a_failed_joint_check_turns_an_acceptable_delivery_into_a_rejection():
         Gate.evaluate(Ledger(ORDERS), manifest, outcomes, now=at(30), joint=("together",))  # type: ignore[arg-type]
 
 
+@pytest.mark.protocol("tables-together.planning")
 def test_planning_together_reads_every_table_at_one_boundary_past_all_evidence():
     group = Group((ORDERS, LINES))
     ledgers = {"orders": full(ORDERS, 18), "order_lines": full(LINES, 20)}
@@ -170,6 +178,7 @@ def test_planning_together_reads_every_table_at_one_boundary_past_all_evidence()
     assert plan_together(group, after, at(20)) == {}
 
 
+@pytest.mark.protocol("tables-together.planning")
 def test_planning_together_covers_each_table_over_its_window_only():
     group = Group((ORDERS, LINES))
     ledgers = {"orders": full(ORDERS, 18), "order_lines": full(LINES, 18)}
@@ -186,6 +195,7 @@ def test_planning_together_covers_each_table_over_its_window_only():
         )
 
 
+@pytest.mark.protocol("tables-together.planning")
 def test_planning_together_reads_a_keyless_append_after_its_start():
     shapes = {"full": Shape.full(cost=100), "append": Shape.append(cost=1)}
     events = Contract("events", (), shapes, start_at=at(19))
@@ -194,6 +204,7 @@ def test_planning_together_reads_a_keyless_append_after_its_start():
     assert {r.until for r in requests.values()} == {at(19) + timedelta(microseconds=1)}
 
 
+@pytest.mark.protocol("tables-together.when-a-reference-is-tested")
 def test_a_reference_is_checked_only_where_an_orphan_would_disprove_the_shared_boundary():
     group = Group((ORDERS, LINES), (LINE,))
     exact = {"orders": full(ORDERS, 19), "order_lines": full(LINES, 19)}
@@ -215,6 +226,7 @@ def test_a_reference_is_checked_only_where_an_orphan_would_disprove_the_shared_b
     assert group.unchecked(LINE, complete, lines) is None
 
 
+@pytest.mark.protocol("tables-together.planning")
 def test_planning_together_ignores_start_at_once_a_keyless_table_has_evidence():
     shapes = {"full": Shape.full(cost=100), "append": Shape.append(cost=1)}
     events = Contract("events", (), shapes, start_at=at(25))
@@ -223,11 +235,13 @@ def test_planning_together_ignores_start_at_once_a_keyless_table_has_evidence():
     assert {r.until for r in requests.values()} == {at(19)}
 
 
+@pytest.mark.protocol("tables-together.group-and-reference")
 def test_a_group_names_each_reference_once():
     with pytest.raises(InvalidContract, match="each reference once"):
         Group((ORDERS, LINES), (LINE, LINE))
 
 
+@pytest.mark.protocol("tables-together.planning")
 def test_planning_together_keeps_the_earliest_boundary_when_a_full_read_is_cheaper_than_the_first_append():
     shapes = {"full": Shape.full(cost=1), "append": Shape.append(cost=100)}
     events = Contract("events", (), shapes, start_at=at(25))

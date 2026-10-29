@@ -65,6 +65,7 @@ def test_a_delivery_together_carries_one_source_per_table():
         deliver_together(store, GROUP, {"orders": full(ORDERS, [order(1)])}, at(20))
 
 
+@pytest.mark.protocol("tables-together.when-a-reference-is-tested")
 @pytest.mark.parametrize(
     ("lines", "columns", "problem"),
     [
@@ -100,6 +101,7 @@ def hold_and_check(store, lines):
     return held, checked, joint
 
 
+@pytest.mark.protocol("tables-together.when-a-reference-is-tested")
 def test_an_orphan_names_its_reference_values_and_an_unchecked_reference_says_why():
     def references(receipts):
         return next(c.detail for c in receipts["orders"].checks if c.name == "references")
@@ -173,6 +175,7 @@ def test_the_files_of_a_group_are_ingested_together(tmp_path):
             ingest_together(GROUP, [files[0], files[0]], now=at(20))
 
 
+@pytest.mark.protocol("tables-together.replay-and-races.2")
 @pytest.mark.parametrize("meanwhile", ["alone", "together", "torn"])
 def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypatch, meanwhile):
     with DuckDBStore(":memory:") as store:
@@ -212,6 +215,7 @@ def test_what_another_delivery_accepts_meanwhile_is_decided_as_a_replay(monkeypa
             assert all(r.replayed and r.received_at == at(21) for r in receipts.values())
 
 
+@pytest.mark.protocol("tables-together.replay-and-races.1")
 def test_a_replay_is_one_delivery_of_these_files_under_these_references():
     from example_store import Rows
 

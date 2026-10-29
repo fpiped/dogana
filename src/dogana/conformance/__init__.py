@@ -259,6 +259,7 @@ class _StoreScenarios:
 
 
 class StoreConformance(_StoreScenarios):
+    @pytest.mark.protocol("store.methods")
     def test_a_store_implements_the_eight_required_methods(self, store: Store) -> None:
         required = (
             "digest",
@@ -274,6 +275,7 @@ class StoreConformance(_StoreScenarios):
 
     """Required publication, replay and atomicity obligations."""
 
+    @pytest.mark.protocol("contract.column-hash", "transitions.full")
     @pytest.mark.parametrize("rows", [[], [_row(1)], [{**_row(1), "value": None}]])
     def test_a_full_delivery_without_a_schema_hash_publishes_rows_and_evidence(
         self, factory: StoreFactory, store: Store, rows: list[dict[str, Any]]
@@ -289,6 +291,7 @@ class StoreConformance(_StoreScenarios):
         assert _submit(store, c, object(), receipt.manifest) == replace(receipt, outcome=Outcome.REPLAYED)
         assert store.receipts(c.table) == (receipt,)
 
+    @pytest.mark.protocol("contract.column-hash")
     def test_a_null_payload_value_keeps_its_declared_column_type(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -299,6 +302,7 @@ class StoreConformance(_StoreScenarios):
         assert any(check.name == "schema_hash" and check.passed for check in receipt.checks)
         assert factory.read_table(store, c.table) == rows
 
+    @pytest.mark.protocol("checks.plans", "ledger.meaning", "checks.declarations", "store.obligations.4")
     def test_a_week_of_erp_deliveries_proves_three_tables_rows_dates_receipts_and_claims(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -389,6 +393,14 @@ class StoreConformance(_StoreScenarios):
             assert surface.deletions_as_of == _at(day if day in (18, 25) else 18)
         assert sum(len(store.receipts(c.table)) for c in contracts) == 25
 
+    @pytest.mark.protocol(
+        "checks.row_count",
+        "checks.schema_hash",
+        "checks.rows_in_window",
+        "checks.key_integrity",
+        "transitions.1",
+        "transitions.2",
+    )
     @pytest.mark.parametrize(
         "problem",
         [
@@ -452,6 +464,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (first, refused)
         self._fold(store, c)
 
+    @pytest.mark.protocol("store.obligations.2", "store.4")
     @pytest.mark.parametrize("shape", ["full", "daily", "since", "feed"])
     def test_failure_after_rows_rolls_back_before_retry_and_replay(
         self, factory: StoreFactory, store: Store, shape: str
@@ -482,6 +495,7 @@ class StoreConformance(_StoreScenarios):
         assert _submit(store, c, object(), manifest) == replace(retried, outcome=Outcome.REPLAYED)
         self._fold(store, c)
 
+    @pytest.mark.protocol("store.obligations.5", "store.1")
     def test_replay_after_a_newer_delivery_returns_the_original_receipt_once(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -494,6 +508,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (first, second)
         self._fold(store, c)
 
+    @pytest.mark.protocol("transitions.2")
     def test_an_out_of_order_overlapping_window_is_refused_whole(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -508,6 +523,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1, 19)]
 
+    @pytest.mark.protocol("store.obligations.2", "store.4")
     def test_append_requires_an_atomic_commit_and_replay_never_duplicates_events(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -540,6 +556,7 @@ class StoreConformance(_StoreScenarios):
         assert factory.read_table(store, c.table) == [{"event": "one"}, {"event": "two"}]
         self._fold(store, c)
 
+    @pytest.mark.protocol("transitions.generation-tombstones-exact")
     def test_a_cdc_stream_advances_both_dates_for_each_offset_batch_after_a_snapshot(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -575,6 +592,7 @@ class StoreConformance(_StoreScenarios):
         assert self._rows(factory, store, c.table) == [_row(3)]
         assert len(store.receipts(c.table)) == 3
 
+    @pytest.mark.protocol("transitions.5")
     def test_a_cdc_stream_with_a_different_offset_needs_a_new_snapshot(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -613,6 +631,7 @@ class StoreConformance(_StoreScenarios):
         ).accepted
         assert self._rows(factory, store, c.table) == [_row(3)]
 
+    @pytest.mark.protocol("contract.keyless-tables", "transitions.3")
     def test_an_event_stream_uses_contiguous_arrival_intervals_without_deduplicating_new_batches(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -654,6 +673,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == retained
         self._fold(store, c)
 
+    @pytest.mark.protocol("trust-model.5", "contract.shapes.5")
     def test_an_upsert_stream_lookback_recovers_a_late_commit_in_the_next_batch(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -690,6 +710,7 @@ class StoreConformance(_StoreScenarios):
         assert _after(store, c, receipt).claims(until, limit=timedelta.max).state is State.PATCHED
         self._fold(store, c)
 
+    @pytest.mark.protocol("contract.window-column", "checks.rows_in_window")
     def test_a_window_delivery_cannot_move_a_key_out_of_another_window(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -706,6 +727,7 @@ class StoreConformance(_StoreScenarios):
         assert moved.accepted
         assert self._rows(factory, store, c.table) == [_row(1, 19)]
 
+    @pytest.mark.protocol("contract.cursor-column", "checks.rows_in_interval")
     @pytest.mark.parametrize(("deleted_at", "accepted"), [(None, True), (19, True), (10, False)])
     def test_a_tombstone_cursor_value_must_be_in_the_read_interval(
         self, factory: StoreFactory, store: Store, deleted_at: int | None, accepted: bool
@@ -733,6 +755,7 @@ class StoreConformance(_StoreScenarios):
         assert receipt.accepted is accepted
         assert [row["id"] for row in self._rows(factory, store, c.table)] == ([1] if accepted else [1, 2])
 
+    @pytest.mark.protocol("contract.window-column", "checks.rows_in_window")
     def test_a_window_tombstone_cannot_delete_a_key_outside_its_coverage(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -759,6 +782,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1), _row(2, 19)]
 
+    @pytest.mark.protocol("checks.key_integrity", "manifest.4")
     def test_a_key_cannot_be_both_live_and_deleted_in_one_delivery(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -771,6 +795,7 @@ class StoreConformance(_StoreScenarios):
         assert [check.name for check in refused.checks if not check.passed] == ["key_integrity"]
         assert store.load_ledger(c).identity == first.ledger_identity
 
+    @pytest.mark.protocol("checks.row_count", "contract.deleted-column")
     @pytest.mark.parametrize("declared,delivered", [(0, (1,)), (1, ())])
     def test_the_declared_tombstones_must_be_the_marked_rows(
         self, factory: StoreFactory, store: Store, declared: int, delivered: tuple[int, ...]
@@ -784,6 +809,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
+    @pytest.mark.protocol("checks.row_count", "contract.deleted-column")
     @pytest.mark.parametrize("deleted,accepted", [(False, True), (True, False)])
     def test_a_complete_delivery_may_carry_the_deleted_column_but_no_tombstone(
         self, factory: StoreFactory, store: Store, deleted: bool, accepted: bool
@@ -801,6 +827,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == (receipt if accepted else first).ledger_identity
         self._fold(store, c)
 
+    @pytest.mark.protocol("checks.row_count", "contract.deleted-column")
     def test_an_unmarked_row_is_neither_live_nor_deleted(self, factory: StoreFactory, store: Store) -> None:
         c = _contract()
         first = self._deliver(factory, store, c, [_row(1)], generation="g1")
@@ -810,6 +837,7 @@ class StoreConformance(_StoreScenarios):
         assert [check.name for check in refused.checks if not check.passed] == ["row_count"]
         assert store.load_ledger(c).identity == first.ledger_identity
 
+    @pytest.mark.protocol("transitions.window", "contract.domains")
     def test_an_empty_partition_decommissions_it_without_erasing_unknown_history(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -824,6 +852,7 @@ class StoreConformance(_StoreScenarios):
             _at(19), limit=timedelta.max, window=day
         ).deletions_as_of == _at(19)
 
+    @pytest.mark.protocol("checks.receipt-size")
     def test_a_foreign_manifest_is_audited_under_the_receiving_contract(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -836,6 +865,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (receipt,)
         self._fold(store, c)
 
+    @pytest.mark.protocol("transitions.window", "contract.domains")
     def test_empty_named_plant_exports_preserve_other_plants_and_unknown_history(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -861,6 +891,7 @@ class StoreConformance(_StoreScenarios):
         assert ledger.claims(_at(20), limit=timedelta.max, window=("IT01", "IT01")).deletions_as_of == _at(20)
         assert ledger.claims(_at(20), limit=timedelta.max, window=("US01", "US01")).state is State.UNKNOWN
 
+    @pytest.mark.protocol("claims.5", "store.delivery")
     def test_push_and_pull_publish_the_same_rows_ledger_and_receipt(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -889,6 +920,7 @@ class StoreConformance(_StoreScenarios):
             if close is not None:
                 close()
 
+    @pytest.mark.protocol("manifest.5", "transitions.timestamp-upserts")
     def test_pulling_changed_rows_by_updated_at_keeps_unreported_deletions(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -924,6 +956,7 @@ class StoreConformance(_StoreScenarios):
         ]
         assert _dates(store, c, receipt) == (_at(19), _at(18))
 
+    @pytest.mark.protocol("store.obligations.3", "store.3")
     def test_two_writers_from_one_base_publish_only_one_candidate(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -955,6 +988,7 @@ class StoreConformance(_StoreScenarios):
         assert self._rows(factory, store, c.table) == [_row(2)]
         assert store.receipts(c.table) == (first, receipt)
 
+    @pytest.mark.protocol("store.obligations.1")
     def test_a_store_publishes_only_what_its_own_checks_accepted(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -975,6 +1009,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == ()
         assert store.load_ledger(c).publication_id is None
 
+    @pytest.mark.protocol("store.obligations.4")
     def test_a_publication_survives_reopening_its_storage(self, factory: StoreFactory, store: Store) -> None:
         durable = _durable(factory)
         c = _contract()
@@ -992,6 +1027,7 @@ class StoreConformance(_StoreScenarios):
             if close is not None:
                 close()
 
+    @pytest.mark.protocol("store.obligations.3")
     def test_two_stores_on_one_storage_publish_only_one_candidate(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1020,6 +1056,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (receipt,)
         assert self._rows(factory, store, c.table) == [_row(1)]
 
+    @pytest.mark.protocol("manifest.6", "checks.content_hash")
     def test_a_declared_content_hash_that_differs_from_the_delivered_bytes_is_refused(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1034,6 +1071,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (refused,)
         assert store.load_ledger(c).publication_id is None
 
+    @pytest.mark.protocol("manifest.6", "checks.content_hash")
     def test_a_replayed_manifest_over_different_bytes_is_refused(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1049,6 +1087,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
+    @pytest.mark.protocol("contract.cursor-column", "checks.rows_in_interval")
     def test_a_sequence_read_refuses_rows_outside_its_positions(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1075,6 +1114,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).generation == 100
         assert [row["id"] for row in self._rows(factory, store, c.table)] == [1, 2]
 
+    @pytest.mark.protocol("manifest.corrections")
     def test_corrected_content_hash_is_a_new_delivery_subject_to_time_admission(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1093,6 +1133,7 @@ class StoreConformance(_StoreScenarios):
         assert accepted.accepted and not accepted.replayed
         assert self._rows(factory, store, c.table) == [_row(2)]
 
+    @pytest.mark.protocol("transitions.7", "store.2")
     def test_future_dated_full_delivery_is_refused_before_source_access(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1105,6 +1146,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         assert self._rows(factory, store, c.table) == [_row(1)]
 
+    @pytest.mark.protocol("checks.blocked")
     def test_schema_failure_marks_dependent_checks_not_evaluated(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1120,6 +1162,7 @@ class StoreConformance(_StoreScenarios):
             assert checks[name].passed is False
             assert checks[name].detail == "not evaluated"
 
+    @pytest.mark.protocol("store.obligations.4")
     def test_repeated_refusals_are_distinct_attempts_even_with_the_same_clock(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1132,6 +1175,7 @@ class StoreConformance(_StoreScenarios):
         assert len(attempts) == 3
         assert attempts[1].received_at == attempts[2].received_at == _at(30)
 
+    @pytest.mark.protocol("store.obligations.6")
     def test_reader_observes_rows_and_claims_from_one_publication(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1164,6 +1208,7 @@ class StoreConformance(_StoreScenarios):
             ([_row(2)], second.publication_id),
         )
 
+    @pytest.mark.protocol("store.methods")
     def test_a_rejected_manifest_that_cannot_round_trip_leaves_the_audit_readable(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1177,6 +1222,7 @@ class StoreConformance(_StoreScenarios):
         assert store.load_ledger(c).identity == first.ledger_identity
         self._fold(store, c)
 
+    @pytest.mark.protocol("store.obligations.3")
     def test_a_rejection_cannot_be_persisted_against_a_newer_publication(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1193,6 +1239,7 @@ class StoreConformance(_StoreScenarios):
         assert store.receipts(c.table) == (first, second)
         assert store.load_ledger(c).identity == second.ledger_identity
 
+    @pytest.mark.protocol("store.methods")
     def test_checks_require_a_candidate_held_by_the_store(self, factory: StoreFactory, store: Store) -> None:
         from dogana import Gate
 
@@ -1209,6 +1256,7 @@ class StoreConformance(_StoreScenarios):
 class StampedLedgerConformance(_StoreScenarios):
     """Optional recovery tests for stores exposing both stamp and repair."""
 
+    @pytest.mark.protocol("store.chain-and-recovery", "store.recovery")
     def test_stamp_ahead_refuses_until_receipts_repair_the_lost_ledger(
         self, factory: StampedStoreFactory, store: Store
     ) -> None:
@@ -1226,6 +1274,7 @@ class StampedLedgerConformance(_StoreScenarios):
         assert self._rows(factory, store, c.table) == [_row(2)]
         self._fold(store, c)
 
+    @pytest.mark.protocol("store.chain-and-recovery", "store.recovery")
     def test_ledger_ahead_requires_a_new_complete_delivery(
         self, factory: StampedStoreFactory, store: Store
     ) -> None:
@@ -1245,6 +1294,7 @@ class StampedLedgerConformance(_StoreScenarios):
         assert self._deliver(factory, store, c, [_row(3)], day=20).accepted
         assert self._rows(factory, store, c.table) == [_row(3)]
 
+    @pytest.mark.protocol("store.chain-and-recovery", "store.recovery")
     def test_lost_ledger_with_retained_receipts_requires_repair(
         self, factory: StampedStoreFactory, store: Store
     ) -> None:
@@ -1352,6 +1402,12 @@ class TogetherConformance(_StoreScenarios):
         assert all(r.accepted for r in receipts.values()), receipts
         return receipts
 
+    @pytest.mark.protocol(
+        "tables-together.delivery",
+        "tables-together.delivery.1",
+        "tables-together.reaching-p-p",
+        "tables-together.store",
+    )
     def test_a_group_publishes_every_table_at_one_instant(self, factory: StoreFactory, store: Store) -> None:
         group = _orders()
         first = self._baseline(factory, store, group)
@@ -1376,6 +1432,9 @@ class TogetherConformance(_StoreScenarios):
         assert group.claims(ledgers, _at(19), limit=timedelta.max).exact_as_of == _at(19)
         assert [r["id"] for r in self._rows(factory, store, "order_lines")] == [10, 11, 12]
 
+    @pytest.mark.protocol(
+        "tables-together.delivery.3", "tables-together.delivery.4", "tables-together.store.1"
+    )
     def test_a_line_without_its_order_refuses_the_whole_group(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1397,6 +1456,9 @@ class TogetherConformance(_StoreScenarios):
         assert [c.name for c in failed["orders"]] == [c.name for c in failed["order_lines"]] == ["references"]
         assert self._state(factory, store, group) == before
 
+    @pytest.mark.protocol(
+        "tables-together.delivery.3", "tables-together.delivery.4", "tables-together.store.1"
+    )
     def test_an_order_deleted_with_its_lines_kept_refuses_the_group(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1415,6 +1477,7 @@ class TogetherConformance(_StoreScenarios):
         assert all(r.accepted for r in receipts.values()), receipts
         assert [r["id"] for r in self._rows(factory, store, "order_lines")] == [11]
 
+    @pytest.mark.protocol("tables-together.when-a-reference-is-tested")
     def test_a_null_reference_and_rows_outside_the_delivered_window_are_not_checked(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1447,6 +1510,7 @@ class TogetherConformance(_StoreScenarios):
             ledgers, _at(19), limit=timedelta.max, windows={"order_lines": window}
         ).exact_as_of == _at(19)
 
+    @pytest.mark.protocol("tables-together.delivery.2", "tables-together.delivery.4")
     def test_a_table_failing_its_own_checks_refuses_the_group(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1469,6 +1533,7 @@ class TogetherConformance(_StoreScenarios):
         assert {c.name for c in lines.checks if not c.passed} == {"row_count", "together"}
         assert self._state(factory, store, group) == before
 
+    @pytest.mark.protocol("tables-together.delivery.2", "tables-together.delivery.4")
     def test_tables_read_at_different_instants_are_refused_together(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1489,6 +1554,7 @@ class TogetherConformance(_StoreScenarios):
                 "order_lines 2026-10-20T00:00:00+00:00, orders 2026-10-19T00:00:00+00:00"
             ]
 
+    @pytest.mark.protocol("tables-together.store.3", "tables-together.delivery.4")
     def test_a_failure_after_rows_publishes_no_table(self, factory: StoreFactory, store: Store) -> None:
         group = _orders(references=False)
         self._baseline(factory, store, group)
@@ -1502,6 +1568,7 @@ class TogetherConformance(_StoreScenarios):
         assert self._state(factory, store, group) == before
         assert all(r.accepted for r in self._together(factory, store, group, deliveries, day=19).values())
 
+    @pytest.mark.protocol("tables-together.replay-and-races.1", "tables-together.replay-and-races.3")
     def test_a_group_replays_whole_or_is_refused_whole(self, factory: StoreFactory, store: Store) -> None:
         group = _orders()
         first = self._baseline(factory, store, group)
@@ -1543,6 +1610,7 @@ class TogetherConformance(_StoreScenarios):
         receipts = self._together(factory, store, group, later, day=19)
         assert not any(r.accepted for r in receipts.values())
 
+    @pytest.mark.protocol("tables-together.when-a-reference-is-tested")
     def test_a_child_that_cannot_be_exact_leaves_its_reference_unchecked(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1562,6 +1630,7 @@ class TogetherConformance(_StoreScenarios):
         ledgers = {c.table: store.load_ledger(c) for c in group.contracts}
         assert group.claims(ledgers, _at(19), limit=timedelta.max).exact_as_of is None
 
+    @pytest.mark.protocol("tables-together.store.2")
     def test_publish_together_needs_the_stores_own_answer_on_exactly_these_candidates(
         self, factory: StoreFactory, store: Store
     ) -> None:
@@ -1591,6 +1660,7 @@ class TogetherConformance(_StoreScenarios):
         assert all(store.load_ledger(c).publication_id is None for c in group.contracts)
         assert store.receipts() == ()
 
+    @pytest.mark.protocol("tables-together.store.3", "tables-together.delivery.4")
     def test_a_table_published_alone_in_between_leaves_every_table_unpublished(
         self, factory: StoreFactory, store: Store
     ) -> None:

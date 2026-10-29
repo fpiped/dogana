@@ -26,6 +26,7 @@ def outcomes(c, m, fail=None):
     return tuple(Check(r.name, r.name != fail) for r in Gate.requirements(c, m))
 
 
+@pytest.mark.protocol("checks.receipt")
 @pytest.mark.parametrize("failure", ["row_count", "rows_in_window", "key_integrity"])
 def test_a_failed_required_check_never_changes_the_published_ledger(failure):
     c = contract()
@@ -40,6 +41,7 @@ def test_a_failed_required_check_never_changes_the_published_ledger(failure):
     assert Receipt.from_json(receipt.to_json()) == receipt
 
 
+@pytest.mark.protocol("checks.answers")
 @pytest.mark.parametrize("kind", ["missing", "duplicate", "unexpected"])
 def test_a_store_cannot_authorize_publication_with_an_incomplete_or_ambiguous_check_set(kind):
     c = contract()
@@ -55,6 +57,7 @@ def test_a_store_cannot_authorize_publication_with_an_incomplete_or_ambiguous_ch
     assert any(c.name == "check_set" and not c.passed for c in receipt.checks)
 
 
+@pytest.mark.protocol("checks.receipt", "checks.evaluation")
 def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication():
     c = contract()
     m = Manifest(c.table, "full", at(18), rows=2, schema_hash=c.schema_hash)
@@ -70,6 +73,7 @@ def test_a_receipt_records_the_manifest_checks_transition_claims_and_publication
     assert changed.identity != m.identity
 
 
+@pytest.mark.protocol("checks.plans")
 @pytest.mark.parametrize(
     "shape,kwargs,operations",
     [
@@ -90,6 +94,7 @@ def test_apply_plans_name_the_store_operations_without_accessing_rows(shape, kwa
     assert ApplyPlan.from_json(plan.to_json()) == plan
 
 
+@pytest.mark.protocol("checks.plans")
 def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_append():
     shapes = {"full": FULL, "plant": replace(WINDOW, window_size=None), "log": SINCE}
     c = Contract("receipts", (), shapes, window_column="id", types={"id": "int"}, start_at=at(1))
@@ -104,6 +109,7 @@ def test_a_keyless_complete_delivery_replaces_its_coverage_and_only_its_appends_
     assert "key_integrity" not in [r.name for r in Gate.requirements(c, Manifest(c.table, "full", at(18)))]
 
 
+@pytest.mark.protocol("transitions.1", "checks.evaluation")
 def test_an_unadmitted_manifest_still_leaves_a_rejected_receipt():
     c = contract()
     receipt = Gate.evaluate(Ledger(c), Manifest(c.table, "surprise", at(18)), now=at(25))
@@ -124,6 +130,7 @@ def test_a_repeated_full_delivery_requires_the_store_receipt_lookup_before_gate_
     assert replay.publication_id == second.publication_id
 
 
+@pytest.mark.protocol("transitions.7", "trust-model.5")
 def test_future_dated_full_delivery_is_refused_without_blocking_the_next_honest_delivery():
     c = contract()
     future = Manifest(c.table, "full", at(26))
@@ -136,6 +143,7 @@ def test_future_dated_full_delivery_is_refused_without_blocking_the_next_honest_
     assert accepted.accepted
 
 
+@pytest.mark.protocol("checks.receipt", "claims.expired")
 def test_delayed_full_delivery_receipt_records_expiry_at_receiver_time_and_source():
     from dogana import State
 
@@ -158,6 +166,7 @@ def test_full_delivery_preflight_and_evaluation_require_receiver_time():
             call(Ledger(c), manifest)
 
 
+@pytest.mark.protocol("checks.errors")
 def test_invalid_full_delivery_cannot_hide_an_unexpected_programming_error(monkeypatch):
     def broken_apply(self, manifest):
         raise TypeError("unexpected failure")
@@ -168,6 +177,7 @@ def test_invalid_full_delivery_cannot_hide_an_unexpected_programming_error(monke
         Gate.preflight(Ledger(c), Manifest(c.table, "full", at(18)), now=at(18))
 
 
+@pytest.mark.protocol("contract.cursor-column")
 def test_timestamp_deliveries_request_cursor_interval_checks_only_when_declared():
 
     c = Contract(
@@ -189,6 +199,7 @@ def test_timestamp_deliveries_request_cursor_interval_checks_only_when_declared(
     }
 
 
+@pytest.mark.protocol("checks.evaluation")
 def test_row_refusal_helper_retains_the_base_publication_and_receiver_clock():
     c = contract()
     base = Ledger(c).apply(Manifest(c.table, "full", at(18)))
@@ -227,6 +238,7 @@ def test_delivery_transition_lists_normalize_to_hashable_roundtripping_values():
     assert hash(transition) == hash(Transition.from_json(transition.to_json()))
 
 
+@pytest.mark.protocol("checks.schema_hash", "contract.column-hash")
 @pytest.mark.parametrize("digest", [None, "wrong"])
 def test_a_store_cannot_pass_a_manifest_hash_that_differs_from_the_contract(digest):
     c = contract(schema_hash="opaque:columns")
@@ -236,6 +248,7 @@ def test_a_store_cannot_pass_a_manifest_hash_that_differs_from_the_contract(dige
     assert any(check.name == "schema_hash" and not check.passed for check in receipt.checks)
 
 
+@pytest.mark.protocol("checks.schema_hash", "contract.column-hash")
 def test_hashless_accounting_does_not_require_a_schema_check():
     c = contract()
     m = c.manifest("full", at(18))

@@ -1,16 +1,18 @@
 # The dogana protocol
 
+<!-- protocol: version -->
+
 Version 4 of the wire format, the `version: 4` every document carries; the package is versioned
 separately. [Concepts](concepts.md) explains the same ideas with examples.
 
 ## Notation
 
-- A row is **live** at an instant if the source holds it then; a **deleted** row was live once and
+- A row is <!-- protocol: rows --> **live** at an instant if the source holds it then; a **deleted** row was live once and
   is not any more; a **tombstone** is a delivered row saying its key is deleted.
-- `t` is a delivery's read boundary, `produced_at`; a region's dates are `(c, d)`, `c` its
+- `t` is <!-- protocol: dates --> a delivery's read boundary, `produced_at`; a region's dates are `(c, d)`, `c` its
   `complete_as_of` and `d` its `deletions_as_of`.
-- `[a, b]` includes both ends, `(a, b]` leaves out `a`; a missing end, `None`, is unbounded.
-- A delivery's **coverage** is the whole table or a closed window of the window column.
+- `[a, b]` includes <!-- protocol: intervals --> both ends, `(a, b]` leaves out `a`; a missing end, `None`, is unbounded.
+- A delivery's **coverage** <!-- protocol: coverage --> is the whole table or a closed window of the window column.
 
 ## Trust model
 
@@ -39,6 +41,10 @@ separately. [Concepts](concepts.md) explains the same ideas with examples.
    no lookback proves it closed.
 
 ## Contract and shapes
+
+<!-- protocol-section: contract -->
+
+<!-- protocol: declaration -->
 
 `Contract` declares `table`, `key`, named `shapes`, optional `window_column`, `cursor_column` and
 `deleted_column`, `types`, optional `schema_hash` and `start_at`.
@@ -95,9 +101,15 @@ row where it is false is live. A null is neither, and fails the row count. A fil
 column, and then every row is live; only a tombstone shape may deliver true. The column is never
 published, and the column hash leaves it out.
 
+<!-- protocol: deleted-content -->
+
 The keys a file deletes travel in the file, not in the manifest, so only `content_hash` tells two
 such files apart: without it, a second file with the same manifest is a replay and is never read.
 Declare `content_hash` for tombstone shapes, as `dogana manifest` and the file drop do.
+
+<!-- protocol-scope: soft-deletes -->
+
+<!-- protocol: soft-deletes -->
 
 A soft delete is a flag on a row the source keeps. A soft-deleting source may declare a tombstone
 shape, delivering the flag as the deleted column or keeping flagged rows as data with no
@@ -108,6 +120,8 @@ tombstones, only if three things hold:
 2. the source removes nothing physically: no archiving, retention purge, legal erasure or cascade
    to child tables;
 3. the flag is on the table being loaded, not on another one.
+
+<!-- protocol: soft-delete-fallback -->
 
 Otherwise the shape's deletions are `none`, and a periodic complete read removes the deleted rows.
 With the flag as the deleted column, dates speak of the rows whose flag is false.
@@ -137,12 +151,16 @@ With the flag as the deleted column, dates speak of the rows whose flag is false
    planned read that much earlier than the oldest `complete_as_of` it covers, so consecutive reads
    overlap. Keyless appends cannot overlap, since a reread event would count twice.
 
+<!-- protocol: constructors -->
+
 Shape constructors take keywords; `Contract` and `Manifest` take keywords after `shapes` and
 `produced_at`. `Contract.manifest(shape, produced_at, ...)` fills in the table and the schema hash;
 `Shape.window_ending_at` computes rolling windows. [Concepts](concepts.md#shapes) maps source
 behaviors to shapes.
 
 ## Manifest
+
+<!-- protocol: declaration -->
 
 `Manifest(table, shape, produced_at, *, window, since, generation, rows, schema_hash, tombstones,
 content_hash)` describes one read.
@@ -179,14 +197,20 @@ Supersession at the same boundary is undecided.
 
 ## Ledger
 
+<!-- protocol: structure -->
+
 A `Ledger` carries its contract, disjoint regions covering the domain, the table's generation and
 `publication_id`, and no history of accepted identities. It starts as one unbounded unknown region.
 A `Region` has `low`, `high`, open-endpoint flags, `complete_as_of` and `deletions_as_of`: both
 dates absent, or `d <= c`.
 
+<!-- protocol: meaning -->
+
 For a region `(c, d)`: every row the source held at `c` with a window value in the region is
 present, and every row retained there was live at some instant in `[d, c]`. Equal dates mean the
 region is the source at that instant. Unknown is not empty: nothing has been proven there.
+
+<!-- protocol: accounting -->
 
 The ledger stores only the points where the evidence changes, each with the evidence up to the
 next point; regions are the view between points. Neighbouring regions with equal dates merge, and
@@ -198,17 +222,17 @@ belong to store delivery.
 
 | Delivery and previous evidence | Covered dates after delivery at t | Table generation |
 |---|---|---|
-| Complete whole domain, any evidence | `(t, t)` | Issued generation, or cleared. |
-| Complete window, any evidence | `(t, t)` | Unchanged. |
-| First keyless append, unknown | `(t, t)` | Issued if present, else unchanged. |
-| Later keyless append, known | `(t, t)` | Issued if present, else unchanged. |
-| Keyed timestamp changes without deletions, `(c, d)` | `(t, d)` | Issued if present, else unchanged. |
-| Keyed timestamp tombstones, `(c, d)`, `since <= d` | `(t, t)` | Issued if present, else unchanged. |
-| Keyed timestamp tombstones, `(c, d)`, `since > d` | `(t, d)` | Issued if present, else unchanged. |
-| Generation changes without deletions, `(c, d)` | `(t, d)` | Issued generation. |
-| Generation tombstones, `(c, d)`, `c = d` | `(t, t)` | Issued generation. |
-| Generation tombstones, `(c, d)`, `c > d` | `(t, d)` | Issued generation. |
-| Keyed sequence changes | as generation changes | `generation`, the read's last position. |
+| Complete whole domain, any evidence <!-- protocol: full --> | `(t, t)` | Issued generation, or cleared. |
+| Complete window, any evidence <!-- protocol: window --> | `(t, t)` | Unchanged. |
+| First keyless append, unknown <!-- protocol: first-append --> | `(t, t)` | Issued if present, else unchanged. |
+| Later keyless append, known <!-- protocol: later-append --> | `(t, t)` | Issued if present, else unchanged. |
+| Keyed timestamp changes without deletions, `(c, d)` <!-- protocol: timestamp-upserts --> | `(t, d)` | Issued if present, else unchanged. |
+| Keyed timestamp tombstones, `(c, d)`, `since <= d` <!-- protocol: timestamp-tombstones-covered --> | `(t, t)` | Issued if present, else unchanged. |
+| Keyed timestamp tombstones, `(c, d)`, `since > d` <!-- protocol: timestamp-tombstones-uncovered --> | `(t, d)` | Issued if present, else unchanged. |
+| Generation changes without deletions, `(c, d)` <!-- protocol: generation-upserts --> | `(t, d)` | Issued generation. |
+| Generation tombstones, `(c, d)`, `c = d` <!-- protocol: generation-tombstones-exact --> | `(t, t)` | Issued generation. |
+| Generation tombstones, `(c, d)`, `c > d` <!-- protocol: generation-tombstones-patched --> | `(t, d)` | Issued generation. |
+| Keyed sequence changes <!-- protocol: sequence --> | as generation changes | `generation`, the read's last position. |
 
 1. The manifest matches its shape and contract, bounds and key types included.
 2. Every affected known region has `t > complete_as_of`: a late full cannot overwrite a newer
@@ -229,11 +253,17 @@ belong to store delivery.
 
 ## Plans, checks and receipts
 
+<!-- protocol-section: checks -->
+
+<!-- protocol: plans -->
+
 An `ApplyPlan` holds ordered `Action`s: `replace_all` replaces the table; `replace_window` removes
 the rows in its closed window and earlier copies of candidate keys, then inserts the candidate.
 `upsert` replaces published rows sharing a key with a live candidate row; `tombstone` deletes the
 published rows the tombstones name; `append` inserts without matching. Keyless replacement matches
 no keys. The core describes operations and never reads rows.
+
+<!-- protocol: answers -->
 
 `Gate.requirements(contract, manifest)` names the row checks; the store answers exactly one
 `Check(name, passed, detail)` per name, and a missing, duplicate or unexpected answer rejects.
@@ -248,9 +278,13 @@ no keys. The core describes operations and never reads rows.
 | rows_in_interval | With a `datetime` cursor and a timestamp read, every live cursor value is non-null and in `(since, produced_at]`; with an `int` cursor and a sequence read, in `(since, generation]`. A tombstone's may be null, else in the same interval. |
 | content_hash | With `manifest.content_hash`, the SHA-256 of the bytes read equals it. |
 
+<!-- protocol: declarations -->
+
 Every row check compares the rows with a declaration, the manifest's or the contract's, so an
 honest delivery never fails one. A rule about the source's data, such as a table that should not
 halve or an amount that must be positive, declares nothing and is a business check.
+
+<!-- protocol: blocked -->
 
 A window delivery refuses a key already published in another region instead of moving it, since
 that region keeps its claim. A row whose window value changes at the source can still leave a hole
@@ -258,10 +292,14 @@ no check sees, so the window column must never change. A check that an earlier f
 answers `passed=False, detail="not evaluated"`. Business rules run outside this set, and the caller
 keeps their results.
 
+<!-- protocol: evaluation -->
+
 `Gate.evaluate(ledger, manifest, outcomes, now=now, source=None)` adds the core checks: structure,
 source time, base coverage, continuity and monotonic time. `Gate.preflight(ledger, manifest,
 now=now)` returns them without rows; `Gate.reject(ledger, manifest, checks, now=now, source=None)`
 records a declared failure.
+
+<!-- protocol: receipt -->
 
 A `Receipt` records one decision: the manifest, the contract in force, the checks, `outcome`,
 `received_at`, an optional `source`, `base_publication_id`, the publication identity, and
@@ -272,10 +310,14 @@ empty. `outcome` is `accepted`,
 acceptance or a replay carries a `Transition`: the plan, and the regions over the coverage
 afterwards. A rejection leaves ledger and publication as they were.
 
+<!-- protocol: receipt-size -->
+
 The ledger is never in a receipt: it is the result of applying the accepted receipts in order, and
 `ledger_identity` checks each step. A receipt grows with its coverage, never with history, rows or
 deleted keys. It is filed under the contract's table even when a rejected manifest names another,
 and its identity covers its checks.
+
+<!-- protocol: errors -->
 
 `DoganaError` is the root of `InvalidContract` (with its subclass `SerializationError`),
 `RejectedDelivery`, `PlanningError` and `StoreError` (with `InconsistentPublication`). Only declared
@@ -283,6 +325,10 @@ protocol violations become rejections; operational failures and programming erro
 cleanup, and a failure after commit cannot revoke an acceptance.
 
 ## Claims and planning
+
+<!-- protocol-section: claims -->
+
+<!-- protocol: reading -->
 
 `Ledger.claims(now, *, limit, window=None)` cuts the regions to `window`, if given, and states each
 one at the reader's time `now`. How old is too old is the reader's decision, not the table's, so
@@ -403,8 +449,12 @@ a tombstone changes shape at `p`. A reader of windows passes them to `Group.clai
    answered `accepted`.
 3. Each table keeps its receipts, chain and reconstruction; a group adds no wire kind.
 
+<!-- protocol: atomicity -->
+
 Atomic publication serves availability, not the guarantee: without it a refused table leaves the
 others ahead and the current tables have no common instant; with it, the instant moves in one step.
+
+<!-- protocol: planning -->
 
 `plan_together(group, ledgers, at_least, *, windows=None)` returns nothing when the group is already
 exact at an instant no earlier than `at_least`. Otherwise it returns one request per table with one
@@ -412,6 +462,10 @@ exact at an instant no earlier than `at_least`. Otherwise it returns one request
 establishing `(until, until)` over its window. `until` is the earliest admissible boundary: the
 extractor reads every table in one snapshot taken at or after it and stamps every manifest with its
 instant.
+
+<!-- protocol-scope: store -->
+
+<!-- protocol: store -->
 
 `TogetherStore` adds `check_references(group, candidates)` and `publish_together(group, entries)`,
 `candidates` mapping each table to its checked candidate and `entries` pairing one candidate per
@@ -427,6 +481,10 @@ table with its accepted receipt. The store must:
    publication.
 
 ## Store protocol and publication
+
+<!-- protocol-section: store -->
+
+<!-- protocol: delivery -->
 
 `Store` and `Extractor` are structural `typing.Protocol`s; `extract(contract, request)` returns
 `(manifest, source)`, whose representation belongs to the store. `dogana.deliver(store, contract,
@@ -444,12 +502,16 @@ source, manifest, now)` owns the sequence:
    its rows and evidence, or records the rejection; `abort(candidate)` releases staged work after a
    failure.
 
+<!-- protocol: methods -->
+
 These six, with `receipts(table=None)`, in persistence order, and `digest(source)`, the SHA-256 of a
 source's bytes or `None` for rows, are the eight required methods. Publishing an acceptance needs a
 held and checked candidate. Recording a rejection also compares and sets the parent, and a receipt
 that cannot be decoded is refused before the log changes. `publication_stamp(table)` and
 `repair(contract)` form the optional stamped tier, `check_references` and `publish_together` the
 [together tier](#tables-together); read methods and `store.deliver` are conveniences.
+
+<!-- protocol-scope: obligations -->
 
 The store's six obligations:
 
@@ -471,6 +533,8 @@ it with the ledger finds a ledger behind its rows, or a publication from outside
 see a row edit that keeps the stamp, a lost rejection or the loss of all evidence. When a ledger is
 missing, surviving receipts or stamps show the table is not new. Stores fail closed.
 
+<!-- protocol: recovery -->
+
 `Ledger.follow(receipt)` applies one accepted receipt and checks its publication and ledger
 identities; `Ledger.from_receipts(contract, receipts)` folds the accepted ones in order, ignoring
 rejections and refusing missing, reordered or foreign ones. `repair` restores the ledger only when
@@ -485,12 +549,16 @@ the prefix. Repairs and mismatches still fold the whole history.
 
 ## Algebraic guarantees
 
+<!-- protocol: laws -->
+
 The same initial ledger and accepted history give the same ledger. Store delivery is idempotent by
 receipt lookup; `Ledger.apply` is not. Disjoint complete or timestamp windows commute on evidence
 when both orders are admissible, never on the chain. Ledgers cannot be merged. Rejection applies per
 manifest, not to a batch or a history.
 
 ## Contract evolution
+
+<!-- protocol: compatibility -->
 
 Once a table has history, its `table`, `key`, `window_column`, `deleted_column` and the types of
 the key and window columns are fixed, and stores refuse a contract that changes them. The deleted
@@ -530,6 +598,8 @@ reconstruction uses each receipt's contract, then the requested one.
 6. Optional future fields at defaults keep identity; semantic changes need migration, and unknown
    versions are refused even with a compatible identity.
 
+<!-- protocol: examples -->
+
 `to_dict`/`from_dict` and `to_json`/`from_json` round-trip nested values. The
 [contract](examples/contract.json), [manifest](examples/manifest.json),
 [ledger](examples/ledger.json) and [receipt](examples/receipt.json) examples are executable,
@@ -538,9 +608,13 @@ implementations, and [JSON Schemas](wire/README.md) cover all fifteen wire kinds
 
 ## Boundaries
 
+<!-- protocol: package -->
+
 The package uses only the standard library, beside pytest for the conformance suite, and parses no
 data file. The [reference](reference.md) covers the example store, the command line and the
 accounting path; passing the conformance suite is evidence for its scenarios, not a proof.
+
+<!-- protocol: undecided -->
 
 Undecided: a table namespace, finite string domains, more than one window column, receiver and
 reader commands, supersession at the same boundary, and the compatibility policy.

@@ -54,6 +54,7 @@ dogana = ["py.typed", ".agents/skills/dogana/*.md"]
 [tool.pytest.ini_options]
 pythonpath = ["src", "examples/duckdb"]
 testpaths = ["tests"]
+markers = ["protocol(*ids): protocol rules exercised by this test (see scripts/traceability.py --list)"]
 
 [tool.ruff]
 line-length = 110

@@ -25,6 +25,7 @@ def seed(store):
     return c, deliver(store, c, [row(1)], manifest, at(20))
 
 
+@pytest.mark.protocol("store.2", "checks.errors")
 @pytest.mark.parametrize("error", [InvalidContract("bad source"), RejectedDelivery("bad source")])
 def test_a_protocol_refusal_persists_one_attempt_without_a_publication(monkeypatch, error):
     store = MemoryStore()
@@ -42,6 +43,7 @@ def test_a_protocol_refusal_persists_one_attempt_without_a_publication(monkeypat
     assert store.read(c.table) == [row(1)]
 
 
+@pytest.mark.protocol("store.4", "checks.errors")
 @pytest.mark.parametrize("operation", ["hold", "check", "_publication_point", "publish"])
 @pytest.mark.parametrize("error", [OSError("disk"), ValueError("bug"), TypeError("bug"), StoreError("store")])
 def test_an_operational_failure_aborts_without_recording_a_refused_delivery(monkeypatch, operation, error):
@@ -60,6 +62,7 @@ def test_an_operational_failure_aborts_without_recording_a_refused_delivery(monk
     assert not store.candidates
 
 
+@pytest.mark.protocol("store.4", "checks.errors")
 def test_a_lost_commit_acknowledgement_returns_the_persisted_acceptance(monkeypatch):
     store = MemoryStore()
     c, first = seed(store)
@@ -77,6 +80,7 @@ def test_a_lost_commit_acknowledgement_returns_the_persisted_acceptance(monkeypa
     assert not store.candidates
 
 
+@pytest.mark.protocol("store.1", "store.obligations.5")
 def test_a_replayed_delivery_retains_its_receipt_and_original_receiver_clock():
     store = MemoryStore()
     c, first = seed(store)
@@ -87,6 +91,7 @@ def test_a_replayed_delivery_retains_its_receipt_and_original_receiver_clock():
     assert store.receipts(c.table) == (first,)
 
 
+@pytest.mark.protocol("contract.column-hash")
 def test_a_full_publication_without_a_schema_hash_checks_the_bound_columns():
     store = MemoryStore()
     c = replace(contract(), schema_hash=None)
@@ -97,6 +102,7 @@ def test_a_full_publication_without_a_schema_hash_checks_the_bound_columns():
     assert store.read(c.table) == [row(1)]
 
 
+@pytest.mark.protocol("store.chain-and-recovery")
 def test_a_lost_accepted_receipt_cannot_be_replaced_by_another_acceptance():
     store = MemoryStore()
     c, first = seed(store)
@@ -107,6 +113,7 @@ def test_a_lost_accepted_receipt_cannot_be_replaced_by_another_acceptance():
     assert store.read(c.table) == [row(1)]
 
 
+@pytest.mark.protocol("store.4", "checks.errors")
 def test_an_interrupted_delivery_aborts_before_propagating(monkeypatch):
     store = MemoryStore()
     c, first = seed(store)
@@ -121,6 +128,7 @@ def test_an_interrupted_delivery_aborts_before_propagating(monkeypatch):
     assert store.receipts(c.table) == (first,)
 
 
+@pytest.mark.protocol("checks.errors")
 def test_delivery_failures_share_one_error_root_and_serialization_is_a_declaration_error():
     for error in (InvalidContract, RejectedDelivery, PlanningError, StoreError):
         assert issubclass(error, DoganaError)

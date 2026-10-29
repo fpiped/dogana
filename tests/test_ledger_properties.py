@@ -158,6 +158,7 @@ def fold(ledger: Ledger, manifests: Iterable[Manifest]) -> Ledger:
     return ledger
 
 
+@pytest.mark.protocol("algebraic-guarantees.laws")
 @LAWS
 @given(history=accepted_histories(), split=st.integers(0, 20))
 def test_ordered_delivery_folds_are_deterministic(history: History, split: int) -> None:
@@ -170,6 +171,7 @@ def test_ordered_delivery_folds_are_deterministic(history: History, split: int) 
     assert fold(fold(Ledger(CONTRACT), history[:split]), history[split:]) == left
 
 
+@pytest.mark.protocol("ledger.accounting")
 @LAWS
 @given(history=accepted_histories())
 def test_accepted_windows_match_an_independent_boundary_oracle(history: History) -> None:
@@ -187,6 +189,7 @@ def below(left: Evidence, right: Evidence) -> bool:
     return left is None or right is not None and left[0] <= right[0] and left[1] <= right[1]
 
 
+@pytest.mark.protocol("trust-model.2")
 @LAWS
 @given(history=accepted_histories())
 def test_accepted_deliveries_raise_covered_evidence_and_preserve_every_other_cell(history: History) -> None:
@@ -208,6 +211,7 @@ def test_accepted_deliveries_raise_covered_evidence_and_preserve_every_other_cel
         ledger = after
 
 
+@pytest.mark.protocol("algebraic-guarantees.laws", "transitions.8")
 @pytest.mark.parametrize("left_shape", ("window", "patch", "deletes"))
 @pytest.mark.parametrize("right_shape", ("window", "patch", "deletes"))
 @LAWS
@@ -256,6 +260,7 @@ def test_disjoint_complete_and_timestamp_windows_commute_only_on_evidence(
     assert forwards.publication_id != backwards.publication_id
 
 
+@pytest.mark.protocol("algebraic-guarantees.laws")
 @LAWS
 @given(
     snapshots=st.lists(st.lists(st.integers(-10, 10), unique=True, max_size=5), min_size=2, max_size=6),

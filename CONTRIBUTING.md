@@ -6,6 +6,8 @@ Change docs/protocol.md first when changing semantics, and state the reason.
 Keep the core on Python 3.11+ and the standard library only.
 Install development dependencies with uv pip install -e . -e examples/duckdb --group dev.
 Run .venv/bin/python -m pytest -q for the affected behavior, then the whole suite with the same command.
+Claim rules with `@pytest.mark.protocol("transitions.3", "manifest.4")`; run
+`.venv/bin/python scripts/traceability.py --list` for IDs and coverage (see [Traceability](docs/traceability.md)).
 Run uvx ruff check ., uvx ruff format --check . and .venv/bin/python -m mypy --strict src examples/duckdb.
 The package never parses a data file; the example store in examples/duckdb is tested here but not published,
 and its pyproject.toml pins the same version as the package.

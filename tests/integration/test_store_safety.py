@@ -318,6 +318,7 @@ def test_keyless_replacement_closes_replaced_history_versions(tmp_path):
         assert store.read(c.table, second.publication_id) == [{"event": "new"}]
 
 
+@pytest.mark.protocol("manifest.5", "checks.rows_in_interval")
 def test_timestamp_rows_are_checked_against_the_declared_extraction_interval(tmp_path):
     columns = {"id": "int", "updated": "datetime"}
     c = Contract(

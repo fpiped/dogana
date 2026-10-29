@@ -50,6 +50,7 @@ def test_a_link_swapped_after_the_root_check_is_refused_not_read(tmp_path):
         assert store.receipts()[-1] == receipt
 
 
+@pytest.mark.protocol("trust-model.4")
 @pytest.mark.parametrize(
     ("data", "rows", "values"),
     [
@@ -68,6 +69,7 @@ def test_the_sender_and_the_store_read_one_csv_grammar(tmp_path, data, rows, val
         assert published(store) == values
 
 
+@pytest.mark.protocol("trust-model.4")
 def test_a_line_starting_with_a_hash_is_a_row(tmp_path):
     columns = {"v": "str", "id": "int"}
     contract = replace(C, schema_hash=schema_hash(columns))
@@ -84,6 +86,7 @@ def _uint64_parquet(path: Path) -> None:
         connection.execute(f"COPY (SELECT (2::UBIGINT ** 63)::UBIGINT AS id, 'a' AS v) TO '{path}'")
 
 
+@pytest.mark.protocol("trust-model.4")
 @pytest.mark.parametrize(
     ("name", "write"),
     [
@@ -102,6 +105,7 @@ def test_a_file_that_does_not_read_is_a_recorded_rejection(tmp_path, name, write
         assert store.receipts() == (receipt,)
 
 
+@pytest.mark.protocol("trust-model.4")
 def test_a_parquet_time_without_a_zone_is_refused(tmp_path):
     columns = {"id": "int", "at": "datetime"}
     contract = Contract("t", ("id",), {"full": FULL}, types={"id": "int"}, schema_hash=schema_hash(columns))
@@ -115,6 +119,7 @@ def test_a_parquet_time_without_a_zone_is_refused(tmp_path):
         assert not next(check for check in receipt.checks if check.name == "schema_hash").passed
 
 
+@pytest.mark.protocol("manifest.6")
 def test_a_changed_file_under_a_hashless_sidecar_is_a_new_delivery(tmp_path):
     path = tmp_path / "f.csv"
     path.write_text("id,v\n1,a\n")
@@ -127,6 +132,7 @@ def test_a_changed_file_under_a_hashless_sidecar_is_a_new_delivery(tmp_path):
         assert published(store) == [(1, "a")]
 
 
+@pytest.mark.protocol("store.1")
 def test_a_replay_is_answered_by_its_bytes_under_any_later_contract(tmp_path):
     path = tmp_path / "f.csv"
     path.write_text("id,v\n1,a\n")
@@ -272,6 +278,7 @@ def test_a_fifo_is_refused_without_waiting_for_a_writer(tmp_path):
         _open(fifo)
 
 
+@pytest.mark.protocol("store.1")
 def test_a_missing_file_replayed_is_a_recorded_refusal(tmp_path):
     path = tmp_path / "f.csv"
     path.write_text("id,v\n1,a\n")
@@ -283,6 +290,7 @@ def test_a_missing_file_replayed_is_a_recorded_refusal(tmp_path):
         assert [r.outcome for r in store.receipts()] == ["accepted", "rejected"]
 
 
+@pytest.mark.protocol("trust-model.4")
 def test_a_corrupt_parquet_file_is_a_recorded_rejection(tmp_path):
     good = tmp_path / "good.parquet"
     with duckdb.connect() as connection:
@@ -298,6 +306,7 @@ def test_a_corrupt_parquet_file_is_a_recorded_rejection(tmp_path):
         assert store.receipts() == (receipt,)
 
 
+@pytest.mark.protocol("trust-model.4")
 @pytest.mark.parametrize("value", ["2026-10-18", "2026-10-18 12:00", "12:00+02:00", "2026-10-18T12"])
 def test_a_csv_datetime_needs_a_date_a_time_and_an_offset(tmp_path, value):
     columns = {"id": "int", "at": "datetime"}
@@ -309,6 +318,7 @@ def test_a_csv_datetime_needs_a_date_a_time_and_an_offset(tmp_path, value):
         assert not deliver(store, contract, _FileSource(path, columns), manifest, at(19)).accepted
 
 
+@pytest.mark.protocol("trust-model.4")
 def test_a_blank_line_is_an_empty_value_in_a_one_column_file(tmp_path):
     columns = {"id": "str"}
     contract = Contract("t", ("id",), {"full": FULL}, types={"id": "str"}, schema_hash=schema_hash(columns))

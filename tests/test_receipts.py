@@ -12,6 +12,7 @@ def publication(ledger, day):
     return Gate.evaluate(ledger, manifest, checks, now=at(25))
 
 
+@pytest.mark.protocol("checks.receipt-size", "store.recovery")
 def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     c = contract()
     first = publication(Ledger(c), 18)
@@ -23,6 +24,7 @@ def test_full_and_rejected_deliveries_rebuild_the_same_ledger_from_receipts():
     assert Ledger.from_receipts(c, ()) == Ledger(c)
 
 
+@pytest.mark.protocol("checks.receipt-size", "store.recovery")
 @pytest.mark.parametrize("problem", ["missing", "reordered", "duplicate", "foreign", "evidence"])
 def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):
     c = contract()
@@ -39,6 +41,7 @@ def test_a_broken_accepted_receipt_chain_cannot_rebuild_a_publication(problem):
         Ledger.from_receipts(c, receipts)
 
 
+@pytest.mark.protocol("contract-evolution.compatibility")
 def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
 
     c = contract()
@@ -54,6 +57,7 @@ def test_full_deliveries_rebuild_each_publication_under_its_original_policy():
     assert second.base_publication_id == first.publication_id
 
 
+@pytest.mark.protocol("store.obligations.5")
 def test_replayed_full_delivery_receipt_retains_its_original_identity_and_receiving_time():
     first = publication(Ledger(contract()), 18)
     replay = replace(first, outcome="replayed")
@@ -63,6 +67,7 @@ def test_replayed_full_delivery_receipt_retains_its_original_identity_and_receiv
     assert replay.to_json() != first.to_json()
 
 
+@pytest.mark.protocol("checks.receipt-size")
 def test_many_full_deliveries_keep_receipt_size_bounded_by_regions_not_history():
     from datetime import timedelta
 

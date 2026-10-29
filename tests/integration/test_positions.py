@@ -45,6 +45,7 @@ def changes(c, since, through, day=19, rows=None):
     )
 
 
+@pytest.mark.protocol("transitions.6", "transitions.sequence")
 def test_a_keyed_sequence_continues_from_the_position_and_may_reread_but_never_skips():
     c = keyed()
     ledger = Ledger(c).apply(full(c)).apply(changes(c, 100, 150))
@@ -56,6 +57,7 @@ def test_a_keyed_sequence_continues_from_the_position_and_may_reread_but_never_s
         ledger.apply(changes(c, 120, 140, day=20))
 
 
+@pytest.mark.protocol("manifest.3", "transitions.6")
 def test_a_sequence_needs_a_position_issued_by_a_complete_delivery():
     c = keyed()
     without = Ledger(c).apply(Manifest(c.table, "full", at(18), schema_hash=c.schema_hash))
@@ -65,6 +67,7 @@ def test_a_sequence_needs_a_position_issued_by_a_complete_delivery():
         Manifest(c.table, "full", at(18), generation="g1", schema_hash=c.schema_hash).check(c)
 
 
+@pytest.mark.protocol("manifest.2")
 @pytest.mark.parametrize(
     ("since", "through", "rows", "message"),
     [
@@ -81,6 +84,7 @@ def test_sequence_manifests_need_ordered_integer_bounds(since, through, rows, me
         changes(c, since, through, rows=rows).check(c)
 
 
+@pytest.mark.protocol("contract.shapes.2", "contract.cursor-column")
 def test_contracts_keep_one_kind_of_position_and_a_cursor_that_checks_something():
     with pytest.raises(InvalidContract, match="opaque generation or an ordered sequence"):
         Contract(
@@ -116,6 +120,7 @@ def test_contracts_keep_one_kind_of_position_and_a_cursor_that_checks_something(
         )
 
 
+@pytest.mark.protocol("manifest.3")
 def test_a_timestamp_read_may_issue_position_zero():
     c = Contract(
         "orders",
@@ -133,6 +138,7 @@ def test_a_timestamp_read_may_issue_position_zero():
     assert ledger.apply(Manifest(c.table, "changes", at(20), since=0, generation=3)).generation == 3
 
 
+@pytest.mark.protocol("checks.rows_in_interval")
 def test_the_store_refuses_rows_whose_cursor_is_outside_the_declared_interval():
     c = keyed()
     with DuckDBStore(":memory:") as store:
@@ -158,6 +164,7 @@ def test_positions_round_trip_on_the_wire():
     assert '"generation":150' in ledger.identity_json()
 
 
+@pytest.mark.protocol("transitions.6", "transitions.sequence")
 def test_a_change_feed_by_log_position_repairs_deletion_date_with_its_tombstones():
     c = Contract(
         "orders",

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
@@ -33,6 +34,7 @@ def manifests(draw: st.DrawFn) -> Manifest:
     return Manifest("moves", shape, produced, window=window, since=since, rows=0)
 
 
+@pytest.mark.protocol("trust-model.2", "ledger.structure")
 @settings(max_examples=200, deadline=None, database=None)
 @given(history=st.lists(manifests(), min_size=1, max_size=40))
 @example(

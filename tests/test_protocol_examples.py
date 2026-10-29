@@ -8,6 +8,7 @@ from dogana import Contract, Ledger, Manifest, Receipt
 EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
 
+@pytest.mark.protocol("versioned-json.examples", "protocol.version", "versioned-json.1", "versioned-json.2")
 @pytest.mark.parametrize(
     "name,cls", [("contract", Contract), ("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)]
 )
@@ -29,6 +30,7 @@ def test_the_protocol_receipt_replays_to_the_documented_ledger():
     assert receipt.manifest == m
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_example_identities_match_fixed_independently_specified_hashes():
     expected = json.loads((EXAMPLES / "identity-vectors.json").read_text())["examples"]
     assert {path.stem for path in EXAMPLES.glob("*.json")} == {*expected, "identity-vectors", "jcs-vectors"}
@@ -42,6 +44,7 @@ def test_example_identities_match_fixed_independently_specified_hashes():
         assert value.identity == expected[name] == (EXAMPLES / f"{name}.identity").read_text().strip()
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_identity_vectors_fix_canonical_bytes_and_hashes(validate_wire):
     from hashlib import sha256
 
@@ -56,6 +59,7 @@ def test_identity_vectors_fix_canonical_bytes_and_hashes(validate_wire):
         assert sha256(vector["canonical"].encode("utf-8")).hexdigest() == vector["sha256"]
 
 
+@pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("name", ["contract", "manifest", "ledger", "receipt"])
 def test_wire_schemas_refuse_missing_unknown_and_invalid_version_fields(name, validate_wire):
     from jsonschema import ValidationError
@@ -70,6 +74,7 @@ def test_wire_schemas_refuse_missing_unknown_and_invalid_version_fields(name, va
             validate_wire(value | change)
 
 
+@pytest.mark.protocol("checks.receipt")
 def test_receipt_schema_distinguishes_all_outcomes_and_rejects_the_removed_booleans(validate_wire):
     from dataclasses import replace
 
@@ -101,6 +106,7 @@ def test_receipt_schema_distinguishes_all_outcomes_and_rejects_the_removed_boole
         validate_wire(rejected.to_dict() | {"transition": accepted.transition.to_dict()})
 
 
+@pytest.mark.protocol("versioned-json.5")
 def test_rfc8785_binary64_vectors_fix_ecmascript_number_spelling():
     import struct
 
@@ -118,6 +124,7 @@ def test_rfc8785_binary64_vectors_fix_ecmascript_number_spelling():
             canonical_json(struct.unpack(">d", bytes.fromhex(bits))[0])
 
 
+@pytest.mark.protocol("versioned-json.5")
 def test_jcs_vectors_fix_utf8_bytes_utf16_order_and_string_escapes():
     from hashlib import sha256
 
@@ -145,6 +152,7 @@ def test_the_protocol_receipt_matches_the_gate_decision_at_receiver_time():
     )
 
 
+@pytest.mark.protocol("contract.column-hash")
 def test_external_column_hash_keeps_the_original_ordered_pair_bytes():
     from hashlib import sha256
 
@@ -159,6 +167,7 @@ def test_external_column_hash_keeps_the_original_ordered_pair_bytes():
     assert contract.types == {"id": "int"}
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("digest", ["\ud800", "\udfff", "hash\udc80"])
 def test_contract_schema_hash_rejects_surrogates_in_wire_schema_and_decoder(digest, validate_wire):
     from jsonschema import ValidationError

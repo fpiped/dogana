@@ -13,6 +13,7 @@ from tests.support import accounting_contract as contract
 EXAMPLES = Path(__file__).parents[1] / "docs" / "examples"
 
 
+@pytest.mark.protocol("versioned-json.examples")
 def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types():
     for window in [(1, 30), ("IT01", "IT01"), (at(18).date(), at(19).date()), (at(18), at(19))]:
         c = contract(window_type=type(window[0]).__name__)
@@ -24,6 +25,7 @@ def test_contracts_manifests_and_ledgers_round_trip_without_losing_bound_types()
             assert json.loads(value.to_json())["version"] == 4
 
 
+@pytest.mark.protocol("versioned-json.1", "versioned-json.6")
 @pytest.mark.parametrize(
     "change",
     [
@@ -39,6 +41,7 @@ def test_unsupported_or_invalid_wire_contracts_are_refused(change):
         Contract.from_dict(value)
 
 
+@pytest.mark.protocol("versioned-json.1", "versioned-json.6")
 @pytest.mark.parametrize(
     "name,cls", [("contract", Contract), ("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)]
 )
@@ -50,6 +53,7 @@ def test_every_version_3_document_is_refused_naming_both_versions(name, cls):
         cls.from_dict(value)
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("seconds", [1e-7, -1e-7, -5, 1.5e-6, 1e100, float("inf"), float("nan")])
 def test_a_duration_that_would_round_or_is_negative_is_refused_not_rounded(seconds):
     raw = replace(SINCE, lookback=timedelta(minutes=5)).to_dict()
@@ -59,6 +63,7 @@ def test_a_duration_that_would_round_or_is_negative_is_refused_not_rounded(secon
     assert Shape.from_dict(raw | {"lookback": {"$seconds": 1.5}}).lookback == timedelta(seconds=1.5)
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize(
     "text",
     [
@@ -77,6 +82,7 @@ def test_a_datetime_outside_the_wire_grammar_is_refused_not_truncated(text):
     assert zulu.produced_at == at(18)
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("text", ["2026-10-18T00:00:00", "20261018", "2026-W42-1"])
 def test_a_date_tag_with_more_than_a_date_is_refused(text):
     raw = Manifest("stock", "daily", at(18), window=(at(18).date(), at(18).date())).to_dict()
@@ -85,6 +91,7 @@ def test_a_date_tag_with_more_than_a_date_is_refused(text):
         Manifest.from_dict(raw)
 
 
+@pytest.mark.protocol("checks.receipt")
 @pytest.mark.parametrize("field", ["ledger_identity", "publication_id"])
 def test_a_receipt_never_carries_an_empty_identity(field):
     receipt = Receipt.from_json((EXAMPLES / "receipt.json").read_text())
@@ -92,6 +99,7 @@ def test_a_receipt_never_carries_an_empty_identity(field):
         replace(receipt, **{field: ""})
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_a_manifest_cannot_be_decoded_as_a_contract():
     with pytest.raises(SerializationError):
         Contract.from_json(Manifest("stock", "full", at(18)).to_json())
@@ -100,6 +108,7 @@ def test_a_manifest_cannot_be_decoded_as_a_contract():
 ENTRY_POINTS = {"cli.py", "__main__.py"}
 
 
+@pytest.mark.protocol("boundaries.package")
 def test_the_core_imports_only_the_standard_library():
     import sys
 
@@ -143,6 +152,7 @@ def test_the_command_line_sits_above_the_core_and_imports_no_third_party_package
     assert loaded.stdout == "[]\n"
 
 
+@pytest.mark.protocol("boundaries.package")
 def test_the_package_reads_no_data_file():
     package = Path(__file__).parents[1] / "src" / "dogana"
     readers = {"csv", "duckdb", "pyarrow", "pandas", "polars", "sqlite3", "example_store"}
@@ -174,6 +184,7 @@ def test_shape_names_that_match_wire_field_names_still_round_trip_as_mapping_key
     assert Contract.from_json(c.to_json()) == c
 
 
+@pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("change", [{"table": 1}, {"generation": True}, {"schema_hash": 4}, {"rows": True}])
 def test_manifest_wire_types_are_checked_before_any_accounting(change):
     value = Manifest("stock", "full", at(18)).to_dict()
@@ -182,6 +193,7 @@ def test_manifest_wire_types_are_checked_before_any_accounting(change):
         Manifest.from_dict(value)
 
 
+@pytest.mark.protocol("boundaries.package")
 def test_the_core_runs_alone_from_a_copy_of_its_modules(tmp_path):
     import subprocess
     import sys
@@ -209,6 +221,7 @@ assert Ledger.from_json(ledger.to_json()) == ledger
     subprocess.run([sys.executable, "-B", "-S", "-c", program, str(tmp_path)], check=True, cwd=tmp_path)
 
 
+@pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("change", [{"keys": "12"}, {"tombstones": "12"}])
 def test_strings_cannot_be_normalized_into_lists_of_named_keys(change):
     raw = Manifest("stock", "full", at(18)).to_dict()
@@ -217,6 +230,7 @@ def test_strings_cannot_be_normalized_into_lists_of_named_keys(change):
         Manifest.from_dict(raw)
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_arrays_cannot_be_normalized_into_shape_mappings():
     raw = contract().to_dict()
     raw["shapes"] = list(raw["shapes"].items())
@@ -232,6 +246,7 @@ def test_scalar_tag_names_remain_valid_shape_names(name):
     assert Contract.from_json(c.to_json()) == c
 
 
+@pytest.mark.protocol("versioned-json.examples")
 def test_every_public_wire_value_is_hashable_and_round_trips():
     from dogana import (
         Action,
@@ -296,6 +311,7 @@ def test_every_public_wire_value_is_hashable_and_round_trips():
         assert decoded.identity == value.identity
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_subclasses_cannot_replace_a_registered_wire_kind():
     from dogana import Shape as ProtocolShape
     from dogana.wire import Wire
@@ -315,6 +331,7 @@ def test_subclasses_cannot_replace_a_registered_wire_kind():
         Shape(coverage="all", completeness="complete", deletions="absence", checkpoint="none").to_dict()
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_numeric_spellings_and_default_values_do_not_fork_identity():
     from dataclasses import replace
 
@@ -332,6 +349,7 @@ def test_numeric_spellings_and_default_values_do_not_fork_identity():
     assert "start_at" not in c.identity_dict()
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_identity_excludes_versions_recursively(monkeypatch):
     from dogana.wire import Wire
 
@@ -343,6 +361,7 @@ def test_identity_excludes_versions_recursively(monkeypatch):
     assert value.identity == identity
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_timestamp_offsets_do_not_change_manifest_identity():
     from dataclasses import replace
     from datetime import timedelta, timezone
@@ -354,6 +373,7 @@ def test_timestamp_offsets_do_not_change_manifest_identity():
     assert m.identity_dict()["produced_at"] == {"$datetime": "2026-10-18T00:00:00+00:00"}
 
 
+@pytest.mark.protocol("versioned-json.4")
 def test_replay_outcome_preserves_the_original_receipt_identity_and_clock():
     from dataclasses import replace
 
@@ -375,6 +395,7 @@ def test_replay_outcome_preserves_the_original_receipt_identity_and_clock():
     assert replace(original, received_at=at(20)).identity != original.identity
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_removed_history_fields_are_refused_on_the_wire():
     from dogana import Region
 
@@ -385,6 +406,7 @@ def test_removed_history_fields_are_refused_on_the_wire():
             type(value).from_dict(raw)
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_new_default_fields_remain_required_on_the_wire():
     from dogana import Shape
 
@@ -419,6 +441,7 @@ def test_invalid_vocabulary_names_the_property_and_value(field, value):
         Shape.from_dict(original)
 
 
+@pytest.mark.protocol("versioned-json.5")
 @pytest.mark.parametrize("value", [10**400, 2**53 + 1, -(2**53 + 1)])
 def test_integer_identity_rejects_lossy_or_overflowing_binary64_values(value):
     from dogana.wire import canonical_json
@@ -427,6 +450,7 @@ def test_integer_identity_rejects_lossy_or_overflowing_binary64_values(value):
         canonical_json(value)
 
 
+@pytest.mark.protocol("versioned-json.5")
 def test_wire_json_preserves_integer_values_while_identity_uses_ecmascript_numbers():
     value = Manifest("stock", "daily", at(18), window=(0, 2**68))
     assert value.to_dict()["window"] == [0, 2**68]
@@ -443,6 +467,7 @@ def test_type_mapping_column_names_cannot_be_mistaken_for_wire_metadata(name):
     assert Contract.from_json(c.to_json()) == c
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_removed_schema_and_column_wire_kind_are_refused():
     import dogana
     from dogana.wire import Wire

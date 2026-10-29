@@ -16,6 +16,7 @@ def point(ledger, value, now=None, limit=timedelta.max):
     return ledger.claims(now or at(25), limit=limit, window=(value, value))
 
 
+@pytest.mark.protocol("transitions.full", "claims.complete")
 def test_nightly_full_exports_replace_the_entire_domain_with_current_evidence():
     c = contract(shapes={"full": FULL})
     ledger = full(c).apply(Manifest(c.table, "full", at(19)))
@@ -24,6 +25,7 @@ def test_nightly_full_exports_replace_the_entire_domain_with_current_evidence():
     assert len(ledger.regions) == 1
 
 
+@pytest.mark.protocol("transitions.timestamp-upserts", "claims.patched", "ledger.meaning")
 def test_weekly_full_plus_changed_since_without_deletes_stays_patched_until_sunday():
     c = contract(shapes={"full": FULL, "since": SINCE})
     ledger = full(c)
@@ -35,6 +37,7 @@ def test_weekly_full_plus_changed_since_without_deletes_stays_patched_until_sund
     assert ledger.claims(at(25), limit=timedelta.max).deletions_as_of == at(25)
 
 
+@pytest.mark.protocol("transitions.window", "claims.1")
 def test_weekly_full_plus_daily_thirty_day_windows_keeps_old_dates_outside_the_window():
     c = contract(window_type="date")
     ledger = full(c)
@@ -46,6 +49,7 @@ def test_weekly_full_plus_daily_thirty_day_windows_keeps_old_dates_outside_the_w
         assert ledger.claims(at(day), limit=timedelta.max).deletions_as_of == at(18)
 
 
+@pytest.mark.protocol("ledger.structure", "ledger.accounting", "claims.unknown", "claims.1")
 def test_sliding_daily_windows_split_earlier_regions_and_leave_unknown_history_visible():
     c = contract()
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(20), window=(1, 30)))
@@ -62,6 +66,7 @@ def test_sliding_daily_windows_split_earlier_regions_and_leave_unknown_history_v
     assert ledger.claims(at(21), limit=timedelta.max).complete_as_of is None
 
 
+@pytest.mark.protocol("transitions.window", "ledger.accounting")
 @pytest.mark.parametrize(
     "windows",
     [
@@ -87,6 +92,7 @@ def test_shrinking_growing_partial_and_touching_windows_preserve_exact_coverage(
         assert all(a.touches(b) for a, b in zip(ledger.regions, ledger.regions[1:], strict=False))
 
 
+@pytest.mark.protocol("transitions.2")
 def test_an_older_window_overlapping_newer_evidence_is_refused_as_a_whole():
     c = contract()
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(21), window=(10, 20)))
@@ -98,6 +104,7 @@ def test_an_older_window_overlapping_newer_evidence_is_refused_as_a_whole():
     assert point(ledger, 1).state is State.UNKNOWN
 
 
+@pytest.mark.protocol("transitions.window", "ledger.accounting")
 def test_an_older_disjoint_window_can_establish_previously_unknown_history():
     c = contract()
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(21), window=(10, 20)))
@@ -106,6 +113,7 @@ def test_an_older_disjoint_window_can_establish_previously_unknown_history():
     assert point(ledger, 10).complete_as_of == at(21)
 
 
+@pytest.mark.protocol("algebraic-guarantees.laws", "ledger.structure")
 def test_repeated_window_deliveries_require_a_store_receipt_lookup_before_accounting():
     c = contract()
     first = Manifest(c.table, "daily", at(20), window=(1, 30))
@@ -118,6 +126,7 @@ def test_repeated_window_deliveries_require_a_store_receipt_lookup_before_accoun
     assert not hasattr(ledger, "accepted")
 
 
+@pytest.mark.protocol("contract.domains", "claims.unknown")
 def test_independent_plant_exports_include_unknown_plants_and_empty_decommissioned_plants():
     c = contract(window_type="str")
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(18), window=("IT01", "IT01"), rows=50))
@@ -129,6 +138,7 @@ def test_independent_plant_exports_include_unknown_plants_and_empty_decommission
     assert ledger.claims(at(21), limit=timedelta.max).state is State.UNKNOWN
 
 
+@pytest.mark.protocol("transitions.timestamp-upserts")
 def test_changed_only_windows_split_only_their_intersection_with_known_regions():
     c = contract()
     ledger = full(c)
@@ -146,6 +156,7 @@ def test_changed_only_windows_split_only_their_intersection_with_known_regions()
         assert (claim.complete_as_of, claim.deletions_as_of) == (at(complete), at(valid))
 
 
+@pytest.mark.protocol("transitions.3")
 def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage():
     c = contract()
     ledger = Ledger(c).apply(Manifest(c.table, "daily", at(18), window=(1, 10)))
@@ -153,6 +164,7 @@ def test_a_changed_only_window_cannot_patch_an_undelivered_part_of_its_coverage(
         ledger.apply(Manifest(c.table, "recent", at(19), window=(5, 15), since=at(18)))
 
 
+@pytest.mark.protocol("transitions.generation-tombstones-exact")
 def test_a_change_feed_with_tombstones_keeps_a_clean_base_complete():
     c = contract(shapes={"full": FULL, "feed": FEED})
     ledger = full(c, generation="g1")
@@ -162,6 +174,7 @@ def test_a_change_feed_with_tombstones_keeps_a_clean_base_complete():
     assert ledger.claims(at(19), limit=timedelta.max).deletions_as_of == at(19)
 
 
+@pytest.mark.protocol("transitions.5")
 def test_a_source_restore_breaks_the_generation_chain_until_a_full_delivery_recovers_it():
     c = contract(shapes={"full": FULL, "feed": FEED})
     ledger = full(c, generation="g41")
@@ -172,12 +185,14 @@ def test_a_source_restore_breaks_the_generation_chain_until_a_full_delivery_reco
     assert ledger.claims(at(21), limit=timedelta.max).deletions_as_of == at(21)
 
 
+@pytest.mark.protocol("transitions.3")
 def test_a_feed_arriving_before_any_base_is_refused():
     c = contract()
     with pytest.raises(RejectedDelivery, match="known base"):
         Ledger(c).apply(Manifest(c.table, "feed", at(19), since="g1", generation="g2"))
 
 
+@pytest.mark.protocol("transitions.generation-tombstones-patched")
 def test_tombstones_after_an_interval_without_deletes_do_not_repair_earlier_missed_deletions():
     c = contract(shapes={"full": FULL, "since": SINCE, "feed": FEED})
     ledger = full(c, generation="g1")
@@ -187,6 +202,7 @@ def test_tombstones_after_an_interval_without_deletes_do_not_repair_earlier_miss
     assert ledger.claims(at(20), limit=timedelta.max).deletions_as_of == at(18)
 
 
+@pytest.mark.protocol("transitions.4", "manifest.5")
 def test_a_timestamp_gap_cannot_raise_completeness_but_overlapping_upserts_can():
     c = contract(shapes={"full": FULL, "since": SINCE})
     ledger = full(c)
@@ -196,6 +212,7 @@ def test_a_timestamp_gap_cannot_raise_completeness_but_overlapping_upserts_can()
     assert ledger.claims(at(20), limit=timedelta.max).complete_as_of == at(20)
 
 
+@pytest.mark.protocol("transitions.full", "transitions.5")
 def test_a_full_export_without_a_cursor_cannot_continue_an_old_feed_generation():
     c = contract(shapes={"full": FULL, "feed": FEED})
     ledger = full(c, generation="g1").apply(Manifest(c.table, "full", at(19)))
@@ -204,6 +221,7 @@ def test_a_full_export_without_a_cursor_cannot_continue_an_old_feed_generation()
         ledger.apply(Manifest(c.table, "feed", at(20), since="g1", generation="g2"))
 
 
+@pytest.mark.protocol("transitions.3", "transitions.first-append", "transitions.later-append")
 def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_overlaps():
     c = Contract("events", (), {"log": SINCE}, start_at=at(1))
     ledger = Ledger(c).apply(Manifest(c.table, "log", at(18), since=at(1)))
@@ -214,6 +232,7 @@ def test_append_only_logs_without_keys_start_at_declared_history_and_refuse_over
             ledger.apply(Manifest(c.table, "log", at(20), since=since))
 
 
+@pytest.mark.protocol("transitions.3", "transitions.full", "transitions.later-append")
 def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_append_history():
     c = Contract("receipts", (), {"full": FULL, "log": SINCE}, start_at=at(1))
     ledger = Ledger(c).apply(Manifest(c.table, "full", at(18)))
@@ -224,6 +243,7 @@ def test_a_keyless_table_delivered_whole_proves_both_dates_and_restarts_its_appe
     assert ledger.claims(at(19), limit=timedelta.max).complete_as_of == at(19)
 
 
+@pytest.mark.protocol("transitions.3")
 def test_a_keyless_append_after_a_window_is_refused_until_a_full_delivery_aligns_the_boundaries():
     c = Contract(
         "events",
@@ -246,6 +266,7 @@ def test_a_keyless_append_after_a_window_is_refused_until_a_full_delivery_aligns
     )
 
 
+@pytest.mark.protocol("manifest.4")
 def test_an_empty_append_interval_cannot_carry_rows():
     c = Contract("events", (), {"log": SINCE}, start_at=at(1))
     with pytest.raises(InvalidContract, match="empty interval"):
@@ -253,6 +274,7 @@ def test_an_empty_append_interval_cannot_carry_rows():
     assert Ledger(c).apply(Manifest(c.table, "log", at(1), since=at(1), rows=0)).publication_id
 
 
+@pytest.mark.protocol("claims.reading")
 def test_a_reader_always_names_its_age_limit():
     ledger = full(contract())
     for read in (
@@ -267,6 +289,7 @@ def test_a_reader_always_names_its_age_limit():
             ledger.claims(at(25), limit=invalid)
 
 
+@pytest.mark.protocol("contract-evolution.compatibility")
 def test_a_new_deleted_column_cannot_keep_a_tables_history():
     ledger = full(contract())
     types = {**{k: v for k, v in ledger.contract.types.items() if k != "deleted"}, "erased": "bool"}
@@ -274,6 +297,7 @@ def test_a_new_deleted_column_cannot_keep_a_tables_history():
         ledger.with_contract(replace(ledger.contract, deleted_column="erased", types=types))
 
 
+@pytest.mark.protocol("claims.reading", "claims.expired")
 def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
     ledger = full(contract())
     ledger = ledger.apply(Manifest(ledger.contract.table, "daily", at(24), window=(10, 20)))
@@ -284,6 +308,7 @@ def test_the_freshness_limit_expires_each_region_at_its_own_boundary():
     assert ledger.claims(at(31), limit=timedelta.max).state is State.COMPLETE
 
 
+@pytest.mark.protocol("transitions.2")
 @pytest.mark.parametrize("shape,kwargs", [("full", {}), ("since", {"since": at(17)})])
 def test_a_manifest_produced_before_the_region_dates_cannot_change_rows_or_evidence(shape, kwargs):
     ledger = full(contract())
@@ -291,6 +316,7 @@ def test_a_manifest_produced_before_the_region_dates_cannot_change_rows_or_evide
         ledger.apply(Manifest(ledger.contract.table, shape, at(17), **kwargs))
 
 
+@pytest.mark.protocol("claims.1", "claims.2")
 def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     stocks = full(contract("stock"), 20)
     invoices = full(contract("invoices"), 18)
@@ -307,6 +333,7 @@ def test_a_surface_reading_three_tables_inherits_each_tables_weakest_region():
     assert len(unknown.in_state(State.UNKNOWN)) == 1
 
 
+@pytest.mark.protocol("transitions.window")
 def test_window_deliveries_preserve_the_table_cursor_for_the_next_global_feed():
     c = contract()
     ledger = full(c, generation="g1")
@@ -318,6 +345,7 @@ def test_window_deliveries_preserve_the_table_cursor_for_the_next_global_feed():
     assert ledger.claims(at(20), limit=timedelta.max).deletions_as_of == at(20)
 
 
+@pytest.mark.protocol("contract.domains")
 @pytest.mark.parametrize(
     "windows",
     [
@@ -336,6 +364,7 @@ def test_adjacent_discrete_windows_leave_no_phantom_unknown_region(windows):
     assert len(claim.regions) == 2
 
 
+@pytest.mark.protocol("contract.domains")
 def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
     from zoneinfo import ZoneInfo
 
@@ -354,6 +383,7 @@ def test_datetime_bounds_are_normalised_to_utc_so_a_dst_fold_is_two_instants():
     )
 
 
+@pytest.mark.protocol("contract.domains")
 def test_window_bounds_must_have_the_window_columns_declared_type():
 
     c = Contract(
@@ -367,6 +397,9 @@ def test_window_bounds_must_have_the_window_columns_declared_type():
         Manifest(c.table, "daily", at(19), window=("2026-10-01", "2026-10-19")).check(c)
 
 
+@pytest.mark.protocol(
+    "transitions.timestamp-tombstones-covered", "transitions.timestamp-tombstones-uncovered"
+)
 @pytest.mark.parametrize("since,expected_valid", [(17, 20), (18, 20), (19, 18)])
 def test_timestamp_tombstones_repair_patch_deletion_debt_only_when_the_checkpoint_covers_it(
     since, expected_valid
@@ -382,6 +415,7 @@ def test_timestamp_tombstones_repair_patch_deletion_debt_only_when_the_checkpoin
     assert ledger.claims(at(20), limit=timedelta.max).deletions_as_of == at(expected_valid)
 
 
+@pytest.mark.protocol("transitions.generation-upserts", "transitions.generation-tombstones-patched")
 def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletions():
     from dogana import Shape
 
@@ -393,6 +427,7 @@ def test_global_generation_tombstones_cannot_invent_evidence_for_skipped_deletio
     assert ledger.claims(at(20), limit=timedelta.max).deletions_as_of == at(18)
 
 
+@pytest.mark.protocol("contract.domains")
 def test_typed_window_queries_refuse_a_different_domain_even_before_the_first_delivery():
 
     c = Contract(
@@ -429,6 +464,7 @@ def test_dataclass_replacement_preserves_cuts_unless_regions_are_explicitly_repl
     }
 
 
+@pytest.mark.protocol("contract.domains")
 def test_equivalent_region_endpoint_spellings_have_the_same_ledger_evidence():
     from dogana import Region
 
@@ -472,6 +508,7 @@ def test_an_accounting_window_with_the_wrong_scalar_domain_is_a_delivery_refusal
         ledger.apply(Manifest("moves", "daily", at(19), window=("a", "b")))
 
 
+@pytest.mark.protocol("transitions.first-append", "transitions.later-append")
 def test_keyless_append_preserves_or_replaces_an_issued_table_generation():
     c = Contract("events", (), {"log": SINCE}, start_at=at(1))
     ledger = Ledger(c).apply(Manifest(c.table, "log", at(18), since=at(1), generation="g1"))
@@ -497,6 +534,7 @@ def receipt_chain():
     return c, first, second
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize("missing", [False, True])
 def test_reconciliation_of_a_fresh_store_needs_no_receipts(missing):
     c = contract()
@@ -505,6 +543,7 @@ def test_reconciliation_of_a_fresh_store_needs_no_receipts(missing):
         assert Ledger.reconcile(c, (), current, None, repair=repair) == Ledger(c)
 
 
+@pytest.mark.protocol("store.recovery")
 def test_reconciliation_of_matching_evidence_does_not_require_repair():
     c, first, second = receipt_chain()
     for repair in (False, True):
@@ -513,6 +552,7 @@ def test_reconciliation_of_matching_evidence_does_not_require_repair():
         ) == fold(first, second)
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize("current_kind", ["missing", "initial", "behind"])
 def test_stamp_ahead_diagnosis_requires_repair_and_reconstructs_exactly_the_stamped_head(current_kind):
     from dogana.errors import StampAhead
@@ -524,6 +564,7 @@ def test_stamp_ahead_diagnosis_requires_repair_and_reconstructs_exactly_the_stam
     assert Ledger.reconcile(c, (first, second), current, second.publication_id) == fold(first, second)
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize("stamp_kind", ["missing", "behind"])
 @pytest.mark.parametrize("missing_ledger", [False, True])
 def test_reconciliation_never_moves_the_rows_forward_to_a_later_receipt(stamp_kind, missing_ledger):
@@ -538,6 +579,7 @@ def test_reconciliation_never_moves_the_rows_forward_to_a_later_receipt(stamp_ki
             )
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize(
     "problem", ["missing", "gap", "reordered", "duplicate", "foreign", "unrelated_stamp"]
 )
@@ -561,6 +603,7 @@ def test_reconciliation_refuses_an_unprovable_stamp(problem):
             Ledger.reconcile(c, receipts, None, stamp, repair=repair)
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize("problem", ["unrelated_head", "wrong_evidence", "initial_with_evidence"])
 def test_reconciliation_refuses_current_evidence_that_does_not_belong_to_the_chain(problem):
     from dataclasses import replace
@@ -578,6 +621,7 @@ def test_reconciliation_refuses_current_evidence_that_does_not_belong_to_the_cha
             Ledger.reconcile(c, (first, second), current, second.publication_id, repair=repair)
 
 
+@pytest.mark.protocol("store.recovery")
 def test_reconstruction_checks_historical_region_spellings_by_evidence():
     from dataclasses import replace
 
@@ -598,6 +642,7 @@ def test_reconstruction_checks_historical_region_spellings_by_evidence():
     assert Ledger.reconcile(c, receipts, None, second.publication_id) == expected
 
 
+@pytest.mark.protocol("store.recovery")
 def test_a_store_verified_retained_head_certifies_a_consistent_read_without_loading_history():
     c, first, second = receipt_chain()
 
@@ -615,6 +660,7 @@ def test_a_store_verified_retained_head_certifies_a_consistent_read_without_load
     ) == fold(first, second)
 
 
+@pytest.mark.protocol("store.recovery")
 def test_a_lone_retained_head_cannot_replace_full_history_during_repair():
     from dogana.errors import StampAhead
 
@@ -625,6 +671,7 @@ def test_a_lone_retained_head_cannot_replace_full_history_during_repair():
         Ledger.reconcile(c, (second,), fold(first), second.publication_id, repair=False, retained_head=second)
 
 
+@pytest.mark.protocol("store.recovery")
 @pytest.mark.parametrize("problem", ["stale", "parent", "manifest", "evidence", "rejected"])
 def test_a_retained_head_must_match_the_rows_cached_ledger_and_its_own_hash(problem):
     from dataclasses import replace
@@ -646,6 +693,7 @@ def test_a_retained_head_must_match_the_rows_cached_ledger_and_its_own_hash(prob
         Ledger.reconcile(c, (), fold(first, second), second.publication_id, repair=False, retained_head=head)
 
 
+@pytest.mark.protocol("store.recovery")
 def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash():
     from dataclasses import replace
 
@@ -667,6 +715,7 @@ def test_a_retained_head_uses_its_historical_contract_for_the_publication_hash()
     )
 
 
+@pytest.mark.protocol("ledger.accounting")
 def test_apply_takes_a_manifest_and_says_where_rows_go():
     c = Contract("t", key=("id",), types={"id": "int"}, shapes={"full": Shape.full()})
     with pytest.raises(TypeError, match="takes a Manifest, not list; rows reach a store"):

@@ -24,6 +24,7 @@ def objects(value, path=()):
             yield from objects(item, (*path, index))
 
 
+@pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize(
     "name,cls",
     [
@@ -54,6 +55,7 @@ def test_mutations_of_nested_wire_values_raise_public_contract_errors(name, cls,
         cls.from_json(json.dumps(value))
 
 
+@pytest.mark.protocol("versioned-json.5")
 @given(st.floats(allow_nan=False, allow_infinity=False, width=64))
 def test_canonical_numbers_round_trip_as_binary64(value):
     from dogana.wire import canonical_json
@@ -63,6 +65,7 @@ def test_canonical_numbers_round_trip_as_binary64(value):
     assert canonical_json(float(encoded)) == encoded
 
 
+@pytest.mark.protocol("versioned-json.5")
 @given(st.text(alphabet=st.characters(codec="utf-8")))
 def test_canonical_unicode_preserves_scalars_without_normalization(value):
     from dogana.wire import canonical_json
@@ -72,6 +75,7 @@ def test_canonical_unicode_preserves_scalars_without_normalization(value):
     assert encoded.encode("utf-8").decode("utf-8") == encoded
 
 
+@pytest.mark.protocol("versioned-json.3")
 @given(st.integers(min_value=0xD800, max_value=0xDFFF))
 def test_surrogates_in_values_and_property_names_are_refused(codepoint):
     from dogana import SerializationError
@@ -86,6 +90,7 @@ def test_surrogates_in_values_and_property_names_are_refused(codepoint):
         Manifest("stock", text, at(18))
 
 
+@pytest.mark.protocol("versioned-json.5")
 @given(st.integers(min_value=2**53 + 1, max_value=2**64 - 1).filter(lambda n: float(n) != n))
 def test_lossy_integer_counts_and_bounds_are_refused(value):
     from dogana.wire import canonical_json
@@ -102,6 +107,7 @@ def test_lossy_integer_counts_and_bounds_are_refused(value):
             Manifest.from_dict(raw)
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("seconds", [10**100, 1e100])
 def test_overflowing_wire_durations_use_the_public_serialization_error(seconds):
     raw = Shape.window(size=timedelta(days=1)).to_dict()
@@ -110,6 +116,7 @@ def test_overflowing_wire_durations_use_the_public_serialization_error(seconds):
         Shape.from_json(json.dumps(raw))
 
 
+@pytest.mark.protocol("versioned-json.3")
 @pytest.mark.parametrize("name,cls", [("manifest", Manifest), ("ledger", Ledger), ("receipt", Receipt)])
 def test_naive_nested_wire_timestamps_never_escape_as_a_runtime_error(name, cls):
     raw = (EXAMPLES / f"{name}.json").read_text().replace("+00:00", "")
@@ -117,6 +124,7 @@ def test_naive_nested_wire_timestamps_never_escape_as_a_runtime_error(name, cls)
         cls.from_json(raw)
 
 
+@pytest.mark.protocol("versioned-json.2")
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
 def test_nonstandard_json_numbers_are_refused(constant):
     from dogana import SerializationError
@@ -125,6 +133,7 @@ def test_nonstandard_json_numbers_are_refused(constant):
         Manifest.from_json('{"rows":' + constant + "}")
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_duplicate_json_fields_cannot_silently_replace_an_earlier_claim():
     from dogana import SerializationError
 
@@ -133,6 +142,7 @@ def test_duplicate_json_fields_cannot_silently_replace_an_earlier_claim():
         Manifest.from_json(raw.replace('"rows":2', '"rows":1,"rows":2'))
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_excessively_nested_json_raises_a_serialization_error():
     from dogana import SerializationError
 
@@ -140,6 +150,7 @@ def test_excessively_nested_json_raises_a_serialization_error():
         Manifest.from_json("[" * 2000 + "0" + "]" * 2000)
 
 
+@pytest.mark.protocol("versioned-json.2")
 def test_recursive_python_containers_cannot_escape_wire_validation():
     from dogana import SerializationError
     from tests.support import at

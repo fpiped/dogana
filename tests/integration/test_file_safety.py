@@ -408,6 +408,7 @@ def test_a_derived_manifest_replays_the_same_bytes_and_refuses_changed_bytes_at_
         assert store.read(c.table) == [{"id": 1}]
 
 
+@pytest.mark.protocol("trust-model.3")
 def test_a_file_changed_after_it_is_held_is_never_read(tmp_path: Path) -> None:
     path = tmp_path / "data.csv"
     c = _contract()
