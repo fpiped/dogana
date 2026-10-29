@@ -1,18 +1,22 @@
 # Concepts
 
-One example runs through this page: a shop whose ERP sends reads of its `orders` table. The
-[protocol](protocol.md) states the same rules exactly, edge cases included.
+One example runs through this page: a shop whose ERP exports its `orders` table, and a loader that
+puts the rows into the shop's own database. The [protocol](protocol.md) states the same rules
+exactly, edge cases included.
 
 ## The problem
 
 The **source** is the system that owns a table: an ERP, a SaaS API, a database you do not control.
-You cannot query it whenever you like. Instead it gives you **reads**, and you load their rows into your
-own database.
+Loading its table into your own database is two jobs, and they are often done by two parties.
 
-A file is one way a read arrives; a query result from a view, an API response or a batch from a
-stream are others.
-Each read is a copy of part of the table at one instant, and each kind of read proves something
-different:
+The **sender** reads the source: it runs an export, a query or an API call. At that moment it knows
+what it read: the instant, the part of the table, the number of rows. The **receiver** writes the
+table, and sees only rows. The two may be different vendors, different systems, or one script that
+does both; what the sender knew is gone once the rows land, unless it is written down.
+
+A **read** is what the sender got: a copy of part of the table at one instant. A file is one way a
+read arrives; a query result from a view, an API response or a batch from a stream are others. Each
+kind of read proves something different:
 
 - A full dump of `orders` has every order. An order you loaded before and that is missing now was
   deleted at the source.
@@ -24,13 +28,16 @@ Once loaded, the rows look the same whichever read brought them. You can no long
 order is in your table because the source still has it, or because no read has told you it was
 deleted.
 
-dogana keeps a record of what each read proved, beside the rows. It checks every delivery, updates
-the record, and refuses a delivery that would make the record wrong.
+dogana makes the sender write down what it read, in a **manifest**, and makes the receiver check it
+and remember what it proved, in a record kept beside the rows. The receiver runs dogana: it checks
+every delivery, updates the record, and refuses a delivery that would make the record wrong. The
+discipline holds even when sender and receiver are one script, because the manifest is the only
+place where the instant and the kind of read survive, and the record holds the script to its own
+word.
 
-The **sender** is whoever provides the reads from the source. The **receiver** runs dogana and
-decides which deliveries to accept. dogana never sees the source: it checks each delivery only against
-what the sender declares about it. If the export misses rows the source has, and the declaration counts
-only what was exported, no check can tell.
+dogana never sees the source: it checks each delivery only against what the sender declares about
+it. If the export misses rows the source has, and the declaration counts only what was exported, no
+check can tell.
 
 ## Two dates
 

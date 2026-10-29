@@ -1,5 +1,5 @@
 site_name: dogana
-site_description: "A Python library that tracks which rows of a table loaded from exported files you can trust, and as of when"
+site_description: "A Python library that tracks which rows of a table loaded from another system you can trust, and as of when"
 site_url: https://fpiped.github.io/dogana/
 repo_url: https://github.com/fpiped/dogana
 repo_name: fpiped/dogana

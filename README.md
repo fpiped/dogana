@@ -15,23 +15,26 @@
 <!-- --8<-- [start:body] -->
 # Make messy data integration trustworthy
 
-dogana is a Python library for tables you load from another system. It tells you,
-for each table, how far you can trust it to match that system.
+dogana is a Python library for tables you load from another system. It tells you, for each
+table, how far you can trust it to match that system, and as of when.
 
-A source gives you reads: a full dump on Sunday, the orders of the last 30 days every night, the
-rows changed since yesterday. Each kind of read proves something different, and almost none says
-which rows were deleted. Once the rows are loaded, nobody remembers which read
-proved what.
+Loading a table from another system is two jobs. One **reads** the source: it runs an export, a
+query or an API call, and knows what it got, at what instant, in what shape, how many rows. The
+other **writes** the table, and sees only rows. Often they are different people, systems or
+vendors; sometimes they are one script. Either way, what the reader knew is gone once the rows
+land, unless it is written down.
 
-dogana keeps that record as two dates. It keeps them for the whole table, or separately for each
-range of one column whose value never changes on a row, such as the order date:
+dogana makes the reader write it down, in a **manifest**, and makes the writer check it and
+remember it, in a **ledger** of two dates per table, or per range of a column that never changes on
+a row, such as the order date:
 
 - **complete as of**: every row the source had at that instant is here;
 - **deletions as of**: no row the source deleted before that instant is still here.
 
-A read moves a date only as far as it proves. dogana never sees the source: it checks each delivery
-against what the sender, whoever provides the read, declares about it. If the export misses rows
-the source has, and the declaration counts only what was exported, no check can tell.
+A full export on Sunday proves both dates. The rows changed since yesterday prove only the first,
+because a deleted row is not among them. dogana refuses any delivery that would move a date further
+than its declaration proves. It never sees the source: if the export misses rows the source has,
+and the declaration counts only what was exported, no check can tell.
 
 ## How it works
 

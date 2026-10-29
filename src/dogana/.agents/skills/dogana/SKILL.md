@@ -5,9 +5,9 @@ description: How to use dogana to load tables from reads with dates that say how
 
 # dogana
 
-dogana tracks how far a table loaded from source reads matches its source. It checks each delivery
-against the declaration that comes with it (the manifest) and the receiver's description of the
-table (the contract). It keeps per table two dates: **complete as of** (every row the source had
+dogana tracks how far a table loaded from another system matches that system. Whoever reads the
+source declares the read in a manifest; whoever writes the table checks the delivery against that
+declaration and the receiver's description of the table (the contract), and dogana decides. It keeps per table two dates: **complete as of** (every row the source had
 then is here) and **deletions as of** (no row the source deleted before then is still here). The
 core is pure Python with no dependencies and never parses a data file. Docs: https://fpiped.github.io/dogana/,
 the specification is `docs/protocol.md`.
