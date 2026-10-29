@@ -1,8 +1,8 @@
 # Concepts
 
 One example runs through this page: a shop whose order system exports its `orders` table, and a
-loader that puts the rows into the shop's own database. The [protocol](protocol.md) states the same rules
-exactly, edge cases included.
+loader that puts the rows into the shop's own database. The [protocol](protocol.md) states the same
+rules exactly, edge cases included.
 
 ## The problem
 
@@ -199,9 +199,9 @@ Take the reads of [the window column](#the-window-column) example:
 - On Wednesday a `changes` read arrives with every change since Sunday's read. Its tombstones
   report the deletions, so it proves the whole table as of Wednesday, both dates.
 
-The same delivery with only the changes since Monday is refused. Most of the table is proven only up to
-Sunday's read, so a change made between that read and Monday would be in no read, such as an order
-dated October 10 and changed on Sunday evening.
+The same delivery with only the changes since Monday is refused. Most of the table is proven only up
+to Sunday's read, so a change made between that read and Monday would be in no read, such as an
+order dated October 10 and changed on Sunday evening.
 
 ## The manifest
 
@@ -250,11 +250,11 @@ code that puts rows into the database. It is decided in three steps:
 2. The loader checks the rows against the manifest, since only it can see them: the counts, unique
    keys, window values inside the window, the column hash, and the bytes against `content_hash`.
    It reports the results, and dogana records them.
-3. If every check passes, the decision is an acceptance with a **plan**: the row operations the
-   read implies, such as replace the table, replace a window, upsert, delete the tombstoned keys or
+3. If every check passes, the decision is an acceptance with a **plan**: the row operations the read
+   implies, such as replace the table, replace a window, upsert, delete the tombstoned keys or
    append. The loader executes the plan and saves the new ledger and the receipt in the same
-   transaction, so readers see all of them or none. If any check fails, the delivery is refused, rows
-   and ledger stay as they were, and the refusal is recorded.
+   transaction, so readers see all of them or none. If any check fails, the delivery is refused,
+   rows and ledger stay as they were, and the refusal is recorded.
 
 A **receipt** is the record of one decision: the manifest, the checks and the outcome. The ledger
 can be rebuilt from the accepted receipts. The same manifest sent again is a **replay**: the loader
